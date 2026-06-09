@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../utils/theme.dart';
 import 'login_screen.dart';
 import 'active_booking_screen.dart';
+import 'services_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -23,7 +24,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Timer? _pollTimer;
   Timer? _alertCountdown;
   int _countdownSeconds = 30;
-  StreamSubscription? _bookingSub;
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
@@ -41,7 +41,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   void dispose() {
     _pollTimer?.cancel();
     _alertCountdown?.cancel();
-    _bookingSub?.cancel();
     _pulseCtrl.dispose();
     super.dispose();
   }
@@ -68,8 +67,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Future<void> _toggleAvailability(bool val) async {
     if (_user == null) return;
     setState(() => _available = val);
-    
-    // Update location if going online
     if (val) {
       try {
         final permission = await Geolocator.requestPermission();
@@ -85,7 +82,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         }
       } catch (e) {}
     }
-    
     await FirebaseDatabase.instance.ref('providers/${_user!.uid}').update({
       'available': val,
       'updatedAt': DateTime.now().toIso8601String(),
@@ -93,7 +89,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startPolling() {
-    // Listen to active_bookings for new bookings
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
     _checkForBookings();
   }
@@ -104,19 +99,16 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       final snap = await FirebaseDatabase.instance.ref('active_bookings').get();
       if (!snap.exists) return;
       final all = Map<String, dynamic>.from(snap.value as Map);
-      final providerServices = (_providerData?['services'] as List?)?.map((s) =>
-        (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase()).toList() ?? [];
+      final providerServices = (_providerData?['services'] as List?)
+          ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
+          .toList() ?? [];
 
       for (final entry in all.entries) {
         final bk = Map<String, dynamic>.from(entry.value as Map);
         if (bk['status'] != 'searching') continue;
         if (bk['acceptedBy'] != null) continue;
-
-        // Check if provider offers this service
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) continue;
-
-        // Show incoming booking alert
         if (mounted) {
           setState(() {
             _incomingBooking = bk;
@@ -145,52 +137,37 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Future<void> _acceptBooking() async {
     if (_incomingBooking == null || _incomingBookingKey == null || _user == null) return;
     _alertCountdown?.cancel();
-
-    // Check if already taken
-    final snap = await FirebaseDatabase.instance
-        .ref('active_bookings/$_incomingBookingKey').get();
+    final snap = await FirebaseDatabase.instance.ref('active_bookings/$_incomingBookingKey').get();
     if (!snap.exists) {
       setState(() { _incomingBooking = null; _incomingBookingKey = null; });
       return;
     }
     final current = Map<String, dynamic>.from(snap.value as Map);
     if (current['acceptedBy'] != null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sorry! Another provider accepted this booking.'),
-            backgroundColor: AppColors.red));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sorry! Another provider accepted this booking.'),
+          backgroundColor: AppColors.red));
       setState(() { _incomingBooking = null; _incomingBookingKey = null; });
       return;
     }
-
-    // Accept it!
     final providerInfo = {
       'id': _user!.uid,
       'name': _user!.displayName ?? '',
       'phone': _user!.phoneNumber ?? '',
       'photo': _user!.photoURL ?? '',
     };
-
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
-
     await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
       'acceptedBy': providerInfo,
       'status': 'accepted',
       'providerId': _user!.uid,
       'acceptedAt': DateTime.now().toIso8601String(),
     });
-
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-
     if (mounted) {
       Navigator.push(context, MaterialPageRoute(
-        builder: (_) => ActiveBookingScreen(
-          bookingKey: bookingKey,
-          booking: booking,
-        ),
-      ));
+        builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking)));
     }
   }
 
@@ -280,7 +257,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             ]),
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
 
           if (!isApproved) ...[
             Container(
@@ -299,7 +276,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 )),
               ]),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
           ],
 
           // Availability toggle
@@ -335,7 +312,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             _statCard('Earnings', '₹${_providerData?['totalEarnings'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
           ]),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
 
           // Services
           Container(
@@ -345,53 +322,57 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               borderRadius: BorderRadius.circular(16),
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
             ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('My Services', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink)),
-              const SizedBox(height: 12),
-              if (_providerData?['services'] == null || (_providerData!['services'] as List?)?.isEmpty == true)
-                const Text('No services added yet. Tap below to add your services.',
-                  style: TextStyle(fontSize: 13, color: AppColors.muted))
-              else
-                Wrap(
-                  spacing: 8, runSpacing: 8,
-                  children: ((_providerData!['services'] as List?) ?? []).map((s) {
-                    final name = s is Map ? s['name'] ?? '' : s.toString();
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: AppColors.tealSoft,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: AppColors.teal.withOpacity(0.3)),
-                      ),
-                      child: Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
-                    );
-                  }).toList(),
-        ),
-      ]),
-      const SizedBox(height: 12),
-      SizedBox(
-        width: double.infinity,
-        child: OutlinedButton.icon(
-          onPressed: () async {
-            final result = await Navigator.push(context,
-              MaterialPageRoute(builder: (_) => const ServicesScreen()));
-            if (result == true) _loadProfile();
-          },
-          icon: const Icon(Icons.edit_rounded, color: AppColors.teal),
-          label: const Text('Edit My Services',
-            style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
-          style: OutlinedButton.styleFrom(
-            side: const BorderSide(color: AppColors.teal),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('My Services',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                const SizedBox(height: 12),
+                if (_providerData?['services'] == null ||
+                    (_providerData!['services'] as List?)?.isEmpty == true)
+                  const Text('No services added yet. Tap below to add your services.',
+                    style: TextStyle(fontSize: 13, color: AppColors.muted))
+                else
+                  Wrap(
+                    spacing: 8, runSpacing: 8,
+                    children: ((_providerData!['services'] as List?) ?? []).map((s) {
+                      final name = s is Map ? s['name'] ?? '' : s.toString();
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: AppColors.tealSoft,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: AppColors.teal.withOpacity(0.3)),
+                        ),
+                        child: Text(name,
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
+                      );
+                    }).toList(),
+                  ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final result = await Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const ServicesScreen()));
+                      if (result == true) _loadProfile();
+                    },
+                    icon: const Icon(Icons.edit_rounded, color: AppColors.teal),
+                    label: const Text('Edit My Services',
+                      style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: AppColors.teal),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-      ),
-    ],
-  ),
-),
 
           if (_available && isApproved) ...[
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -451,7 +432,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Alert header
                 Container(
                   padding: const EdgeInsets.all(20),
                   decoration: const BoxDecoration(
@@ -480,24 +460,20 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                       style: TextStyle(fontSize: 12, color: Colors.white60)),
                   ]),
                 ),
-
-                // Booking details
                 Padding(
                   padding: const EdgeInsets.all(20),
                   child: Column(children: [
                     _alertRow('🔧', 'Service', bk['service'] ?? ''),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     _alertRow('💰', 'Price', '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     _alertRow('📅', 'Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     _alertRow('📍', 'Address', bk['address'] ?? ''),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     _alertRow('👤', 'Customer', '${bk['customer'] ?? ''} · ${bk['phone'] ?? ''}'),
-
-                    // Summary chips
                     if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 10),
                       Wrap(
                         spacing: 6, runSpacing: 6,
                         children: (bk['summary'] as List).map((s) {
@@ -517,10 +493,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                         }).toList(),
                       ),
                     ],
-
                     const SizedBox(height: 20),
-
-                    // Accept / Decline buttons
                     Row(children: [
                       Expanded(
                         child: OutlinedButton(
@@ -530,7 +503,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                             side: const BorderSide(color: AppColors.red),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                           ),
-                          child: const Text('✕ Decline', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
+                          child: const Text('✕ Decline',
+                            style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -542,7 +516,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                             minimumSize: const Size(double.infinity, 52),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                           ),
-                          child: const Text('✅ Accept', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                          child: const Text('✅ Accept',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
                         ),
                       ),
                     ]),
