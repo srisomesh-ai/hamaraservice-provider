@@ -1,1 +1,39 @@
+name: Build Provider APK
 
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: stable
+      - name: Create google-services.json
+        run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > android/app/google-services.json
+      - name: Create local.properties
+        run: |
+          FLUTTER_PATH=$(dirname $(which flutter))
+          echo "flutter.sdk=${FLUTTER_PATH%/bin}" > android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
+      - name: Create asset directories
+        run: mkdir -p assets/images
+      - name: Get dependencies
+        run: flutter pub get
+      - name: Build APK
+        run: flutter build apk --release --no-tree-shake-icons
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hamaraservice-provider-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
