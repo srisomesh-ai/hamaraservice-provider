@@ -366,9 +366,29 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                       child: Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
                     );
                   }).toList(),
-                ),
-            ]),
+        ),
+      ]),
+      const SizedBox(height: 12),
+      SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: () async {
+            final result = await Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const ServicesScreen()));
+            if (result == true) _loadProfile();
+          },
+          icon: const Icon(Icons.edit_rounded, color: AppColors.teal),
+          label: const Text('Edit My Services',
+            style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+          style: OutlinedButton.styleFrom(
+            side: const BorderSide(color: AppColors.teal),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
+        ),
+      ),
+    ],
+  ),
+),
 
           if (_available && isApproved) ...[
             const SizedBox(height: 20),
