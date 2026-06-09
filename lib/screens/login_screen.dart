@@ -21,15 +21,34 @@ class _LoginScreenState extends State<LoginScreen> {
   String _error    = '';
 
   Future<void> _saveProviderProfile(User user) async {
-    await FirebaseDatabase.instance.ref('providers/${user.uid}').update({
-      'id':        user.uid,
-      'name':      user.displayName ?? _nameCtrl.text.trim(),
-      'email':     user.email ?? '',
-      'photo':     user.photoURL ?? '',
-      'status':    'pending',
-      'available': false,
-      'updatedAt': DateTime.now().toIso8601String(),
-    });
+    final ref = FirebaseDatabase.instance.ref('providers/${user.uid}');
+    final snap = await ref.get();
+
+    if (snap.exists) {
+      // Provider already exists — only update name/email/photo, NEVER touch status or services
+      await ref.update({
+        'name':      user.displayName ?? '',
+        'email':     user.email ?? '',
+        'photo':     user.photoURL ?? '',
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+    } else {
+      // New provider — create with pending status
+      await ref.set({
+        'id':        user.uid,
+        'name':      user.displayName ?? _nameCtrl.text.trim(),
+        'email':     user.email ?? '',
+        'photo':     user.photoURL ?? '',
+        'status':    'pending',
+        'available': false,
+        'services':  [],
+        'totalJobs': 0,
+        'rating':    5.0,
+        'totalEarnings': 0,
+        'createdAt': DateTime.now().toIso8601String(),
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+    }
   }
 
   Future<void> _signInGoogle() async {
@@ -137,7 +156,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 4),
                 const Text('Earn by serving customers', style: TextStyle(fontSize: 13, color: Colors.white70)),
                 const SizedBox(height: 32),
-
                 Container(
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24),
@@ -145,14 +163,12 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(_isRegister ? 'Create Account' : 'Welcome Back! 👋',
+                      Text(_isRegister ? 'Create Account' : 'Welcome Back!',
                         style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.ink)),
                       const SizedBox(height: 4),
                       Text(_isRegister ? 'Register as a service provider' : 'Sign in to receive bookings',
                         style: const TextStyle(fontSize: 13, color: AppColors.muted)),
                       const SizedBox(height: 20),
-
-                      // Google button
                       SizedBox(
                         width: double.infinity, height: 48,
                         child: OutlinedButton(
@@ -169,7 +185,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           ]),
                         ),
                       ),
-
                       const SizedBox(height: 16),
                       Row(children: [
                         const Expanded(child: Divider(color: AppColors.line)),
@@ -178,8 +193,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         const Expanded(child: Divider(color: AppColors.line)),
                       ]),
                       const SizedBox(height: 16),
-
-                      // Name (register only)
                       if (_isRegister) ...[
                         _fieldLabel('Full Name'),
                         const SizedBox(height: 6),
@@ -188,29 +201,24 @@ class _LoginScreenState extends State<LoginScreen> {
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
                         const SizedBox(height: 12),
                       ],
-
                       _fieldLabel('Email'),
                       const SizedBox(height: 6),
                       TextField(controller: _emailCtrl, keyboardType: TextInputType.emailAddress,
                         decoration: InputDecoration(hintText: 'you@email.com',
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
                       const SizedBox(height: 12),
-
                       _fieldLabel('Password'),
                       const SizedBox(height: 6),
                       TextField(
-                        controller: _pwdCtrl,
-                        obscureText: !_showPwd,
+                        controller: _pwdCtrl, obscureText: !_showPwd,
                         decoration: InputDecoration(
                           hintText: _isRegister ? 'Min 8 characters' : 'Your password',
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           suffixIcon: IconButton(
                             icon: Icon(_showPwd ? Icons.visibility_off : Icons.visibility, color: AppColors.muted),
-                            onPressed: () => setState(() => _showPwd = !_showPwd),
-                          ),
+                            onPressed: () => setState(() => _showPwd = !_showPwd)),
                         ),
                       ),
-
                       if (!_isRegister) ...[
                         const SizedBox(height: 6),
                         Align(
@@ -222,7 +230,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                       ],
-
                       if (_error.isNotEmpty) ...[
                         const SizedBox(height: 10),
                         Container(
@@ -236,9 +243,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           ]),
                         ),
                       ],
-
                       const SizedBox(height: 20),
-
                       SizedBox(
                         width: double.infinity, height: 50,
                         child: ElevatedButton(
@@ -250,13 +255,12 @@ class _LoginScreenState extends State<LoginScreen> {
                                   style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                         ),
                       ),
-
                       const SizedBox(height: 14),
                       Center(
                         child: TextButton(
                           onPressed: () => setState(() { _isRegister = !_isRegister; _error = ''; }),
                           child: Text(
-                            _isRegister ? 'Already registered? Sign In' : "New provider? Register",
+                            _isRegister ? 'Already registered? Sign In' : 'New provider? Register',
                             style: const TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w600),
                           ),
                         ),
