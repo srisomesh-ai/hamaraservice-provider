@@ -7,6 +7,7 @@ import '../utils/theme.dart';
 import 'login_screen.dart';
 import 'active_booking_screen.dart';
 import 'services_screen.dart';
+import 'support_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -102,7 +103,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       final providerServices = (_providerData?['services'] as List?)
           ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
           .toList() ?? [];
-
       for (final entry in all.entries) {
         final bk = Map<String, dynamic>.from(entry.value as Map);
         if (bk['status'] != 'searching') continue;
@@ -138,37 +138,27 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     if (_incomingBooking == null || _incomingBookingKey == null || _user == null) return;
     _alertCountdown?.cancel();
     final snap = await FirebaseDatabase.instance.ref('active_bookings/$_incomingBookingKey').get();
-    if (!snap.exists) {
-      setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-      return;
-    }
+    if (!snap.exists) { setState(() { _incomingBooking = null; _incomingBookingKey = null; }); return; }
     final current = Map<String, dynamic>.from(snap.value as Map);
     if (current['acceptedBy'] != null) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Sorry! Another provider accepted this booking.'),
-          backgroundColor: AppColors.red));
+        const SnackBar(content: Text('Sorry! Another provider accepted this booking.'), backgroundColor: AppColors.red));
       setState(() { _incomingBooking = null; _incomingBookingKey = null; });
       return;
     }
     final providerInfo = {
-      'id': _user!.uid,
-      'name': _user!.displayName ?? '',
-      'phone': _user!.phoneNumber ?? '',
-      'photo': _user!.photoURL ?? '',
+      'id': _user!.uid, 'name': _user!.displayName ?? '',
+      'phone': _user!.phoneNumber ?? '', 'photo': _user!.photoURL ?? '',
     };
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
     await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
-      'acceptedBy': providerInfo,
-      'status': 'accepted',
-      'providerId': _user!.uid,
-      'acceptedAt': DateTime.now().toIso8601String(),
+      'acceptedBy': providerInfo, 'status': 'accepted',
+      'providerId': _user!.uid, 'acceptedAt': DateTime.now().toIso8601String(),
     });
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-    if (mounted) {
-      Navigator.push(context, MaterialPageRoute(
-        builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking)));
-    }
+    if (mounted) Navigator.push(context, MaterialPageRoute(
+      builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking)));
   }
 
   void _declineBooking() {
@@ -196,12 +186,10 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppColors.teal))
-          : Stack(
-              children: [
-                _buildMainContent(),
-                if (_incomingBooking != null) _buildIncomingAlert(),
-              ],
-            ),
+          : Stack(children: [
+              _buildMainContent(),
+              if (_incomingBooking != null) _buildIncomingAlert(),
+            ]),
     );
   }
 
@@ -213,6 +201,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       padding: const EdgeInsets.all(20),
       child: Column(
         children: [
+
           // Profile card
           Container(
             padding: const EdgeInsets.all(20),
@@ -225,8 +214,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             ),
             child: Row(children: [
               CircleAvatar(
-                radius: 32,
-                backgroundColor: AppColors.brand,
+                radius: 32, backgroundColor: AppColors.brand,
                 backgroundImage: _user?.photoURL != null ? NetworkImage(_user!.photoURL!) : null,
                 child: _user?.photoURL == null
                     ? Text((_user?.displayName ?? 'P')[0].toUpperCase(),
@@ -248,7 +236,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                     border: Border.all(color: isApproved ? AppColors.green : AppColors.yellow),
                   ),
                   child: Text(
-                    isApproved ? '✅ Approved' : '⏳ Pending Approval',
+                    isApproved ? 'Approved' : 'Pending Approval',
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
                       color: isApproved ? AppColors.green : AppColors.yellow),
                   ),
@@ -259,6 +247,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
           const SizedBox(height: 16),
 
+          // Pending warning
           if (!isApproved) ...[
             Container(
               padding: const EdgeInsets.all(16),
@@ -271,7 +260,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 Icon(Icons.info_outline_rounded, color: AppColors.yellow),
                 SizedBox(width: 12),
                 Expanded(child: Text(
-                  'Your account is pending approval from admin. You\'ll be notified once approved.',
+                  'Your account is pending approval from admin. You will be notified once approved.',
                   style: TextStyle(fontSize: 13, color: AppColors.ink2),
                 )),
               ]),
@@ -289,15 +278,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             ),
             child: Row(children: [
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Availability', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                Text(_available ? '🟢 You are Online' : '🔴 You are Offline',
+                const Text('Availability',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                Text(_available ? 'You are Online' : 'You are Offline',
                   style: TextStyle(fontSize: 13, color: _available ? AppColors.green : AppColors.muted)),
               ])),
-              Switch(
-                value: _available,
-                onChanged: isApproved ? _toggleAvailability : null,
-                activeColor: AppColors.green,
-              ),
+              Switch(value: _available, onChanged: isApproved ? _toggleAvailability : null,
+                activeColor: AppColors.green),
             ]),
           ),
 
@@ -307,14 +294,14 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           Row(children: [
             _statCard('Total Jobs', '${_providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
             const SizedBox(width: 12),
-            _statCard('Rating', '${_providerData?['rating'] ?? '4.8'}★', Icons.star_rounded, AppColors.yellow),
+            _statCard('Rating', '${_providerData?['rating'] ?? '4.8'}', Icons.star_rounded, AppColors.yellow),
             const SizedBox(width: 12),
-            _statCard('Earnings', '₹${_providerData?['totalEarnings'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
+            _statCard('Earnings', 'Rs.${_providerData?['totalEarnings'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
           ]),
 
           const SizedBox(height: 16),
 
-          // Services
+          // My Services
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -322,55 +309,53 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               borderRadius: BorderRadius.circular(16),
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('My Services',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                const SizedBox(height: 12),
-                if (_providerData?['services'] == null ||
-                    (_providerData!['services'] as List?)?.isEmpty == true)
-                  const Text('No services added yet. Tap below to add your services.',
-                    style: TextStyle(fontSize: 13, color: AppColors.muted))
-                else
-                  Wrap(
-                    spacing: 8, runSpacing: 8,
-                    children: ((_providerData!['services'] as List?) ?? []).map((s) {
-                      final name = s is Map ? s['name'] ?? '' : s.toString();
-                      return Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: AppColors.tealSoft,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: AppColors.teal.withOpacity(0.3)),
-                        ),
-                        child: Text(name,
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
-                      );
-                    }).toList(),
-                  ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      final result = await Navigator.push(context,
-                        MaterialPageRoute(builder: (_) => const ServicesScreen()));
-                      if (result == true) _loadProfile();
-                    },
-                    icon: const Icon(Icons.edit_rounded, color: AppColors.teal),
-                    label: const Text('Edit My Services',
-                      style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppColors.teal),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('My Services',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink)),
+              const SizedBox(height: 12),
+              if (_providerData?['services'] == null ||
+                  (_providerData!['services'] as List?)?.isEmpty == true)
+                const Text('No services added yet. Tap below to add your services.',
+                  style: TextStyle(fontSize: 13, color: AppColors.muted))
+              else
+                Wrap(
+                  spacing: 8, runSpacing: 8,
+                  children: ((_providerData!['services'] as List?) ?? []).map((s) {
+                    final name = s is Map ? s['name'] ?? '' : s.toString();
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.tealSoft,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: AppColors.teal.withOpacity(0.3)),
+                      ),
+                      child: Text(name,
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
+                    );
+                  }).toList(),
+                ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final result = await Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const ServicesScreen()));
+                    if (result == true) _loadProfile();
+                  },
+                  icon: const Icon(Icons.edit_rounded, color: AppColors.teal),
+                  label: const Text('Edit My Services',
+                    style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.teal),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ]),
           ),
 
+          // Online status info
           if (_available && isApproved) ...[
             const SizedBox(height: 16),
             Container(
@@ -384,12 +369,37 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 Icon(Icons.radar_rounded, color: AppColors.green),
                 SizedBox(width: 12),
                 Expanded(child: Text(
-                  'You are online and visible to customers. New booking alerts will appear automatically.',
+                  'You are online. New booking alerts will appear automatically.',
                   style: TextStyle(fontSize: 13, color: AppColors.green, fontWeight: FontWeight.w600),
                 )),
               ]),
             ),
           ],
+
+          const SizedBox(height: 16),
+
+          // Help & Support
+          GestureDetector(
+            onTap: () => Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const SupportScreen())),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)],
+              ),
+              child: const Row(children: [
+                Icon(Icons.headset_mic_rounded, color: AppColors.teal),
+                SizedBox(width: 12),
+                Expanded(child: Text('Help & Support',
+                  style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink))),
+                Icon(Icons.chevron_right, color: AppColors.muted),
+              ]),
+            ),
+          ),
+
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -407,7 +417,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         child: Column(children: [
           Icon(icon, color: color, size: 24),
           const SizedBox(height: 6),
-          Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color)),
+          Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: color)),
           Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted)),
         ]),
       ),
@@ -443,7 +453,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                   ),
                   child: Column(children: [
                     Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                      const Text('🔔 New Booking!',
+                      const Text('New Booking!',
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white)),
                       Container(
                         width: 44, height: 44,
@@ -463,15 +473,15 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 Padding(
                   padding: const EdgeInsets.all(20),
                   child: Column(children: [
-                    _alertRow('🔧', 'Service', bk['service'] ?? ''),
+                    _alertRow('Service', bk['service'] ?? ''),
                     const SizedBox(height: 10),
-                    _alertRow('💰', 'Price', '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
+                    _alertRow('Price', 'Rs.${bk['price'] ?? bk['priceVal'] ?? 0}'),
                     const SizedBox(height: 10),
-                    _alertRow('📅', 'Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
+                    _alertRow('Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
                     const SizedBox(height: 10),
-                    _alertRow('📍', 'Address', bk['address'] ?? ''),
+                    _alertRow('Address', bk['address'] ?? ''),
                     const SizedBox(height: 10),
-                    _alertRow('👤', 'Customer', '${bk['customer'] ?? ''} · ${bk['phone'] ?? ''}'),
+                    _alertRow('Customer', '${bk['customer'] ?? ''} - ${bk['phone'] ?? ''}'),
                     if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
                       const SizedBox(height: 10),
                       Wrap(
@@ -486,7 +496,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                               border: Border.all(color: AppColors.teal.withOpacity(0.3)),
                             ),
                             child: Text(
-                              parts.length > 1 ? parts.sublist(1).join(' › ') : s.toString(),
+                              parts.length > 1 ? parts.sublist(1).join(' > ') : s.toString(),
                               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.teal),
                             ),
                           );
@@ -503,7 +513,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                             side: const BorderSide(color: AppColors.red),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                           ),
-                          child: const Text('✕ Decline',
+                          child: const Text('Decline',
                             style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
                         ),
                       ),
@@ -516,7 +526,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                             minimumSize: const Size(double.infinity, 52),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                           ),
-                          child: const Text('✅ Accept',
+                          child: const Text('Accept',
                             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
                         ),
                       ),
@@ -531,14 +541,12 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  Widget _alertRow(String emoji, String label, String value) {
+  Widget _alertRow(String label, String value) {
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(emoji, style: const TextStyle(fontSize: 16)),
-      const SizedBox(width: 10),
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
-        Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink)),
-      ])),
+      SizedBox(width: 80, child: Text(label,
+        style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600))),
+      Expanded(child: Text(value,
+        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink))),
     ]);
   }
 }
