@@ -349,7 +349,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               const Text('My Services', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink)),
               const SizedBox(height: 12),
               if (_providerData?['services'] == null || (_providerData!['services'] as List?)?.isEmpty == true)
-                const Text('No services added yet. Contact admin to add services.',
+                const Text('No services added yet. Tap below to add your services.',
                   style: TextStyle(fontSize: 13, color: AppColors.muted))
               else
                 Wrap(
