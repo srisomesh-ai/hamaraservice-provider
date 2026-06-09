@@ -50,6 +50,16 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Future<void> _loadProfile() async {
     if (_user == null) return;
     try {
+      // Save FCM token
+      try {
+        final token = await FirebaseMessaging.instance.getToken();
+        if (token != null) {
+          await FirebaseDatabase.instance
+              .ref('providers/${_user!.uid}/fcmToken').set(token);
+        }
+      } catch (e) {}
+      
+      final snap = await FirebaseDatabase.instance.ref('providers/${_user!.uid}').get();
       final snap = await FirebaseDatabase.instance.ref('providers/${_user!.uid}').get();
       if (snap.exists) {
         final data = Map<String, dynamic>.from(snap.value as Map);
