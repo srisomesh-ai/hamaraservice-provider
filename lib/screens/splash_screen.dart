@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
+import 'intro_screen.dart';
 import 'login_screen.dart';
 import 'dashboard_screen.dart';
 
@@ -26,10 +28,19 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   Future<void> _navigate() async {
     await Future.delayed(const Duration(seconds: 2));
     if (!mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    final introSeen = prefs.getBool('provider_intro_seen') ?? false;
     final user = FirebaseAuth.instance.currentUser;
-    Navigator.pushReplacement(context, MaterialPageRoute(
-      builder: (_) => user != null ? const DashboardScreen() : const LoginScreen(),
-    ));
+    if (!introSeen) {
+      Navigator.pushReplacement(context,
+        MaterialPageRoute(builder: (_) => const IntroScreen()));
+    } else if (user != null) {
+      Navigator.pushReplacement(context,
+        MaterialPageRoute(builder: (_) => const DashboardScreen()));
+    } else {
+      Navigator.pushReplacement(context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()));
+    }
   }
 
   @override
@@ -62,14 +73,22 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 ),
                 const SizedBox(height: 20),
                 RichText(text: const TextSpan(children: [
-                  TextSpan(text: 'Hamara', style: TextStyle(fontFamily: 'sans-serif', fontSize: 32, fontWeight: FontWeight.w800, color: Colors.white)),
-                  TextSpan(text: 'Service', style: TextStyle(fontFamily: 'sans-serif', fontSize: 32, fontWeight: FontWeight.w800, color: AppColors.brand)),
+                  TextSpan(text: 'Hamara', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800, color: Colors.white)),
+                  TextSpan(text: 'Service', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800, color: AppColors.brand)),
                 ])),
                 const SizedBox(height: 8),
-                const Text('Provider App', style: TextStyle(fontSize: 16, color: Colors.white70, fontWeight: FontWeight.w500)),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.brand.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text('PROVIDER APP', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Colors.white, letterSpacing: 1.5)),
+                ),
                 const SizedBox(height: 48),
                 const SizedBox(width: 28, height: 28,
-                  child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white54))),
+                  child: CircularProgressIndicator(strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation(Colors.white54))),
               ],
             ),
           ),
