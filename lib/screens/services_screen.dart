@@ -256,9 +256,12 @@ class _ServicesScreenState extends State<ServicesScreen> {
         final svc = _allServices.firstWhere((s) => s['name'] == e.key,
           orElse: () => {'name': e.key, 'cat': '', 'subtasks': []});
         return {
-          'name':     e.key,
-          'cat':      svc['cat'],
-          'subtasks': e.value.toList(),
+          'name':        e.key,
+          'cat':         svc['cat'],
+          'subcategory': svc['cat'],
+          'icon':        '🔧',
+          'price':       499,
+          'subtasks':    e.value.toList(),
         };
       }).toList();
 
