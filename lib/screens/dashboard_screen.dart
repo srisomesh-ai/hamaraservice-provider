@@ -60,7 +60,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       } catch (e) {}
       
       final snap = await FirebaseDatabase.instance.ref('providers/${_user!.uid}').get();
-      final snap = await FirebaseDatabase.instance.ref('providers/${_user!.uid}').get();
       if (snap.exists) {
         final data = Map<String, dynamic>.from(snap.value as Map);
         setState(() {
