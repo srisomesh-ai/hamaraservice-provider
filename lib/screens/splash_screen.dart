@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
 import 'intro_screen.dart';
@@ -29,14 +28,16 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     await Future.delayed(const Duration(seconds: 2));
     if (!mounted) return;
     final prefs = await SharedPreferences.getInstance();
-    final introSeen = prefs.getBool('provider_intro_seen') ?? false;
-    final user = FirebaseAuth.instance.currentUser;
+    final introSeen   = prefs.getBool('provider_intro_seen') ?? false;
+    final loggedIn    = prefs.getBool('provider_logged_in') ?? false;
+    final providerId  = prefs.getString('provider_id') ?? '';
+
     if (!introSeen) {
       Navigator.pushReplacement(context,
         MaterialPageRoute(builder: (_) => const IntroScreen()));
-    } else if (user != null) {
+    } else if (loggedIn && providerId.isNotEmpty) {
       Navigator.pushReplacement(context,
-        MaterialPageRoute(builder: (_) => const DashboardScreen()));
+        MaterialPageRoute(builder: (_) => DashboardScreen(providerId: providerId)));
     } else {
       Navigator.pushReplacement(context,
         MaterialPageRoute(builder: (_) => const LoginScreen()));
