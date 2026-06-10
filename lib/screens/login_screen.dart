@@ -189,17 +189,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       // Register link
                       Center(
-                        child: GestureDetector(
-                          onTap: () async {
-                            // Open web registration
-                            // launchUrl(Uri.parse('https://hamaraservice.in/provider-portal.html'));
-                          },
-                          child: RichText(text: const TextSpan(children: [
-                            TextSpan(text: 'New provider? Register at ',
-                              style: TextStyle(fontSize: 13, color: AppColors.muted)),
-                            TextSpan(text: 'hamaraservice.in',
-                              style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w700)),
-                          ])),
+                        child: TextButton(
+                          onPressed: () => Navigator.push(context,
+                            MaterialPageRoute(builder: (_) => const RegisterScreen())),
+                          child: const Text('New provider? Register here',
+                            style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w700)),
                         ),
                       ),
                     ],
