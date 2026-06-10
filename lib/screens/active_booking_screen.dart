@@ -40,9 +40,10 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     });
     // Move to bookings history
     await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'status': 'completed',
-      'completedAt': DateTime.now().toIso8601String(),
-    });
+  'status': 'completed',
+  'providerId': widget.providerId,
+  'completedAt': DateTime.now().toIso8601String(),
+});
     if (mounted) {
       showDialog(
         context: context,
