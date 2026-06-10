@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import '../utils/theme.dart';
@@ -11,13 +11,13 @@ import 'services_screen.dart';
 import 'support_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  final String providerId;
+  const DashboardScreen({super.key, required this.providerId});
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> with TickerProviderStateMixin {
-  final _user = FirebaseAuth.instance.currentUser;
   int _currentTab = 0;
   bool _available = false;
   bool _loading = true;
@@ -31,6 +31,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
+
+  String get _pid => widget.providerId;
 
   @override
   void initState() {
@@ -50,17 +52,16 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   Future<void> _loadProfile() async {
-    if (_user == null) return;
     try {
       // Save FCM token
       try {
         final token = await FirebaseMessaging.instance.getToken();
         if (token != null) {
-          await FirebaseDatabase.instance.ref('providers/${_user!.uid}/fcmToken').set(token);
+          await FirebaseDatabase.instance.ref('providers/$_pid/fcmToken').set(token);
         }
       } catch (e) {}
 
-      final snap = await FirebaseDatabase.instance.ref('providers/${_user!.uid}').get();
+      final snap = await FirebaseDatabase.instance.ref('providers/$_pid').get();
       if (snap.exists) {
         final data = Map<String, dynamic>.from(snap.value as Map);
         setState(() {
@@ -78,14 +79,14 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   Future<void> _loadBookings() async {
-    if (_user == null) return;
     try {
       final snap = await FirebaseDatabase.instance.ref('bookings').get();
       if (!snap.exists) return;
       final all = Map<String, dynamic>.from(snap.value as Map);
       final mine = all.values
           .map((v) => Map<String, dynamic>.from(v as Map))
-          .where((b) => b['providerId'] == _user!.uid)
+          .where((b) => b['providerId'] == _pid || 
+                       (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid))
           .toList()
         ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
       if (mounted) setState(() => _bookings = mine);
@@ -93,14 +94,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   Future<void> _toggleAvailability(bool val) async {
-    if (_user == null) return;
     setState(() => _available = val);
     if (val) {
       try {
         final permission = await Geolocator.requestPermission();
         if (permission != LocationPermission.denied && permission != LocationPermission.deniedForever) {
           final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-          await FirebaseDatabase.instance.ref('providers/${_user!.uid}').update({
+          await FirebaseDatabase.instance.ref('providers/$_pid').update({
             'available': true, 'lat': pos.latitude, 'lng': pos.longitude,
             'updatedAt': DateTime.now().toIso8601String(),
           });
@@ -108,7 +108,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         }
       } catch (e) {}
     }
-    await FirebaseDatabase.instance.ref('providers/${_user!.uid}').update({
+    await FirebaseDatabase.instance.ref('providers/$_pid').update({
       'available': val, 'updatedAt': DateTime.now().toIso8601String(),
     });
   }
@@ -119,7 +119,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   Future<void> _checkForBookings() async {
-    if (!_available || _incomingBooking != null || _user == null) return;
+    if (!_available || _incomingBooking != null) return;
     try {
       final snap = await FirebaseDatabase.instance.ref('active_bookings').get();
       if (!snap.exists) return;
@@ -127,6 +127,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       final providerServices = (_providerData?['services'] as List?)
           ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
           .toList() ?? [];
+
       for (final entry in all.entries) {
         final bk = Map<String, dynamic>.from(entry.value as Map);
         if (bk['status'] != 'searching') continue;
@@ -159,7 +160,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   Future<void> _acceptBooking() async {
-    if (_incomingBooking == null || _incomingBookingKey == null || _user == null) return;
+    if (_incomingBooking == null || _incomingBookingKey == null) return;
     _alertCountdown?.cancel();
     final snap = await FirebaseDatabase.instance.ref('active_bookings/$_incomingBookingKey').get();
     if (!snap.exists) { setState(() { _incomingBooking = null; _incomingBookingKey = null; }); return; }
@@ -171,23 +172,39 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       return;
     }
     final providerInfo = {
-      'id': _user!.uid, 'name': _user!.displayName ?? '',
-      'phone': _user!.phoneNumber ?? '', 'photo': _user!.photoURL ?? '',
+      'id': _pid,
+      'name': _providerData?['name'] ?? '',
+      'phone': _providerData?['phone'] ?? '',
+      'photo': _providerData?['photo'] ?? '',
     };
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
     await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
       'acceptedBy': providerInfo, 'status': 'accepted',
-      'providerId': _user!.uid, 'acceptedAt': DateTime.now().toIso8601String(),
+      'providerId': _pid, 'acceptedAt': DateTime.now().toIso8601String(),
+    });
+    await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({
+      'providerId': _pid, 'providerName': _providerData?['name'] ?? '',
+      'status': 'accepted', 'acceptedAt': DateTime.now().toIso8601String(),
     });
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
     if (mounted) Navigator.push(context, MaterialPageRoute(
-      builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking)));
+      builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking, providerId: _pid)));
   }
 
   void _declineBooking() {
     _alertCountdown?.cancel();
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+  }
+
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('provider_id');
+    await prefs.remove('provider_email');
+    await prefs.setBool('provider_logged_in', false);
+    await FirebaseDatabase.instance.ref('providers/$_pid').update({'available': false});
+    if (mounted) Navigator.pushReplacement(context,
+      MaterialPageRoute(builder: (_) => const LoginScreen()));
   }
 
   @override
@@ -226,26 +243,18 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  // ── OVERVIEW TAB ──────────────────────────────────────────────────────────
   Widget _buildOverview() {
     final status = _providerData?['status'] ?? 'pending';
     final isApproved = status == 'approved';
     final activeBookings = _bookings.where((b) =>
-      ['accepted','active','searching'].contains(b['status'])).toList();
+      ['accepted','active'].contains(b['status'])).toList();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Overview'),
         backgroundColor: AppColors.teal,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-              if (mounted) Navigator.pushReplacement(context,
-                MaterialPageRoute(builder: (_) => const LoginScreen()));
-            },
-          ),
+          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
       body: RefreshIndicator(
@@ -269,18 +278,16 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               child: Row(children: [
                 CircleAvatar(
                   radius: 30, backgroundColor: AppColors.brand,
-                  backgroundImage: _user?.photoURL != null ? NetworkImage(_user!.photoURL!) : null,
-                  child: _user?.photoURL == null
-                      ? Text((_user?.displayName ?? 'P')[0].toUpperCase(),
-                          style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700))
-                      : null,
+                  child: Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
+                    style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700)),
                 ),
                 const SizedBox(width: 14),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(_user?.displayName ?? 'Provider',
+                  Text(_providerData?['name'] ?? 'Provider',
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
-                  Text(_user?.email ?? '',
+                  Text(_providerData?['email'] ?? '',
                     style: const TextStyle(fontSize: 11, color: Colors.white60)),
+                  Text('ID: $_pid', style: const TextStyle(fontSize: 10, color: Colors.white54)),
                   const SizedBox(height: 6),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -337,30 +344,22 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
             // Stats
             Row(children: [
-              _statCard('Total Jobs', '${_providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
+              _statCard('Total Jobs', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
               const SizedBox(width: 10),
               _statCard('Rating', '${_providerData?['rating'] ?? '5.0'}', Icons.star_rounded, AppColors.yellow),
               const SizedBox(width: 10),
-              _statCard('Earnings', '₹${_providerData?['totalEarnings'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
+              _statCard('Earned', '₹${_providerData?['totalEarned'] ?? _providerData?['totalEarnings'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
             ]),
 
             const SizedBox(height: 14),
 
-            // Active bookings
             if (activeBookings.isNotEmpty) ...[
               _sectionHeader('Active Bookings', '${activeBookings.length} in progress'),
               ...activeBookings.take(3).map((b) => _bookingCard(b, compact: true)),
               const SizedBox(height: 8),
             ],
 
-            // Recent bookings
-            if (_bookings.isNotEmpty) ...[
-              _sectionHeader('Recent Bookings', 'Last ${_bookings.take(3).length}'),
-              ..._bookings.take(3).map((b) => _bookingCard(b, compact: true)),
-            ],
-
             if (_available && isApproved) ...[
-              const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(color: AppColors.greenSoft, borderRadius: BorderRadius.circular(14),
@@ -372,11 +371,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                     style: TextStyle(fontSize: 13, color: AppColors.green, fontWeight: FontWeight.w600))),
                 ]),
               ),
+              const SizedBox(height: 14),
             ],
 
-            const SizedBox(height: 14),
-
-            // Support button
             GestureDetector(
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen())),
               child: Container(
@@ -399,9 +396,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  // ── BOOKINGS TAB ──────────────────────────────────────────────────────────
   Widget _buildBookings() {
-    final active = _bookings.where((b) => ['accepted','active','searching'].contains(b['status'])).toList();
+    final active = _bookings.where((b) => ['accepted','active'].contains(b['status'])).toList();
     final completed = _bookings.where((b) => b['status'] == 'completed').toList();
     final cancelled = _bookings.where((b) => b['status'] == 'cancelled').toList();
 
@@ -415,11 +411,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             indicatorColor: AppColors.brand,
             labelColor: Colors.white,
             unselectedLabelColor: Colors.white70,
-            tabs: [
-              Tab(text: 'Active'),
-              Tab(text: 'Completed'),
-              Tab(text: 'Cancelled'),
-            ],
+            tabs: [Tab(text: 'Active'), Tab(text: 'Completed'), Tab(text: 'Cancelled')],
           ),
         ),
         body: TabBarView(children: [
@@ -478,26 +470,25 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           style: const TextStyle(fontSize: 12, color: AppColors.muted)),
         Text('${b['date'] ?? ''} at ${b['time'] ?? ''} · ₹${b['price'] ?? 0}',
           style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-        if (!compact && b['address'] != null) ...[
+        if (!compact) ...[
           const SizedBox(height: 4),
           Text(b['address'] ?? '', style: const TextStyle(fontSize: 12, color: AppColors.ink2)),
         ],
-        if (status == 'accepted' || status == 'active') ...[
+        if (['accepted','active'].contains(status)) ...[
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
               onPressed: () => Navigator.push(context, MaterialPageRoute(
                 builder: (_) => ActiveBookingScreen(
-                  bookingKey: b['id'] ?? '',
-                  booking: b,
-                ))),
+                  bookingKey: b['id'] ?? '', booking: b, providerId: _pid))),
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: AppColors.teal),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 minimumSize: const Size(double.infinity, 38),
               ),
-              child: const Text('View Booking', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+              child: const Text('View Booking',
+                style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
           ),
         ],
@@ -505,7 +496,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  // ── SERVICES TAB ──────────────────────────────────────────────────────────
   Widget _buildServices() {
     final services = (_providerData?['services'] as List?) ?? [];
     return Scaffold(
@@ -516,7 +506,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           TextButton(
             onPressed: () async {
               final result = await Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const ServicesScreen()));
+                MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
               if (result == true) _loadProfile();
             },
             child: const Text('Edit', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
@@ -524,22 +514,21 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         ],
       ),
       body: services.isEmpty
-          ? Center(
-              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                const Icon(Icons.build_rounded, size: 48, color: AppColors.muted),
-                const SizedBox(height: 12),
-                const Text('No services added yet', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.muted)),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: () async {
-                    final result = await Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const ServicesScreen()));
-                    if (result == true) _loadProfile();
-                  },
-                  child: const Text('Add Services'),
-                ),
-              ]),
-            )
+          ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Icon(Icons.build_rounded, size: 48, color: AppColors.muted),
+              const SizedBox(height: 12),
+              const Text('No services added yet',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.muted)),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () async {
+                  final result = await Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
+                  if (result == true) _loadProfile();
+                },
+                child: const Text('Add Services'),
+              ),
+            ]))
           : ListView.builder(
               padding: const EdgeInsets.all(16),
               itemCount: services.length,
@@ -549,11 +538,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 return Container(
                   margin: const EdgeInsets.only(bottom: 12),
                   padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
-                  ),
+                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Row(children: [
                       Expanded(child: Text(svc['name'] ?? '',
@@ -561,7 +547,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(20)),
-                        child: Text(svc['cat'] ?? '', style: const TextStyle(fontSize: 10, color: AppColors.teal, fontWeight: FontWeight.w700)),
+                        child: Text(svc['cat'] ?? svc['subcategory'] ?? '',
+                          style: const TextStyle(fontSize: 10, color: AppColors.teal, fontWeight: FontWeight.w700)),
                       ),
                     ]),
                     if (subtasks.isNotEmpty) ...[
@@ -581,21 +568,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  // ── PROFILE TAB ───────────────────────────────────────────────────────────
   Widget _buildProfile() {
     return Scaffold(
       appBar: AppBar(
         title: const Text('My Profile'),
         backgroundColor: AppColors.teal,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-              if (mounted) Navigator.pushReplacement(context,
-                MaterialPageRoute(builder: (_) => const LoginScreen()));
-            },
-          ),
+          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
       body: SingleChildScrollView(
@@ -603,19 +582,18 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         child: Column(children: [
           const SizedBox(height: 8),
           CircleAvatar(
-            radius: 48,
-            backgroundColor: AppColors.teal,
-            backgroundImage: _user?.photoURL != null ? NetworkImage(_user!.photoURL!) : null,
-            child: _user?.photoURL == null
-                ? Text((_user?.displayName ?? 'P')[0].toUpperCase(),
-                    style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700))
-                : null,
+            radius: 48, backgroundColor: AppColors.teal,
+            child: Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
+              style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700)),
           ),
           const SizedBox(height: 12),
-          Text(_user?.displayName ?? 'Provider',
+          Text(_providerData?['name'] ?? 'Provider',
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.ink)),
-          Text(_user?.email ?? '', style: const TextStyle(fontSize: 13, color: AppColors.muted)),
-          const SizedBox(height: 6),
+          Text(_providerData?['email'] ?? '',
+            style: const TextStyle(fontSize: 13, color: AppColors.muted)),
+          const SizedBox(height: 4),
+          Text('ID: $_pid', style: const TextStyle(fontSize: 11, color: AppColors.muted)),
+          const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
             decoration: BoxDecoration(
@@ -629,30 +607,26 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 color: (_providerData?['status'] == 'approved') ? AppColors.green : AppColors.yellow),
             ),
           ),
-
           const SizedBox(height: 24),
 
-          // Stats row
           Row(children: [
-            _statCard('Jobs Done', '${_providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
+            _statCard('Jobs Done', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
             const SizedBox(width: 10),
             _statCard('Rating', '${_providerData?['rating'] ?? '5.0'}', Icons.star_rounded, AppColors.yellow),
             const SizedBox(width: 10),
-            _statCard('Earned', '₹${_providerData?['totalEarnings'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
+            _statCard('Earned', '₹${_providerData?['totalEarned'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
           ]),
 
           const SizedBox(height: 20),
 
-          // Info cards
-          _profileInfoCard('Phone', _user?.phoneNumber ?? _providerData?['phone'] ?? 'Not set', Icons.phone_rounded),
+          _profileInfoRow('Phone', _providerData?['phone'] ?? 'Not set', Icons.phone_rounded),
           const SizedBox(height: 10),
-          _profileInfoCard('City', _providerData?['city'] ?? 'Not set', Icons.location_city_rounded),
+          _profileInfoRow('Experience', _providerData?['experience'] ?? 'Not set', Icons.work_history_rounded),
           const SizedBox(height: 10),
-          _profileInfoCard('Member Since', _providerData?['createdAt']?.toString().substring(0, 10) ?? 'N/A', Icons.calendar_today_rounded),
+          _profileInfoRow('City', _providerData?['city'] ?? _providerData?['address'] ?? 'Not set', Icons.location_city_rounded),
 
           const SizedBox(height: 20),
 
-          // Support
           GestureDetector(
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen())),
             child: Container(
@@ -669,23 +643,19 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             ),
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
 
-          // Sign out
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
-              onPressed: () async {
-                await FirebaseAuth.instance.signOut();
-                if (mounted) Navigator.pushReplacement(context,
-                  MaterialPageRoute(builder: (_) => const LoginScreen()));
-              },
+              onPressed: _logout,
               style: OutlinedButton.styleFrom(
                 minimumSize: const Size(double.infinity, 50),
                 side: const BorderSide(color: AppColors.red),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
-              child: const Text('Sign Out', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700, fontSize: 15)),
+              child: const Text('Sign Out',
+                style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700, fontSize: 15)),
             ),
           ),
           const SizedBox(height: 32),
@@ -694,7 +664,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  Widget _profileInfoCard(String label, String value, IconData icon) {
+  Widget _profileInfoRow(String label, String value, IconData icon) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12),
@@ -742,7 +712,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       case 'active': return AppColors.brand;
       case 'completed': return AppColors.green;
       case 'cancelled': return AppColors.red;
-      case 'searching': return AppColors.yellow;
       default: return AppColors.muted;
     }
   }
@@ -753,12 +722,10 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       case 'active': return 'In Progress';
       case 'completed': return 'Completed';
       case 'cancelled': return 'Cancelled';
-      case 'searching': return 'Searching';
       default: return s;
     }
   }
 
-  // ── INCOMING ALERT ────────────────────────────────────────────────────────
   Widget _buildIncomingAlert() {
     final bk = _incomingBooking!;
     return Container(
@@ -799,11 +766,11 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                   const SizedBox(height: 8),
                   _alertRow('Price', '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
                   const SizedBox(height: 8),
-                  _alertRow('Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
+                  _alertRow('Date', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
                   const SizedBox(height: 8),
                   _alertRow('Address', bk['address'] ?? ''),
                   const SizedBox(height: 8),
-                  _alertRow('Customer', '${bk['customer'] ?? ''} - ${bk['phone'] ?? ''}'),
+                  _alertRow('Customer', '${bk['customer'] ?? ''} · ${bk['phone'] ?? ''}'),
                   if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
                     const SizedBox(height: 10),
                     Wrap(spacing: 6, runSpacing: 6,
@@ -856,7 +823,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
   Widget _alertRow(String label, String value) {
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      SizedBox(width: 90, child: Text(label,
+      SizedBox(width: 80, child: Text(label,
         style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600))),
       Expanded(child: Text(value,
         style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink))),
