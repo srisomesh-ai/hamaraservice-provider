@@ -4,7 +4,8 @@ import 'package:firebase_database/firebase_database.dart';
 import '../utils/theme.dart';
 
 class ServicesScreen extends StatefulWidget {
-  const ServicesScreen({super.key});
+  final String providerId;
+  const ServicesScreen({super.key, required this.providerId});
   @override
   State<ServicesScreen> createState() => _ServicesScreenState();
 }
