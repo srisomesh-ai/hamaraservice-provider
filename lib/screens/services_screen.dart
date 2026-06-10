@@ -223,7 +223,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
   Future<void> _loadExisting() async {
     if (_user == null) return;
     try {
-      final snap = await FirebaseDatabase.instance.ref('providers/${_user!.uid}/services').get();
+      final snap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}/services').get();
       if (snap.exists && snap.value is List) {
         for (final item in snap.value as List) {
           if (item is Map) {
@@ -266,7 +266,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
         };
       }).toList();
 
-      await FirebaseDatabase.instance.ref('providers/${_user!.uid}').update({
+      await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
         'services':  services,
         'updatedAt': DateTime.now().toIso8601String(),
       });
