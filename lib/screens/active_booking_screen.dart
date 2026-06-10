@@ -7,7 +7,8 @@ import 'dashboard_screen.dart';
 class ActiveBookingScreen extends StatefulWidget {
   final String bookingKey;
   final Map<String, dynamic> booking;
-  const ActiveBookingScreen({super.key, required this.bookingKey, required this.booking});
+  final String providerId;
+  const ActiveBookingScreen({super.key, required this.bookingKey, required this.booking, required this.providerId});
   @override
   State<ActiveBookingScreen> createState() => _ActiveBookingScreenState();
 }
