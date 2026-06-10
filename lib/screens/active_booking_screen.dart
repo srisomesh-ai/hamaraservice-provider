@@ -56,7 +56,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
             TextButton(
               onPressed: () {
                 Navigator.pop(context);
-                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const DashboardScreen()));
+                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(providerId: widget.providerId)));
               },
               child: const Text('Done', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
