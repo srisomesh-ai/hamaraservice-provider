@@ -543,7 +543,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: AppColors.brandSoft ?? AppColors.yellow.withOpacity(0.1),
+                  color: AppColors.brand.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: AppColors.brand.withOpacity(0.3)),
                 ),
