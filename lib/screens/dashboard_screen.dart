@@ -213,22 +213,24 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startCountdown() {
-    // Vibrate to alert provider
-    HapticFeedback.heavyImpact();
-    Future.delayed(const Duration(milliseconds: 300), () => HapticFeedback.heavyImpact());
-    Future.delayed(const Duration(milliseconds: 600), () => HapticFeedback.heavyImpact());
-
-    _alertCountdown?.cancel();
-    _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) { t.cancel(); return; }
-      setState(() => _countdownSeconds--);
-      if (_countdownSeconds <= 0) {
-        t.cancel();
-        _bookingWatcher?.cancel();
-        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-      }
-    });
-  }
+  HapticFeedback.heavyImpact();
+  Future.delayed(const Duration(milliseconds: 300), () => HapticFeedback.heavyImpact());
+  Future.delayed(const Duration(milliseconds: 600), () => HapticFeedback.heavyImpact());
+  try {
+    final player = AudioPlayer();
+    player.play(AssetSource('sounds/alert.mp3'));
+  } catch (e) {}
+  _alertCountdown?.cancel();
+  _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
+    if (!mounted) { t.cancel(); return; }
+    setState(() => _countdownSeconds--);
+    if (_countdownSeconds <= 0) {
+      t.cancel();
+      _bookingWatcher?.cancel();
+      setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+    }
+  });
+}
 
   Future<void> _acceptBooking() async {
     if (_incomingBooking == null || _incomingBookingKey == null) return;
