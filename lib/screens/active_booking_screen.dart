@@ -183,9 +183,17 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   }
 
   void _openMaps() {
+  final lat = widget.booking['lat'];
+  final lng = widget.booking['lng'];
+  if (lat != null && lng != null && lat.toString() != '0.0') {
+    // Use exact GPS coordinates
+    launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng'));
+  } else {
+    // Fallback to address
     final address = Uri.encodeComponent(widget.booking['address'] ?? '');
     launchUrl(Uri.parse('https://www.google.com/maps/search/?api=1&query=$address'));
   }
+}
 
   @override
   Widget build(BuildContext context) {
