@@ -160,37 +160,68 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   Future<void> _acceptBooking() async {
-    if (_incomingBooking == null || _incomingBookingKey == null) return;
-    _alertCountdown?.cancel();
-    final snap = await FirebaseDatabase.instance.ref('active_bookings/$_incomingBookingKey').get();
-    if (!snap.exists) { setState(() { _incomingBooking = null; _incomingBookingKey = null; }); return; }
+  if (_incomingBooking == null || _incomingBookingKey == null) return;
+  _alertCountdown?.cancel();
+  
+  final bookingKey = _incomingBookingKey!;
+  final booking = Map<String, dynamic>.from(_incomingBooking!);
+  
+  // Dismiss alert immediately
+  setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+
+  try {
+    final snap = await FirebaseDatabase.instance
+        .ref('active_bookings/$bookingKey').get();
+    if (!snap.exists) return;
+    
     final current = Map<String, dynamic>.from(snap.value as Map);
-    if (current['acceptedBy'] != null) {
+    
+    // Check if already accepted by someone else
+    final existingAccept = current['acceptedBy'];
+    if (existingAccept != null && existingAccept != false) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Sorry! Another provider accepted this booking.'), backgroundColor: AppColors.red));
-      setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+        const SnackBar(
+          content: Text('Booking already accepted by another provider.'),
+          backgroundColor: AppColors.red));
       return;
     }
+
     final providerInfo = {
       'id': _pid,
       'name': _providerData?['name'] ?? '',
       'phone': _providerData?['phone'] ?? '',
       'photo': _providerData?['photo'] ?? '',
     };
-    final bookingKey = _incomingBookingKey!;
-    final booking = Map<String, dynamic>.from(_incomingBooking!);
+
+    // Update active_bookings
     await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
-      'acceptedBy': providerInfo, 'status': 'accepted',
-      'providerId': _pid, 'acceptedAt': DateTime.now().toIso8601String(),
+      'acceptedBy': providerInfo,
+      'status': 'accepted',
+      'providerId': _pid,
+      'providerName': _providerData?['name'] ?? '',
+      'acceptedAt': DateTime.now().toIso8601String(),
     });
+
+    // Update bookings collection too — this is what customer sees
     await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({
-      'providerId': _pid, 'providerName': _providerData?['name'] ?? '',
-      'status': 'accepted', 'acceptedAt': DateTime.now().toIso8601String(),
+      'acceptedBy': providerInfo,
+      'status': 'accepted',
+      'providerId': _pid,
+      'providerName': _providerData?['name'] ?? '',
+      'acceptedAt': DateTime.now().toIso8601String(),
     });
-    setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+
     if (mounted) Navigator.push(context, MaterialPageRoute(
-      builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking, providerId: _pid)));
+      builder: (_) => ActiveBookingScreen(
+        bookingKey: bookingKey,
+        booking: booking,
+        providerId: _pid,
+      )));
+  } catch (e) {
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
   }
+}
 
   void _declineBooking() {
     _alertCountdown?.cancel();
