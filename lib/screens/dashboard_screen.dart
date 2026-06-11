@@ -116,9 +116,34 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startPolling() {
-    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
-    _checkForBookings();
-  }
+  // Real-time listener on active_bookings
+  FirebaseDatabase.instance.ref('active_bookings')
+    .onChildAdded.listen((event) {
+      if (!mounted || !_available) return;
+      if (_incomingBooking != null) return;
+      try {
+        final bk = Map<String, dynamic>.from(event.snapshot.value as Map);
+        if (bk['status'] != 'searching') return;
+        if (bk['acceptedBy'] != null) return;
+        final svcName = (bk['service'] ?? '').toString().toLowerCase();
+        final providerServices = (_providerData?['services'] as List?)
+            ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
+            .toList() ?? [];
+        if (providerServices.isNotEmpty &&
+            !providerServices.any((s) => s == svcName)) return;
+        setState(() {
+          _incomingBooking = bk;
+          _incomingBookingKey = event.snapshot.key;
+          _countdownSeconds = 30;
+        });
+        _startCountdown();
+        _watchBookingStatus(event.snapshot.key!);
+      } catch (e) {}
+    });
+
+  // Also poll every 5 seconds as backup
+  _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
+}
 
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
