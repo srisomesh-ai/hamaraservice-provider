@@ -214,9 +214,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startCountdown() {
-  HapticFeedback.heavyImpact();
-  Future.delayed(const Duration(milliseconds: 300), () => HapticFeedback.heavyImpact());
-  Future.delayed(const Duration(milliseconds: 600), () => HapticFeedback.heavyImpact());
+  void _startCountdown() {
+  // Strong vibration pattern
+  try {
+    Vibration.vibrate(pattern: [0, 500, 200, 500, 200, 500], repeat: 2);
+  } catch (e) {
+    HapticFeedback.heavyImpact();
+  }
   _alertCountdown?.cancel();
   _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
     if (!mounted) { t.cancel(); return; }
@@ -224,10 +228,11 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     if (_countdownSeconds <= 0) {
       t.cancel();
       _bookingWatcher?.cancel();
+      Vibration.cancel();
       setState(() { _incomingBooking = null; _incomingBookingKey = null; });
     }
   });
-}
+  }
 
   Future<void> _acceptBooking() async {
     if (_incomingBooking == null || _incomingBookingKey == null) return;
