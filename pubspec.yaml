@@ -20,6 +20,7 @@ dependencies:
   url_launcher: ^6.2.4
   google_sign_in: ^6.1.6
   geocoding: ^3.0.0
+  vibration: ^1.8.4
 
 dev_dependencies:
   flutter_test:
