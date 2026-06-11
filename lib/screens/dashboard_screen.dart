@@ -238,6 +238,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     if (_incomingBooking == null || _incomingBookingKey == null) return;
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
+    Vibration.cancel();
 
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
