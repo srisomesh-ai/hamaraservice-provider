@@ -1,4 +1,7 @@
+import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../utils/theme.dart';
@@ -8,7 +11,12 @@ class ActiveBookingScreen extends StatefulWidget {
   final String bookingKey;
   final Map<String, dynamic> booking;
   final String providerId;
-  const ActiveBookingScreen({super.key, required this.bookingKey, required this.booking, required this.providerId});
+  const ActiveBookingScreen({
+    super.key,
+    required this.bookingKey,
+    required this.booking,
+    required this.providerId,
+  });
   @override
   State<ActiveBookingScreen> createState() => _ActiveBookingScreenState();
 }
@@ -16,11 +24,38 @@ class ActiveBookingScreen extends StatefulWidget {
 class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   String _status = 'accepted';
   bool _loading = false;
+  String _otp = '';
+  bool _showOtpEntry = false;
+  final List<TextEditingController> _otpCtrls = List.generate(4, (_) => TextEditingController());
+  final List<FocusNode> _otpFocus = List.generate(4, (_) => FocusNode());
+  String _otpError = '';
+  StreamSubscription? _statusWatcher;
 
   @override
   void initState() {
     super.initState();
     _status = widget.booking['status'] ?? 'accepted';
+    _watchStatus();
+  }
+
+  @override
+  void dispose() {
+    _statusWatcher?.cancel();
+    for (final c in _otpCtrls) c.dispose();
+    for (final f in _otpFocus) f.dispose();
+    super.dispose();
+  }
+
+  void _watchStatus() {
+    _statusWatcher = FirebaseDatabase.instance
+        .ref('active_bookings/${widget.bookingKey}/status')
+        .onValue
+        .listen((event) {
+      final status = event.snapshot.value?.toString() ?? '';
+      if (mounted && status.isNotEmpty) {
+        setState(() => _status = status);
+      }
+    });
   }
 
   Future<void> _updateStatus(String newStatus) async {
@@ -29,21 +64,96 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       'status': newStatus,
       'updatedAt': DateTime.now().toIso8601String(),
     });
+    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
+      'status': newStatus,
+      'updatedAt': DateTime.now().toIso8601String(),
+    });
     setState(() { _status = newStatus; _loading = false; });
   }
 
-  Future<void> _completeBooking() async {
+  Future<void> _initiateOTP() async {
     setState(() => _loading = true);
+
+    // Generate 4-digit OTP
+    final otp = (1000 + Random().nextInt(9000)).toString();
+    setState(() { _otp = otp; _loading = false; });
+
+    // Write OTP to Firebase — customer will see this
+    await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').set({
+      'otp': otp,
+      'bookingId': widget.bookingKey,
+      'service': widget.booking['service'] ?? '',
+      'customer': widget.booking['customer'] ?? '',
+      'providerName': widget.booking['providerName'] ?? '',
+      'generatedAt': DateTime.now().millisecondsSinceEpoch,
+      'status': 'waiting',
+    });
+
     await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
+      'status': 'otp_sent',
+      'otpSentAt': DateTime.now().millisecondsSinceEpoch,
+    });
+    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
+      'status': 'otp_sent',
+    });
+
+    setState(() { _status = 'otp_sent'; _showOtpEntry = true; });
+  }
+
+  Future<void> _verifyOTP() async {
+    final entered = _otpCtrls.map((c) => c.text).join('');
+    if (entered.length < 4) {
+      setState(() => _otpError = 'Please enter all 4 digits');
+      return;
+    }
+
+    // Read OTP from Firebase
+    final snap = await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}/otp').get();
+    final correctOtp = snap.value?.toString() ?? '';
+
+    if (entered != correctOtp) {
+      setState(() => _otpError = 'Incorrect OTP. Ask customer to check their app.');
+      HapticFeedback.heavyImpact();
+      for (final c in _otpCtrls) c.clear();
+      _otpFocus[0].requestFocus();
+      return;
+    }
+
+    // OTP correct — complete job
+    setState(() { _loading = true; _otpError = ''; });
+
+    await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').update({
+      'status': 'verified',
+      'verifiedAt': DateTime.now().millisecondsSinceEpoch,
+    });
+
+    await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
+      'status': 'completed',
+      'otpVerifiedAt': DateTime.now().millisecondsSinceEpoch,
+      'completedAt': DateTime.now().toIso8601String(),
+    });
+
+    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
       'status': 'completed',
       'completedAt': DateTime.now().toIso8601String(),
     });
-    // Move to bookings history
-    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-  'status': 'completed',
-  'providerId': widget.providerId,
-  'completedAt': DateTime.now().toIso8601String(),
-});
+
+    // Update provider stats
+    final provSnap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}').get();
+    if (provSnap.exists) {
+      final data = Map<String, dynamic>.from(provSnap.value as Map);
+      final totalBookings = ((data['totalBookings'] ?? data['totalJobs'] ?? 0) as num).toInt() + 1;
+      final price = (widget.booking['priceVal'] ?? widget.booking['price'] ?? 0);
+      final earned = ((data['totalEarned'] ?? 0) as num).toDouble() + (price is num ? price.toDouble() : 0);
+      await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
+        'totalBookings': totalBookings,
+        'totalJobs': totalBookings,
+        'totalEarned': earned,
+      });
+    }
+
+    setState(() => _loading = false );
+
     if (mounted) {
       showDialog(
         context: context,
@@ -56,7 +166,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
             TextButton(
               onPressed: () {
                 Navigator.pop(context);
-                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(providerId: widget.providerId)));
+                Navigator.pushReplacement(context, MaterialPageRoute(
+                  builder: (_) => DashboardScreen(providerId: widget.providerId)));
               },
               child: const Text('Done', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
@@ -88,159 +199,251 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            // Status banner
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF0D3D47), AppColors.teal],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(16),
+        child: Column(children: [
+
+          // Status banner
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF0D3D47), AppColors.teal],
+                begin: Alignment.topLeft, end: Alignment.bottomRight,
               ),
-              child: Row(children: [
-                const Text('🔧', style: TextStyle(fontSize: 32)),
-                const SizedBox(width: 12),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(bk['service'] ?? 'Service',
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
-                  Text('Status: $_status', style: const TextStyle(fontSize: 13, color: Colors.white70)),
-                ])),
-                Text('₹${bk['price'] ?? bk['priceVal'] ?? 0}',
-                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white)),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Row(children: [
+              const Text('🔧', style: TextStyle(fontSize: 32)),
+              const SizedBox(width: 12),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(bk['service'] ?? 'Service',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                Text('Status: ${_statusLabel(_status)}',
+                  style: const TextStyle(fontSize: 12, color: Colors.white70)),
+              ])),
+              Text('₹${bk['price'] ?? bk['priceVal'] ?? 0}',
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white)),
+            ]),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Customer details
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Customer Details', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
+              const SizedBox(height: 12),
+              _detailRow(Icons.person_rounded, 'Name', bk['customer'] ?? ''),
+              _detailRow(Icons.phone_rounded, 'Phone', bk['phone'] ?? ''),
+              _detailRow(Icons.calendar_today_rounded, 'Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
+              _detailRow(Icons.location_on_rounded, 'Address', bk['address'] ?? ''),
+              _detailRow(Icons.currency_rupee_rounded, 'Amount', '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
+            ]),
+          ),
+
+          // Summary chips
+          if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Selected Services', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                const SizedBox(height: 10),
+                Wrap(spacing: 6, runSpacing: 6,
+                  children: (bk['summary'] as List).map((s) {
+                    final parts = s.toString().split(' > ');
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: AppColors.teal.withOpacity(0.3))),
+                      child: Text(parts.length > 1 ? parts.sublist(1).join(' › ') : s.toString(),
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
+                    );
+                  }).toList()),
               ]),
             ),
-
-            const SizedBox(height: 16),
-
-            // Customer details
-            _card('Customer Details', [
-              _detailRow('👤', 'Name', bk['customer'] ?? ''),
-              _detailRow('📞', 'Phone', bk['phone'] ?? ''),
-              _detailRow('📅', 'Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
-              _detailRow('📍', 'Address', bk['address'] ?? ''),
-            ]),
-
-            const SizedBox(height: 12),
-
-            // Summary chips
-            if ((bk['summary'] as List?)?.isNotEmpty == true)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
-                ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Selected Services', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                  const SizedBox(height: 10),
-                  Wrap(spacing: 6, runSpacing: 6,
-                    children: (bk['summary'] as List).map((s) {
-                      final parts = s.toString().split(' > ');
-                      return Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: AppColors.teal.withOpacity(0.3))),
-                        child: Text(parts.length > 1 ? parts.sublist(1).join(' › ') : s.toString(),
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
-                      );
-                    }).toList()),
-                ]),
-              ),
-
-            const SizedBox(height: 16),
-
-            // Action buttons
-            Row(children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _callCustomer,
-                  icon: const Icon(Icons.phone_rounded, color: AppColors.teal),
-                  label: const Text('Call', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size(double.infinity, 48),
-                    side: const BorderSide(color: AppColors.teal),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _openMaps,
-                  icon: const Icon(Icons.map_rounded, color: AppColors.brand),
-                  label: const Text('Navigate', style: TextStyle(color: AppColors.brand, fontWeight: FontWeight.w700)),
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size(double.infinity, 48),
-                    side: const BorderSide(color: AppColors.brand),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-            ]),
-
-            const SizedBox(height: 12),
-
-            if (_status == 'accepted')
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _loading ? null : () => _updateStatus('active'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.brand,
-                    minimumSize: const Size(double.infinity, 52),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: const Text('🚀 Start Service', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
-                ),
-              ),
-
-            if (_status == 'active')
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _loading ? null : _completeBooking,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.green,
-                    minimumSize: const Size(double.infinity, 52),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: _loading
-                      ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white)))
-                      : const Text('✅ Mark as Complete', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
-                ),
-              ),
           ],
-        ),
+
+          const SizedBox(height: 16),
+
+          // Action buttons — Call & Navigate
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _callCustomer,
+                icon: const Icon(Icons.phone_rounded, color: AppColors.teal),
+                label: const Text('Call', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 48),
+                  side: const BorderSide(color: AppColors.teal),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _openMaps,
+                icon: const Icon(Icons.map_rounded, color: AppColors.brand),
+                label: const Text('Navigate', style: TextStyle(color: AppColors.brand, fontWeight: FontWeight.w700)),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 48),
+                  side: const BorderSide(color: AppColors.brand),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          ]),
+
+          const SizedBox(height: 16),
+
+          // Action buttons based on status
+          if (_status == 'accepted') ...[
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _loading ? null : () => _updateStatus('active'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.brand,
+                  minimumSize: const Size(double.infinity, 52),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: const Text('Start Service', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
+              ),
+            ),
+          ],
+
+          if (_status == 'active') ...[
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _loading ? null : _initiateOTP,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.green,
+                  minimumSize: const Size(double.infinity, 52),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: _loading
+                    ? const SizedBox(width: 22, height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white)))
+                    : const Text('Complete Job (Get OTP)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
+              ),
+            ),
+          ],
+
+          // OTP entry section
+          if (_status == 'otp_sent' || _showOtpEntry) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.green.withOpacity(0.3)),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
+              ),
+              child: Column(children: [
+                const Icon(Icons.lock_rounded, color: AppColors.green, size: 36),
+                const SizedBox(height: 12),
+                const Text('Enter OTP from Customer',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                const SizedBox(height: 6),
+                Text('Ask ${bk['customer'] ?? 'customer'} to open their app and read you the 4-digit code.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: AppColors.muted)),
+                const SizedBox(height: 20),
+
+                // OTP input boxes
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(4, (i) => Container(
+                    width: 60, height: 64,
+                    margin: const EdgeInsets.symmetric(horizontal: 6),
+                    child: TextField(
+                      controller: _otpCtrls[i],
+                      focusNode: _otpFocus[i],
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      maxLength: 1,
+                      style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+                      decoration: InputDecoration(
+                        counterText: '',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: AppColors.line, width: 2),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: AppColors.green, width: 2),
+                        ),
+                      ),
+                      onChanged: (v) {
+                        if (v.isNotEmpty && i < 3) {
+                          _otpFocus[i + 1].requestFocus();
+                        }
+                        if (v.isEmpty && i > 0) {
+                          _otpFocus[i - 1].requestFocus();
+                        }
+                        // Auto verify when all 4 entered
+                        final all = _otpCtrls.map((c) => c.text).join('');
+                        if (all.length == 4) _verifyOTP();
+                      },
+                    ),
+                  )),
+                ),
+
+                if (_otpError.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF5F5),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.red),
+                    ),
+                    child: Text(_otpError,
+                      style: const TextStyle(fontSize: 12, color: AppColors.red, fontWeight: FontWeight.w600)),
+                  ),
+                ],
+
+                const SizedBox(height: 16),
+
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _loading ? null : _verifyOTP,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.green,
+                      minimumSize: const Size(double.infinity, 50),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: _loading
+                        ? const SizedBox(width: 22, height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white)))
+                        : const Text('Verify OTP & Complete',
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+                  ),
+                ),
+              ]),
+            ),
+          ],
+
+          const SizedBox(height: 20),
+        ]),
       ),
     );
   }
 
-  Widget _card(String title, List<Widget> children) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
-        const SizedBox(height: 12),
-        ...children,
-      ]),
-    );
-  }
-
-  Widget _detailRow(String emoji, String label, String value) {
+  Widget _detailRow(IconData icon, String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(emoji, style: const TextStyle(fontSize: 16)),
+        Icon(icon, size: 16, color: AppColors.teal),
         const SizedBox(width: 10),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
@@ -248,5 +451,15 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         ])),
       ]),
     );
+  }
+
+  String _statusLabel(String s) {
+    switch (s) {
+      case 'accepted': return 'Accepted — Ready to Start';
+      case 'active': return 'In Progress';
+      case 'otp_sent': return 'Waiting for OTP Verification';
+      case 'completed': return 'Completed';
+      default: return s;
+    }
   }
 }
