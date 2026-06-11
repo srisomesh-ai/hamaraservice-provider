@@ -5,6 +5,9 @@ import android.app.NotificationManager
 import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.content.Context
 import io.flutter.embedding.android.FlutterActivity
 
 class MainActivity: FlutterActivity() {
@@ -15,22 +18,21 @@ class MainActivity: FlutterActivity() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channelId = "booking_alerts"
-            val channelName = "Booking Alerts"
-            val importance = NotificationManager.IMPORTANCE_HIGH
-            val channel = NotificationChannel(channelId, channelName, importance).apply {
+            val manager = getSystemService(NotificationManager::class.java)
+
+            // High priority channel for booking alerts
+            val channel = NotificationChannel(
+                "booking_alerts",
+                "Booking Alerts",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
                 description = "New booking notifications"
                 enableVibration(true)
-                vibrationPattern = longArrayOf(0, 500, 200, 500)
-                setSound(
-                    Uri.parse("android.resource://$packageName/raw/notification"),
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                        .build()
-                )
+                vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
+                enableLights(true)
+                setShowBadge(true)
             }
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+            manager.createNotificationChannel(channel)
         }
     }
 }
