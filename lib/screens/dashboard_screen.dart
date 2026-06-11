@@ -148,7 +148,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startCountdown() {
-    _alertCountdown?.cancel();
+  // Vibrate
+  HapticFeedback.heavyImpact();
+  _alertCountdown?.cancel();
     _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
       setState(() => _countdownSeconds--);
