@@ -217,10 +217,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   HapticFeedback.heavyImpact();
   Future.delayed(const Duration(milliseconds: 300), () => HapticFeedback.heavyImpact());
   Future.delayed(const Duration(milliseconds: 600), () => HapticFeedback.heavyImpact());
-  try {
-    final player = AudioPlayer();
-    player.play(AssetSource('sounds/alert.mp3'));
-  } catch (e) {}
   _alertCountdown?.cancel();
   _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
     if (!mounted) { t.cancel(); return; }
