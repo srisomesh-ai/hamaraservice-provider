@@ -115,9 +115,34 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startPolling() {
-    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
-    _checkForBookings();
-  }
+  _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
+  _checkForBookings();
+}
+
+void _watchIncomingBooking(String bookingKey) {
+  FirebaseDatabase.instance.ref('active_bookings/$bookingKey/status')
+    .onValue.listen((event) {
+      if (!mounted) return;
+      final status = event.snapshot.value?.toString() ?? '';
+      if (status == 'cancelled' || status == 'accepted') {
+        // Cancel if it was accepted by someone else
+        if (status == 'accepted' && _incomingBookingKey == bookingKey) {
+          _alertCountdown?.cancel();
+          setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Booking was accepted by another provider.'),
+              backgroundColor: AppColors.red));
+        }
+        if (status == 'cancelled' && _incomingBookingKey == bookingKey) {
+          _alertCountdown?.cancel();
+          setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Customer cancelled this booking.'),
+              backgroundColor: AppColors.muted));
+        }
+      }
+    });
+}
 
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
