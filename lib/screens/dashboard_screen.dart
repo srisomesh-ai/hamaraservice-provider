@@ -28,6 +28,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   String? _incomingBookingKey;
   Timer? _pollTimer;
   Timer? _alertCountdown;
+  StreamSubscription? _bookingWatcher;
   int _countdownSeconds = 30;
 
   late AnimationController _pulseCtrl;
@@ -48,13 +49,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   void dispose() {
     _pollTimer?.cancel();
     _alertCountdown?.cancel();
+    _bookingWatcher?.cancel();
     _pulseCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _loadProfile() async {
     try {
-      // Save FCM token
       try {
         final token = await FirebaseMessaging.instance.getToken();
         if (token != null) {
@@ -86,7 +87,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       final all = Map<String, dynamic>.from(snap.value as Map);
       final mine = all.values
           .map((v) => Map<String, dynamic>.from(v as Map))
-          .where((b) => b['providerId'] == _pid || 
+          .where((b) => b['providerId'] == _pid ||
                        (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid))
           .toList()
         ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
@@ -115,34 +116,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startPolling() {
-  _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
-  _checkForBookings();
-}
-
-void _watchIncomingBooking(String bookingKey) {
-  FirebaseDatabase.instance.ref('active_bookings/$bookingKey/status')
-    .onValue.listen((event) {
-      if (!mounted) return;
-      final status = event.snapshot.value?.toString() ?? '';
-      if (status == 'cancelled' || status == 'accepted') {
-        // Cancel if it was accepted by someone else
-        if (status == 'accepted' && _incomingBookingKey == bookingKey) {
-          _alertCountdown?.cancel();
-          setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Booking was accepted by another provider.'),
-              backgroundColor: AppColors.red));
-        }
-        if (status == 'cancelled' && _incomingBookingKey == bookingKey) {
-          _alertCountdown?.cancel();
-          setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Customer cancelled this booking.'),
-              backgroundColor: AppColors.muted));
-        }
-      }
-    });
-}
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
+    _checkForBookings();
+  }
 
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
@@ -167,92 +143,132 @@ void _watchIncomingBooking(String bookingKey) {
             _countdownSeconds = 30;
           });
           _startCountdown();
+          _watchBookingStatus(entry.key);
         }
         break;
       }
     } catch (e) {}
   }
 
+  // Watch for customer cancellation in real-time
+  void _watchBookingStatus(String bookingKey) {
+    _bookingWatcher?.cancel();
+    _bookingWatcher = FirebaseDatabase.instance
+        .ref('active_bookings/$bookingKey/status')
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final status = event.snapshot.value?.toString() ?? '';
+      if (_incomingBookingKey != bookingKey) return;
+
+      if (status == 'cancelled') {
+        _alertCountdown?.cancel();
+        _bookingWatcher?.cancel();
+        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Customer cancelled this booking.'),
+            backgroundColor: AppColors.muted,
+            behavior: SnackBarBehavior.floating,
+          ));
+      } else if (status == 'accepted') {
+        // Check if accepted by someone else
+        FirebaseDatabase.instance
+            .ref('active_bookings/$bookingKey/acceptedBy/id')
+            .get()
+            .then((snap) {
+          if (snap.value?.toString() != _pid) {
+            _alertCountdown?.cancel();
+            _bookingWatcher?.cancel();
+            if (mounted) setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+          }
+        });
+      }
+    });
+  }
+
   void _startCountdown() {
-  // Vibrate
-  HapticFeedback.heavyImpact();
-  _alertCountdown?.cancel();
+    // Vibrate to alert provider
+    HapticFeedback.heavyImpact();
+    Future.delayed(const Duration(milliseconds: 300), () => HapticFeedback.heavyImpact());
+    Future.delayed(const Duration(milliseconds: 600), () => HapticFeedback.heavyImpact());
+
+    _alertCountdown?.cancel();
     _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
       setState(() => _countdownSeconds--);
       if (_countdownSeconds <= 0) {
         t.cancel();
+        _bookingWatcher?.cancel();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
       }
     });
   }
 
   Future<void> _acceptBooking() async {
-  if (_incomingBooking == null || _incomingBookingKey == null) return;
-  _alertCountdown?.cancel();
-  
-  final bookingKey = _incomingBookingKey!;
-  final booking = Map<String, dynamic>.from(_incomingBooking!);
-  
-  // Dismiss alert immediately
-  setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+    if (_incomingBooking == null || _incomingBookingKey == null) return;
+    _alertCountdown?.cancel();
+    _bookingWatcher?.cancel();
 
-  try {
-    final snap = await FirebaseDatabase.instance
-        .ref('active_bookings/$bookingKey').get();
-    if (!snap.exists) return;
-    
-    final current = Map<String, dynamic>.from(snap.value as Map);
-    
-    // Check if already accepted by someone else
-    final existingAccept = current['acceptedBy'];
-    if (existingAccept != null && existingAccept != false) {
+    final bookingKey = _incomingBookingKey!;
+    final booking = Map<String, dynamic>.from(_incomingBooking!);
+
+    setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+
+    try {
+      final snap = await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get();
+      if (!snap.exists) return;
+      final current = Map<String, dynamic>.from(snap.value as Map);
+
+      final existingAccept = current['acceptedBy'];
+      if (existingAccept != null && existingAccept.toString() != 'null') {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Booking already accepted by another provider.'),
+            backgroundColor: AppColors.red));
+        return;
+      }
+
+      final providerInfo = {
+        'id': _pid,
+        'name': _providerData?['name'] ?? '',
+        'phone': _providerData?['phone'] ?? '',
+        'photo': _providerData?['photo'] ?? '',
+      };
+
+      // Update active_bookings
+      await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
+        'acceptedBy': providerInfo,
+        'status': 'accepted',
+        'providerId': _pid,
+        'providerName': _providerData?['name'] ?? '',
+        'acceptedAt': DateTime.now().toIso8601String(),
+      });
+
+      // Update bookings collection — customer sees this
+      await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({
+        'acceptedBy': providerInfo,
+        'status': 'accepted',
+        'providerId': _pid,
+        'providerName': _providerData?['name'] ?? '',
+        'acceptedAt': DateTime.now().toIso8601String(),
+      });
+
+      if (mounted) Navigator.push(context, MaterialPageRoute(
+        builder: (_) => ActiveBookingScreen(
+          bookingKey: bookingKey,
+          booking: booking,
+          providerId: _pid,
+        )));
+    } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Booking already accepted by another provider.'),
+        SnackBar(content: Text('Error accepting booking: $e'),
           backgroundColor: AppColors.red));
-      return;
     }
-
-    final providerInfo = {
-      'id': _pid,
-      'name': _providerData?['name'] ?? '',
-      'phone': _providerData?['phone'] ?? '',
-      'photo': _providerData?['photo'] ?? '',
-    };
-
-    // Update active_bookings
-    await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
-      'acceptedBy': providerInfo,
-      'status': 'accepted',
-      'providerId': _pid,
-      'providerName': _providerData?['name'] ?? '',
-      'acceptedAt': DateTime.now().toIso8601String(),
-    });
-
-    // Update bookings collection too — this is what customer sees
-    await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({
-      'acceptedBy': providerInfo,
-      'status': 'accepted',
-      'providerId': _pid,
-      'providerName': _providerData?['name'] ?? '',
-      'acceptedAt': DateTime.now().toIso8601String(),
-    });
-
-    if (mounted) Navigator.push(context, MaterialPageRoute(
-      builder: (_) => ActiveBookingScreen(
-        bookingKey: bookingKey,
-        booking: booking,
-        providerId: _pid,
-      )));
-  } catch (e) {
-    if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
   }
-}
 
   void _declineBooking() {
     _alertCountdown?.cancel();
+    _bookingWatcher?.cancel();
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
   }
 
@@ -261,7 +277,9 @@ void _watchIncomingBooking(String bookingKey) {
     await prefs.remove('provider_id');
     await prefs.remove('provider_email');
     await prefs.setBool('provider_logged_in', false);
-    await FirebaseDatabase.instance.ref('providers/$_pid').update({'available': false});
+    try {
+      await FirebaseDatabase.instance.ref('providers/$_pid').update({'available': false});
+    } catch (e) {}
     if (mounted) Navigator.pushReplacement(context,
       MaterialPageRoute(builder: (_) => const LoginScreen()));
   }
@@ -323,7 +341,6 @@ void _watchIncomingBooking(String bookingKey) {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           child: Column(children: [
-
             // Profile card
             Container(
               padding: const EdgeInsets.all(20),
@@ -401,7 +418,6 @@ void _watchIncomingBooking(String bookingKey) {
 
             const SizedBox(height: 14),
 
-            // Stats
             Row(children: [
               _statCard('Total Jobs', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
               const SizedBox(width: 10),
@@ -617,7 +633,8 @@ void _watchIncomingBooking(String bookingKey) {
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(20),
                             border: Border.all(color: AppColors.line)),
-                          child: Text(s.toString(), style: const TextStyle(fontSize: 11, color: AppColors.ink2)),
+                          child: Text(s.toString(),
+                            style: const TextStyle(fontSize: 11, color: AppColors.ink2)),
                         )).toList()),
                     ],
                   ]),
@@ -667,7 +684,6 @@ void _watchIncomingBooking(String bookingKey) {
             ),
           ),
           const SizedBox(height: 24),
-
           Row(children: [
             _statCard('Jobs Done', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
             const SizedBox(width: 10),
@@ -675,17 +691,13 @@ void _watchIncomingBooking(String bookingKey) {
             const SizedBox(width: 10),
             _statCard('Earned', '₹${_providerData?['totalEarned'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
           ]),
-
           const SizedBox(height: 20),
-
           _profileInfoRow('Phone', _providerData?['phone'] ?? 'Not set', Icons.phone_rounded),
           const SizedBox(height: 10),
           _profileInfoRow('Experience', _providerData?['experience'] ?? 'Not set', Icons.work_history_rounded),
           const SizedBox(height: 10),
           _profileInfoRow('City', _providerData?['city'] ?? _providerData?['address'] ?? 'Not set', Icons.location_city_rounded),
-
           const SizedBox(height: 20),
-
           GestureDetector(
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen())),
             child: Container(
@@ -701,9 +713,7 @@ void _watchIncomingBooking(String bookingKey) {
               ]),
             ),
           ),
-
           const SizedBox(height: 16),
-
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
@@ -818,60 +828,62 @@ void _watchIncomingBooking(String bookingKey) {
                   ),
                 ]),
               ),
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(children: [
-                  _alertRow('Service', bk['service'] ?? ''),
-                  const SizedBox(height: 8),
-                  _alertRow('Price', '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
-                  const SizedBox(height: 8),
-                  _alertRow('Date', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
-                  const SizedBox(height: 8),
-                  _alertRow('Address', bk['address'] ?? ''),
-                  const SizedBox(height: 8),
-                  _alertRow('Customer', '${bk['customer'] ?? ''} · ${bk['phone'] ?? ''}'),
-                  if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
-                    const SizedBox(height: 10),
-                    Wrap(spacing: 6, runSpacing: 6,
-                      children: (bk['summary'] as List).map((s) {
-                        final parts = s.toString().split(' > ');
-                        return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(color: AppColors.tealSoft,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: AppColors.teal.withOpacity(0.3))),
-                          child: Text(parts.length > 1 ? parts.sublist(1).join(' > ') : s.toString(),
-                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.teal)),
-                        );
-                      }).toList()),
-                  ],
-                  const SizedBox(height: 20),
-                  Row(children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: _declineBooking,
-                        style: OutlinedButton.styleFrom(
-                          minimumSize: const Size(double.infinity, 52),
-                          side: const BorderSide(color: AppColors.red),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-                        child: const Text('Decline',
-                          style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(children: [
+                    _alertRow('Service', bk['service'] ?? ''),
+                    const SizedBox(height: 8),
+                    _alertRow('Price', '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
+                    const SizedBox(height: 8),
+                    _alertRow('Date', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
+                    const SizedBox(height: 8),
+                    _alertRow('Address', bk['address'] ?? ''),
+                    const SizedBox(height: 8),
+                    _alertRow('Customer', '${bk['customer'] ?? ''} · ${bk['phone'] ?? ''}'),
+                    if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
+                      const SizedBox(height: 10),
+                      Wrap(spacing: 6, runSpacing: 6,
+                        children: (bk['summary'] as List).map((s) {
+                          final parts = s.toString().split(' > ');
+                          return Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(color: AppColors.tealSoft,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: AppColors.teal.withOpacity(0.3))),
+                            child: Text(parts.length > 1 ? parts.sublist(1).join(' > ') : s.toString(),
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.teal)),
+                          );
+                        }).toList()),
+                    ],
+                    const SizedBox(height: 20),
+                    Row(children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _declineBooking,
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size(double.infinity, 52),
+                            side: const BorderSide(color: AppColors.red),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                          child: const Text('Decline',
+                            style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: _acceptBooking,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.green,
-                          minimumSize: const Size(double.infinity, 52),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-                        child: const Text('Accept',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: _acceptBooking,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.green,
+                            minimumSize: const Size(double.infinity, 52),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                          child: const Text('Accept',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                        ),
                       ),
-                    ),
+                    ]),
                   ]),
-                ]),
+                ),
               ),
             ]),
           ),
