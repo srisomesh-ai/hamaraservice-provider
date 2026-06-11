@@ -30,6 +30,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Timer? _pollTimer;
   Timer? _alertCountdown;
   StreamSubscription? _bookingWatcher;
+  StreamSubscription? _newBookingListener;
   int _countdownSeconds = 30;
 
   late AnimationController _pulseCtrl;
@@ -51,6 +52,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     _pollTimer?.cancel();
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
+    _newBookingListener?.cancel();
     _pulseCtrl.dispose();
     super.dispose();
   }
@@ -117,34 +119,34 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startPolling() {
-  // Real-time listener on active_bookings
-  FirebaseDatabase.instance.ref('active_bookings')
-    .onChildAdded.listen((event) {
-      if (!mounted || !_available) return;
-      if (_incomingBooking != null) return;
-      try {
-        final bk = Map<String, dynamic>.from(event.snapshot.value as Map);
-        if (bk['status'] != 'searching') return;
-        if (bk['acceptedBy'] != null) return;
-        final svcName = (bk['service'] ?? '').toString().toLowerCase();
-        final providerServices = (_providerData?['services'] as List?)
-            ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
-            .toList() ?? [];
-        if (providerServices.isNotEmpty &&
-            !providerServices.any((s) => s == svcName)) return;
-        setState(() {
-          _incomingBooking = bk;
-          _incomingBookingKey = event.snapshot.key;
-          _countdownSeconds = 30;
-        });
-        _startCountdown();
-        _watchBookingStatus(event.snapshot.key!);
-      } catch (e) {}
-    });
+    // Real-time listener on active_bookings
+    _newBookingListener = FirebaseDatabase.instance.ref('active_bookings')
+      .onChildAdded.listen((event) {
+        if (!mounted || !_available) return;
+        if (_incomingBooking != null) return;
+        try {
+          final bk = Map<String, dynamic>.from(event.snapshot.value as Map);
+          if (bk['status'] != 'searching') return;
+          if (bk['acceptedBy'] != null) return;
+          final svcName = (bk['service'] ?? '').toString().toLowerCase();
+          final providerServices = (_providerData?['services'] as List?)
+              ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
+              .toList() ?? [];
+          if (providerServices.isNotEmpty &&
+              !providerServices.any((s) => s == svcName)) return;
+          setState(() {
+            _incomingBooking = bk;
+            _incomingBookingKey = event.snapshot.key;
+            _countdownSeconds = 30;
+          });
+          _startCountdown();
+          _watchBookingStatus(event.snapshot.key!);
+        } catch (e) {}
+      });
 
-  // Also poll every 5 seconds as backup
-  _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
-}
+    // Poll every 5 seconds as backup
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
+  }
 
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
@@ -176,7 +178,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     } catch (e) {}
   }
 
-  // Watch for customer cancellation in real-time
   void _watchBookingStatus(String bookingKey) {
     _bookingWatcher?.cancel();
     _bookingWatcher = FirebaseDatabase.instance
@@ -190,6 +191,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
+        Vibration.cancel();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -198,7 +200,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             behavior: SnackBarBehavior.floating,
           ));
       } else if (status == 'accepted') {
-        // Check if accepted by someone else
         FirebaseDatabase.instance
             .ref('active_bookings/$bookingKey/acceptedBy/id')
             .get()
@@ -206,6 +207,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           if (snap.value?.toString() != _pid) {
             _alertCountdown?.cancel();
             _bookingWatcher?.cancel();
+            Vibration.cancel();
             if (mounted) setState(() { _incomingBooking = null; _incomingBookingKey = null; });
           }
         });
@@ -214,24 +216,22 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startCountdown() {
-  void _startCountdown() {
-  // Strong vibration pattern
-  try {
-    Vibration.vibrate(pattern: [0, 500, 200, 500, 200, 500], repeat: 2);
-  } catch (e) {
-    HapticFeedback.heavyImpact();
-  }
-  _alertCountdown?.cancel();
-  _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
-    if (!mounted) { t.cancel(); return; }
-    setState(() => _countdownSeconds--);
-    if (_countdownSeconds <= 0) {
-      t.cancel();
-      _bookingWatcher?.cancel();
-      Vibration.cancel();
-      setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+    try {
+      Vibration.vibrate(pattern: [0, 500, 200, 500, 200, 500], repeat: 2);
+    } catch (e) {
+      HapticFeedback.heavyImpact();
     }
-  });
+    _alertCountdown?.cancel();
+    _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      setState(() => _countdownSeconds--);
+      if (_countdownSeconds <= 0) {
+        t.cancel();
+        _bookingWatcher?.cancel();
+        Vibration.cancel();
+        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+      }
+    });
   }
 
   Future<void> _acceptBooking() async {
@@ -265,7 +265,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         'photo': _providerData?['photo'] ?? '',
       };
 
-      // Update active_bookings
       await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
         'acceptedBy': providerInfo,
         'status': 'accepted',
@@ -274,7 +273,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         'acceptedAt': DateTime.now().toIso8601String(),
       });
 
-      // Update bookings collection — customer sees this
       await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({
         'acceptedBy': providerInfo,
         'status': 'accepted',
@@ -299,6 +297,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   void _declineBooking() {
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
+    Vibration.cancel();
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
   }
 
@@ -371,7 +370,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           child: Column(children: [
-            // Profile card
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
@@ -430,7 +428,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               const SizedBox(height: 14),
             ],
 
-            // Availability
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16),
