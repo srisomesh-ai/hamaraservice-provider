@@ -1004,8 +1004,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))))),
                     ]),
                   ])),
-            ]),
-          ),
+            ),
+          ]),
         ),
       ),
     );
