@@ -398,10 +398,19 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(_providerData?['name'] ?? 'Provider',
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
-                  Text(_providerData?['email'] ?? '', style: const TextStyle(fontSize: 11, color: Colors.white60)),
-                  Text('ID: $_pid', style: const TextStyle(fontSize: 10, color: Colors.white54)),
-                  const SizedBox(height: 6),
-                  Container(
+                  Text(_providerData?['email'] ?? '', style: ...),
+                    Text('ID: $_pid', style: ...),
+                  TextButton.icon(
+            onPressed: () async {
+              final result = await Navigator.push(context, MaterialPageRoute(
+                builder: (_) => ProfileEditScreen(providerId: _pid, providerData: _providerData)));
+              if (result == true) _loadProfile();
+            },
+            icon: const Icon(Icons.edit_rounded, size: 16, color: AppColors.teal),
+            label: const Text('Edit Profile', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(height: 8),
+          Container( ← status badge
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                     decoration: BoxDecoration(
                       color: isApproved ? AppColors.green.withOpacity(0.2) : AppColors.yellow.withOpacity(0.2),
