@@ -231,6 +231,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
           return;
         }
+        if (bk['status'] == 'cancelled') return;
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         final providerServices =
             (_providerData?['services'] as List?)
@@ -274,6 +275,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
           continue;
         }
+        if (bk['status'] == 'cancelled') continue;
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         if (providerServices.isNotEmpty &&
             !providerServices.any((s) => s == svcName)) continue;
@@ -293,6 +295,15 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _watchBookingStatus(String bookingKey) {
     _bookingWatcher?.cancel();
+    // Check immediately if already cancelled
+    FirebaseDatabase.instance.ref('active_bookings/$bookingKey/status').get().then((snap) {
+      final status = snap.value?.toString() ?? '';
+      if (status == 'cancelled' && mounted && _incomingBookingKey == bookingKey) {
+        _alertCountdown?.cancel();
+        _stopAlert();
+        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+      }
+    });
     _bookingWatcher = FirebaseDatabase.instance
         .ref('active_bookings/$bookingKey/status')
         .onValue
