@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../utils/theme.dart';
 
@@ -11,198 +10,44 @@ class ServicesScreen extends StatefulWidget {
 }
 
 class _ServicesScreenState extends State<ServicesScreen> {
-  final _user = FirebaseAuth.instance.currentUser;
   bool _loading = true;
   bool _saving = false;
+  String _error = '';
 
-  // Selected services with their sub-tasks
-  // Map<serviceName, Map<subTaskKey, bool>>
   final Map<String, Set<String>> _selected = {};
 
   final List<Map<String, dynamic>> _allServices = [
-    {
-      'name': 'House Maid',
-      'cat': 'Cleaning',
-      'subtasks': [
-        'Sweeping & Mopping - 1 BHK', 'Sweeping & Mopping - 2 BHK',
-        'Sweeping & Mopping - 3 BHK', 'Sweeping & Mopping - 4 BHK',
-        'Sweeping & Mopping - Villa', 'Sweeping & Mopping - Studio',
-        'Dusting - 1 BHK', 'Dusting - 2 BHK', 'Dusting - 3 BHK',
-        'Dusting - 4 BHK', 'Dusting - Villa',
-        'Dishwashing', 'Folding Clothes', 'Laundry / Washing',
-      ],
-    },
-    {
-      'name': 'Deep Cleaning',
-      'cat': 'Cleaning',
-      'subtasks': [
-        'Deep Clean - 1 BHK', 'Deep Clean - 2 BHK', 'Deep Clean - 3 BHK',
-        'Deep Clean - 4 BHK', 'Deep Clean - Villa',
-      ],
-    },
-    {
-      'name': 'Bathroom Cleaning',
-      'cat': 'Cleaning',
-      'subtasks': [
-        '1 Bathroom', '2 Bathrooms', '3 Bathrooms', '4+ Bathrooms',
-      ],
-    },
-    {
-      'name': 'Kitchen Cleaning',
-      'cat': 'Cleaning',
-      'subtasks': ['Basic Kitchen Clean', 'Deep Kitchen Clean', 'Chimney Cleaning'],
-    },
-    {
-      'name': 'Sofa / Carpet Cleaning',
-      'cat': 'Cleaning',
-      'subtasks': ['Sofa (2 Seater)', 'Sofa (3 Seater)', 'Sofa (5 Seater)',
-        'Single Mattress', 'Double Mattress', 'Carpet (Small)', 'Carpet (Large)'],
-    },
-    {
-      'name': 'Laundry / Ironing',
-      'cat': 'Cleaning',
-      'subtasks': ['Washing Only', 'Ironing Only', 'Wash + Iron', 'Dry Cleaning'],
-    },
-    {
-      'name': 'Pest Control',
-      'cat': 'Cleaning',
-      'subtasks': ['Cockroaches', 'Bedbugs', 'Termites', 'Mosquitoes', 'Rats', 'Full Home'],
-    },
-    {
-      'name': 'AC Service',
-      'cat': 'Appliances',
-      'subtasks': ['AC Service (1 Ton)', 'AC Service (1.5 Ton)', 'AC Service (2 Ton)',
-        'AC Gas Refill', 'AC Installation', 'AC Repair'],
-    },
-    {
-      'name': 'Appliance Repair',
-      'cat': 'Appliances',
-      'subtasks': ['Washing Machine', 'Refrigerator', 'TV / LED', 'Microwave',
-        'Water Heater', 'Dishwasher'],
-    },
-    {
-      'name': 'Electrician',
-      'cat': 'Repairs',
-      'subtasks': ['Wiring & Switches', 'Fan Installation', 'Light Fitting',
-        'Short Circuit', 'MCB / Fuse', 'Inverter / Battery'],
-    },
-    {
-      'name': 'Plumber',
-      'cat': 'Repairs',
-      'subtasks': ['Tap Repair', 'Pipe Fitting', 'Drainage Cleaning',
-        'Motor Repair', 'Water Tank Cleaning', 'Toilet Repair'],
-    },
-    {
-      'name': 'Carpenter',
-      'cat': 'Repairs',
-      'subtasks': ['Door / Window Repair', 'Furniture Assembly', 'Cupboard Fitting',
-        'Bed Repair', 'Lock Repair'],
-    },
-    {
-      'name': 'Painter',
-      'cat': 'Repairs',
-      'subtasks': [
-        'Painting - 1 BHK', 'Painting - 2 BHK', 'Painting - 3 BHK',
-        'Painting - 4 BHK', 'Painting - Villa', 'Single Room Painting',
-      ],
-    },
-    {
-      'name': 'Car / Bike Wash',
-      'cat': 'Vehicle',
-      'subtasks': ['Car Exterior Wash', 'Car Interior Clean', 'Full Car Wash',
-        'Bike Wash', 'Car Polish', 'Car Steam Clean'],
-    },
-    {
-      'name': 'Car Mechanic',
-      'cat': 'Vehicle',
-      'subtasks': ['Oil Change', 'Tyre Change', 'Battery Service',
-        'General Service', 'AC Repair', 'Engine Check'],
-    },
-    {
-      'name': 'Driver',
-      'cat': 'Vehicle',
-      'subtasks': ['Local Trip', 'Full Day', 'Outstation', 'Monthly'],
-    },
-    {
-      'name': 'Doctor Visit',
-      'cat': 'Health',
-      'subtasks': ['General Physician', 'Child Specialist', 'Gynecologist', 'Orthopedic'],
-    },
-    {
-      'name': 'Nurse Visit',
-      'cat': 'Health',
-      'subtasks': ['Injection / Dressing', 'IV Drip', 'Post Surgery Care',
-        'Elderly Care', 'Full Day Nursing'],
-    },
-    {
-      'name': 'Lab Test',
-      'cat': 'Health',
-      'subtasks': ['Blood Test', 'Sugar Test', 'Full Body Checkup', 'Urine Test', 'ECG'],
-    },
-    {
-      'name': 'Fitness Trainer',
-      'cat': 'Health',
-      'subtasks': ['Weight Loss', 'Muscle Building', 'Yoga', 'Zumba', 'General Fitness'],
-    },
-    {
-      'name': 'Massage',
-      'cat': 'Wellness',
-      'subtasks': ['Full Body Massage (Male)', 'Full Body Massage (Female)',
-        'Head Massage', 'Back Massage', 'Foot Massage'],
-    },
-    {
-      'name': 'Women Beauty',
-      'cat': 'Wellness',
-      'subtasks': ['Facial', 'Waxing', 'Threading', 'Manicure', 'Pedicure',
-        'Bridal Makeup', 'Party Makeup'],
-    },
-    {
-      'name': 'Men Haircut',
-      'cat': 'Wellness',
-      'subtasks': ['Haircut', 'Shave', 'Facial', 'Hair Color', 'Head Massage'],
-    },
-    {
-      'name': 'Babysitter',
-      'cat': 'Care',
-      'subtasks': ['Half Day (4 hrs)', 'Full Day (8 hrs)', 'Night Care', 'Weekly'],
-    },
-    {
-      'name': 'Elderly Care',
-      'cat': 'Care',
-      'subtasks': ['Companion Care', 'Personal Care', 'Full Day Care',
-        'Night Care', 'Hospital Attendant'],
-    },
-    {
-      'name': 'Security Guard',
-      'cat': 'Security',
-      'subtasks': ['Day Shift', 'Night Shift', 'Full Day', 'Armed Guard', 'Event Security'],
-    },
-    {
-      'name': 'Solar Panel',
-      'cat': 'Repairs',
-      'subtasks': ['Installation', 'Cleaning', 'Repair', 'AMC'],
-    },
-    {
-      'name': 'Water Purifier',
-      'cat': 'Repairs',
-      'subtasks': ['Installation', 'Service / Filter Change', 'Repair'],
-    },
-    {
-      'name': 'CCTV',
-      'cat': 'Repairs',
-      'subtasks': ['Installation (2 Cam)', 'Installation (4 Cam)', 'Installation (8 Cam)',
-        'Repair', 'AMC'],
-    },
-    {
-      'name': 'Gardener',
-      'cat': 'Cleaning',
-      'subtasks': ['Garden Maintenance', 'Plant Care', 'Tree Trimming', 'Lawn Mowing'],
-    },
-    {
-      'name': 'Civil / Mason',
-      'cat': 'Construction',
-      'subtasks': ['Wall Repair', 'Tiling', 'Waterproofing', 'False Ceiling', 'Renovation'],
-    },
+    {'name':'House Maid','cat':'Cleaning','subtasks':['Sweeping & Mopping - 1 BHK','Sweeping & Mopping - 2 BHK','Sweeping & Mopping - 3 BHK','Sweeping & Mopping - 4 BHK','Sweeping & Mopping - Villa','Dusting - 1 BHK','Dusting - 2 BHK','Dusting - 3 BHK','Dishwashing','Folding Clothes','Laundry / Washing']},
+    {'name':'Deep Cleaning','cat':'Cleaning','subtasks':['Deep Clean - 1 BHK','Deep Clean - 2 BHK','Deep Clean - 3 BHK','Deep Clean - 4 BHK','Deep Clean - Villa']},
+    {'name':'Bathroom Cleaning','cat':'Cleaning','subtasks':['1 Bathroom','2 Bathrooms','3 Bathrooms','4+ Bathrooms']},
+    {'name':'Kitchen Cleaning','cat':'Cleaning','subtasks':['Basic Kitchen Clean','Deep Kitchen Clean','Chimney Cleaning']},
+    {'name':'Sofa / Carpet Cleaning','cat':'Cleaning','subtasks':['Sofa (2 Seater)','Sofa (3 Seater)','Sofa (5 Seater)','Single Mattress','Double Mattress','Carpet (Small)','Carpet (Large)']},
+    {'name':'Laundry / Ironing','cat':'Cleaning','subtasks':['Washing Only','Ironing Only','Wash + Iron','Dry Cleaning']},
+    {'name':'Pest Control','cat':'Cleaning','subtasks':['Cockroaches','Bedbugs','Termites','Mosquitoes','Rats','Full Home']},
+    {'name':'Gardener','cat':'Cleaning','subtasks':['Garden Maintenance','Plant Care','Tree Trimming','Lawn Mowing']},
+    {'name':'AC Service','cat':'Appliances','subtasks':['AC Service (1 Ton)','AC Service (1.5 Ton)','AC Service (2 Ton)','AC Gas Refill','AC Installation','AC Repair']},
+    {'name':'Appliance Repair','cat':'Appliances','subtasks':['Washing Machine','Refrigerator','TV / LED','Microwave','Water Heater','Dishwasher']},
+    {'name':'Electrician','cat':'Repairs','subtasks':['Wiring & Switches','Fan Installation','Light Fitting','Short Circuit','MCB / Fuse','Inverter / Battery']},
+    {'name':'Plumber','cat':'Repairs','subtasks':['Tap Repair','Pipe Fitting','Drainage Cleaning','Motor Repair','Water Tank Cleaning','Toilet Repair']},
+    {'name':'Carpenter','cat':'Repairs','subtasks':['Door / Window Repair','Furniture Assembly','Cupboard Fitting','Bed Repair','Lock Repair']},
+    {'name':'Painter','cat':'Repairs','subtasks':['Painting - 1 BHK','Painting - 2 BHK','Painting - 3 BHK','Painting - 4 BHK','Single Room Painting']},
+    {'name':'Solar Panel','cat':'Repairs','subtasks':['Installation','Cleaning','Repair','AMC']},
+    {'name':'Water Purifier','cat':'Repairs','subtasks':['Installation','Service / Filter Change','Repair']},
+    {'name':'CCTV','cat':'Repairs','subtasks':['Installation (2 Cam)','Installation (4 Cam)','Installation (8 Cam)','Repair','AMC']},
+    {'name':'Car / Bike Wash','cat':'Vehicle','subtasks':['Car Exterior Wash','Car Interior Clean','Full Car Wash','Bike Wash','Car Polish']},
+    {'name':'Car Mechanic','cat':'Vehicle','subtasks':['Oil Change','Tyre Change','Battery Service','General Service','Engine Check']},
+    {'name':'Driver','cat':'Vehicle','subtasks':['Local Trip','Full Day','Outstation','Monthly']},
+    {'name':'Doctor Visit','cat':'Health','subtasks':['General Physician','Child Specialist','Gynecologist','Orthopedic']},
+    {'name':'Nurse Visit','cat':'Health','subtasks':['Injection / Dressing','IV Drip','Post Surgery Care','Elderly Care','Full Day Nursing']},
+    {'name':'Lab Test','cat':'Health','subtasks':['Blood Test','Sugar Test','Full Body Checkup','Urine Test','ECG']},
+    {'name':'Fitness Trainer','cat':'Health','subtasks':['Weight Loss','Muscle Building','Yoga','Zumba','General Fitness']},
+    {'name':'Massage','cat':'Wellness','subtasks':['Full Body Massage (Male)','Full Body Massage (Female)','Head Massage','Back Massage','Foot Massage']},
+    {'name':'Women Beauty','cat':'Wellness','subtasks':['Facial','Waxing','Threading','Manicure','Pedicure','Bridal Makeup','Party Makeup']},
+    {'name':'Men Haircut','cat':'Wellness','subtasks':['Haircut','Shave','Facial','Hair Color','Head Massage']},
+    {'name':'Babysitter','cat':'Care','subtasks':['Half Day (4 hrs)','Full Day (8 hrs)','Night Care','Weekly']},
+    {'name':'Elderly Care','cat':'Care','subtasks':['Companion Care','Personal Care','Full Day Care','Night Care','Hospital Attendant']},
+    {'name':'Security Guard','cat':'Security','subtasks':['Day Shift','Night Shift','Full Day','Armed Guard','Event Security']},
+    {'name':'Civil / Mason','cat':'Construction','subtasks':['Wall Repair','Tiling','Waterproofing','False Ceiling','Renovation']},
   ];
 
   Map<String, List<Map<String, dynamic>>> get _grouped {
@@ -221,26 +66,33 @@ class _ServicesScreenState extends State<ServicesScreen> {
   }
 
   Future<void> _loadExisting() async {
-    if (_user == null) return;
+    setState(() { _loading = true; _error = ''; });
     try {
-      final snap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}/services').get();
-      if (snap.exists && snap.value is List) {
-        for (final item in snap.value as List) {
+      final snap = await FirebaseDatabase.instance
+          .ref('providers/${widget.providerId}/services')
+          .get();
+      if (snap.exists && snap.value != null) {
+        final raw = snap.value;
+        List items = [];
+        if (raw is List) items = raw;
+        else if (raw is Map) items = raw.values.toList();
+
+        for (final item in items) {
           if (item is Map) {
             final name = item['name']?.toString() ?? '';
-            final subtasks = item['subtasks'];
             if (name.isNotEmpty) {
               _selected[name] = {};
+              final subtasks = item['subtasks'];
               if (subtasks is List) {
-                for (final s in subtasks) {
-                  _selected[name]!.add(s.toString());
-                }
+                for (final s in subtasks) _selected[name]!.add(s.toString());
               }
             }
           }
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      setState(() => _error = 'Failed to load. Pull to retry.');
+    }
     setState(() => _loading = false);
   }
 
@@ -255,7 +107,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
     try {
       final services = _selected.entries.map((e) {
         final svc = _allServices.firstWhere((s) => s['name'] == e.key,
-          orElse: () => {'name': e.key, 'cat': '', 'subtasks': []});
+          orElse: () => {'name': e.key, 'cat': 'Service', 'subtasks': <String>[]});
         return {
           'name':        e.key,
           'cat':         svc['cat'],
@@ -267,7 +119,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
       }).toList();
 
       await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
-        'services':  services,
+        'services': services,
         'updatedAt': DateTime.now().toIso8601String(),
       });
 
@@ -277,7 +129,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
         Navigator.pop(context, true);
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Failed to save. Try again.'), backgroundColor: AppColors.red));
     }
     setState(() => _saving = false);
@@ -294,58 +146,62 @@ class _ServicesScreenState extends State<ServicesScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppColors.teal))
-          : Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  color: AppColors.tealSoft,
-                  child: Row(children: [
-                    const Icon(Icons.info_outline_rounded, color: AppColors.teal, size: 18),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(
-                      '$totalSelected service${totalSelected == 1 ? '' : 's'} selected. Select sub-tasks you can perform.',
-                      style: const TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w600),
-                    )),
-                  ]),
-                ),
-                Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.all(16),
-                    children: _grouped.entries.map((entry) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.only(top: 12, bottom: 8),
-                            child: Text(entry.key.toUpperCase(),
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800,
-                                color: AppColors.muted, letterSpacing: 0.8)),
-                          ),
-                          ...entry.value.map((svc) => _serviceItem(svc)).toList(),
-                        ],
-                      );
-                    }).toList(),
+          : _error.isNotEmpty
+              ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Text(_error, style: const TextStyle(color: AppColors.muted)),
+                  const SizedBox(height: 16),
+                  ElevatedButton(onPressed: _loadExisting, child: const Text('Retry')),
+                ]))
+              : Column(children: [
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    color: AppColors.tealSoft,
+                    child: Row(children: [
+                      const Icon(Icons.info_outline_rounded, color: AppColors.teal, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(
+                        '$totalSelected service${totalSelected == 1 ? '' : 's'} selected.',
+                        style: const TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w600),
+                      )),
+                    ]),
                   ),
-                ),
-                Container(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
-                  color: Colors.white,
-                  child: ElevatedButton(
-                    onPressed: _saving ? null : _save,
-                    style: ElevatedButton.styleFrom(
-                      minimumSize: const Size(double.infinity, 52),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.all(16),
+                      children: _grouped.entries.map((entry) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(top: 12, bottom: 8),
+                              child: Text(entry.key.toUpperCase(),
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800,
+                                  color: AppColors.muted, letterSpacing: 0.8)),
+                            ),
+                            ...entry.value.map((svc) => _serviceItem(svc)),
+                          ],
+                        );
+                      }).toList(),
                     ),
-                    child: _saving
-                        ? const SizedBox(width: 22, height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2.5,
-                              valueColor: AlwaysStoppedAnimation(Colors.white)))
-                        : Text('Save $totalSelected Service${totalSelected == 1 ? '' : 's'}',
-                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                   ),
-                ),
-              ],
-            ),
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+                    color: Colors.white,
+                    child: ElevatedButton(
+                      onPressed: _saving ? null : _save,
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 52),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                      child: _saving
+                          ? const SizedBox(width: 22, height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2.5,
+                                valueColor: AlwaysStoppedAnimation(Colors.white)))
+                          : Text('Save $totalSelected Service${totalSelected == 1 ? '' : 's'}',
+                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                    ),
+                  ),
+                ]),
     );
   }
 
@@ -373,7 +229,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
             activeColor: AppColors.teal,
             onChanged: (val) => setState(() {
               if (val == true) {
-                _selected[name] = Set.from(subtasks); // select all subtasks by default
+                _selected[name] = Set.from(subtasks);
               } else {
                 _selected.remove(name);
               }
@@ -389,43 +245,39 @@ class _ServicesScreenState extends State<ServicesScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Select sub-tasks you can perform:',
-                    style: TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8, runSpacing: 8,
-                    children: subtasks.map((sub) {
-                      final subSelected = _selected[name]?.contains(sub) ?? false;
-                      return GestureDetector(
-                        onTap: () => setState(() {
-                          _selected.putIfAbsent(name, () => {});
-                          if (subSelected) {
-                            _selected[name]!.remove(sub);
-                            if (_selected[name]!.isEmpty) _selected.remove(name);
-                          } else {
-                            _selected[name]!.add(sub);
-                          }
-                        }),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: subSelected ? AppColors.teal : AppColors.bg,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: subSelected ? AppColors.teal : AppColors.line),
-                          ),
-                          child: Text(sub,
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-                              color: subSelected ? Colors.white : AppColors.ink2)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Select sub-tasks you can perform:',
+                  style: TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8, runSpacing: 8,
+                  children: subtasks.map((sub) {
+                    final subSelected = _selected[name]?.contains(sub) ?? false;
+                    return GestureDetector(
+                      onTap: () => setState(() {
+                        _selected.putIfAbsent(name, () => {});
+                        if (subSelected) {
+                          _selected[name]!.remove(sub);
+                          if (_selected[name]!.isEmpty) _selected.remove(name);
+                        } else {
+                          _selected[name]!.add(sub);
+                        }
+                      }),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: subSelected ? AppColors.teal : AppColors.bg,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: subSelected ? AppColors.teal : AppColors.line),
                         ),
-                      );
-                    }).toList(),
-                  ),
-                ],
-              ),
+                        child: Text(sub,
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                            color: subSelected ? Colors.white : AppColors.ink2)),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ]),
             ),
           ],
         ),
