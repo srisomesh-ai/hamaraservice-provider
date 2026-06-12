@@ -128,20 +128,47 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Future<void> _toggleAvailability(bool val) async {
     setState(() => _available = val);
     if (val) {
-      try {
-        final permission = await Geolocator.requestPermission();
-        if (permission != LocationPermission.denied && permission != LocationPermission.deniedForever) {
-          final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-          await FirebaseDatabase.instance.ref('providers/$_pid').update({
-            'available': true, 'lat': pos.latitude, 'lng': pos.longitude,
-            'updatedAt': DateTime.now().toIso8601String(),
-          });
-          return;
-        }
-      } catch (e) {}
+      // Ask provider about location update
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (_) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Going Online', style: TextStyle(fontWeight: FontWeight.w800)),
+          content: const Text('Do you want to update your current location?\nThis helps match you with nearby customers.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'keep'),
+              child: const Text('Keep Existing', style: TextStyle(color: AppColors.muted)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, 'update'),
+              child: const Text('Update Location'),
+            ),
+          ],
+        ),
+      );
+
+      if (choice == 'update') {
+        try {
+          final permission = await Geolocator.requestPermission();
+          if (permission != LocationPermission.denied &&
+              permission != LocationPermission.deniedForever) {
+            final pos = await Geolocator.getCurrentPosition(
+              desiredAccuracy: LocationAccuracy.high);
+            await FirebaseDatabase.instance.ref('providers/$_pid').update({
+              'available': true,
+              'lat': pos.latitude,
+              'lng': pos.longitude,
+              'updatedAt': DateTime.now().toIso8601String(),
+            });
+            return;
+          }
+        } catch (e) {}
+      }
     }
     await FirebaseDatabase.instance.ref('providers/$_pid').update({
-      'available': val, 'updatedAt': DateTime.now().toIso8601String(),
+      'available': val,
+      'updatedAt': DateTime.now().toIso8601String(),
     });
   }
 
