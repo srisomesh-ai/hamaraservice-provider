@@ -25,7 +25,8 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> with TickerProviderStateMixin {
+class _DashboardScreenState extends State<DashboardScreen>
+    with TickerProviderStateMixin {
   int _currentTab = 0;
   bool _available = false;
   bool _loading = true;
@@ -49,11 +50,19 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   @override
   void initState() {
     super.initState();
-    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..repeat(reverse: true);
-    _pulseAnim = Tween(begin: 1.0, end: 1.06).animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    _pulseCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+    _pulseAnim = Tween(begin: 1.0, end: 1.06).animate(
+        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
     _loadProfile();
     _startPolling();
     _watchOpenJobs();
+    _setupAudio();
+  }
+
+  Future<void> _setupAudio() async {
+    await _audioPlayer.setReleaseMode(ReleaseMode.loop);
   }
 
   @override
@@ -71,43 +80,73 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     try {
       try {
         final token = await FirebaseMessaging.instance.getToken();
-        if (token != null) await FirebaseDatabase.instance.ref('providers/$_pid/fcmToken').set(token);
+        if (token != null) {
+          await FirebaseDatabase.instance
+              .ref('providers/$_pid/fcmToken')
+              .set(token);
+        }
       } catch (e) {}
-      final snap = await FirebaseDatabase.instance.ref('providers/$_pid').get();
+      final snap =
+          await FirebaseDatabase.instance.ref('providers/$_pid').get();
       if (snap.exists) {
         final data = Map<String, dynamic>.from(snap.value as Map);
-        setState(() { _providerData = data; _available = data['available'] == true; _loading = false; });
+        setState(() {
+          _providerData = data;
+          _available = data['available'] == true;
+          _loading = false;
+        });
       } else {
         setState(() => _loading = false);
       }
-    } catch (e) { setState(() => _loading = false); }
+    } catch (e) {
+      setState(() => _loading = false);
+    }
     _loadBookings();
   }
 
   Future<void> _loadBookings() async {
     try {
-      final snap = await FirebaseDatabase.instance.ref('bookings').get();
+      final snap =
+          await FirebaseDatabase.instance.ref('bookings').get();
       if (!snap.exists) return;
       final all = Map<String, dynamic>.from(snap.value as Map);
-      final mine = all.values.map((v) => Map<String, dynamic>.from(v as Map))
-          .where((b) => b['providerId'] == _pid || (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid))
-          .toList()..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
+      final mine = all.values
+          .map((v) => Map<String, dynamic>.from(v as Map))
+          .where((b) =>
+              b['providerId'] == _pid ||
+              (b['acceptedBy'] is Map &&
+                  b['acceptedBy']['id'] == _pid))
+          .toList()
+        ..sort((a, b) =>
+            (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
       if (mounted) setState(() => _bookings = mine);
     } catch (e) {}
   }
 
   void _watchOpenJobs() {
-    FirebaseDatabase.instance.ref('active_bookings').onValue.listen((event) {
+    FirebaseDatabase.instance
+        .ref('active_bookings')
+        .onValue
+        .listen((event) {
       if (!event.snapshot.exists || !mounted) return;
-      final all = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final all =
+          Map<String, dynamic>.from(event.snapshot.value as Map);
       final providerServices = (_providerData?['services'] as List?)
-          ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase()).toList() ?? [];
+              ?.map((s) => (s is Map
+                      ? s['name'] ?? ''
+                      : s.toString())
+                  .toLowerCase())
+              .toList() ??
+          [];
       int count = 0;
       for (final entry in all.entries) {
         final b = Map<String, dynamic>.from(entry.value as Map);
-        if (b['status'] != 'pending' || b['acceptedBy'] != null) continue;
+        if (b['status'] != 'pending' || b['acceptedBy'] != null) {
+          continue;
+        }
         final svcName = (b['service'] ?? '').toString().toLowerCase();
-        if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) continue;
+        if (providerServices.isNotEmpty &&
+            !providerServices.any((s) => s == svcName)) continue;
         count++;
       }
       if (mounted) setState(() => _openJobsCount = count);
@@ -120,37 +159,53 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       final choice = await showDialog<String>(
         context: context,
         builder: (_) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('Going Online', style: TextStyle(fontWeight: FontWeight.w800)),
-          content: const Text('Update your current location so nearby customers can find you?'),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20)),
+          title: const Text('Going Online',
+              style: TextStyle(fontWeight: FontWeight.w800)),
+          content: const Text(
+              'Update your location so nearby customers can find you?'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, 'keep'),
-              child: const Text('Keep Existing', style: TextStyle(color: AppColors.muted))),
-            ElevatedButton(onPressed: () => Navigator.pop(context, 'update'),
-              child: const Text('Update Location')),
+            TextButton(
+                onPressed: () => Navigator.pop(context, 'keep'),
+                child: const Text('Keep Existing',
+                    style: TextStyle(color: AppColors.muted))),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(context, 'update'),
+                child: const Text('Update Location')),
           ],
         ),
       );
       if (choice == 'update') {
         try {
           final permission = await Geolocator.requestPermission();
-          if (permission != LocationPermission.denied && permission != LocationPermission.deniedForever) {
-            final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+          if (permission != LocationPermission.denied &&
+              permission != LocationPermission.deniedForever) {
+            final pos = await Geolocator.getCurrentPosition(
+                desiredAccuracy: LocationAccuracy.high);
             String city = '';
             try {
-              final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
+              final placemarks = await placemarkFromCoordinates(
+                  pos.latitude, pos.longitude);
               if (placemarks.isNotEmpty) {
-                city = placemarks.first.locality ?? placemarks.first.subAdministrativeArea ?? '';
+                city = placemarks.first.locality ??
+                    placemarks.first.subAdministrativeArea ??
+                    '';
               }
             } catch (e) {}
-            await FirebaseDatabase.instance.ref('providers/$_pid').update({
-              'available': true, 'lat': pos.latitude, 'lng': pos.longitude,
+            await FirebaseDatabase.instance
+                .ref('providers/$_pid')
+                .update({
+              'available': true,
+              'lat': pos.latitude,
+              'lng': pos.longitude,
               if (city.isNotEmpty) 'city': city,
               'updatedAt': DateTime.now().toIso8601String(),
             });
             if (city.isNotEmpty && mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Location updated: $city'), backgroundColor: AppColors.green));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text('Location updated: $city'),
+                  backgroundColor: AppColors.green));
             }
             _loadProfile();
             return;
@@ -159,43 +214,75 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       }
     }
     await FirebaseDatabase.instance.ref('providers/$_pid').update({
-      'available': val, 'updatedAt': DateTime.now().toIso8601String(),
+      'available': val,
+      'updatedAt': DateTime.now().toIso8601String(),
     });
   }
 
   void _startPolling() {
-    _newBookingListener = FirebaseDatabase.instance.ref('active_bookings').onChildAdded.listen((event) {
+    _newBookingListener = FirebaseDatabase.instance
+        .ref('active_bookings')
+        .onChildAdded
+        .listen((event) {
       if (!mounted || !_available || _incomingBooking != null) return;
       try {
-        final bk = Map<String, dynamic>.from(event.snapshot.value as Map);
-        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) return;
+        final bk =
+            Map<String, dynamic>.from(event.snapshot.value as Map);
+        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
+          return;
+        }
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
-        final providerServices = (_providerData?['services'] as List?)
-            ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase()).toList() ?? [];
-        if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) return;
-        setState(() { _incomingBooking = bk; _incomingBookingKey = event.snapshot.key; _countdownSeconds = 30; });
+        final providerServices =
+            (_providerData?['services'] as List?)
+                    ?.map((s) => (s is Map
+                            ? s['name'] ?? ''
+                            : s.toString())
+                        .toLowerCase())
+                    .toList() ??
+                [];
+        if (providerServices.isNotEmpty &&
+            !providerServices.any((s) => s == svcName)) return;
+        setState(() {
+          _incomingBooking = bk;
+          _incomingBookingKey = event.snapshot.key;
+          _countdownSeconds = 30;
+        });
         _startCountdown();
         _watchBookingStatus(event.snapshot.key!);
       } catch (e) {}
     });
-    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
+    _pollTimer = Timer.periodic(
+        const Duration(seconds: 5), (_) => _checkForBookings());
   }
 
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
     try {
-      final snap = await FirebaseDatabase.instance.ref('active_bookings').get();
+      final snap =
+          await FirebaseDatabase.instance.ref('active_bookings').get();
       if (!snap.exists) return;
       final all = Map<String, dynamic>.from(snap.value as Map);
       final providerServices = (_providerData?['services'] as List?)
-          ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase()).toList() ?? [];
+              ?.map((s) => (s is Map
+                      ? s['name'] ?? ''
+                      : s.toString())
+                  .toLowerCase())
+              .toList() ??
+          [];
       for (final entry in all.entries) {
         final bk = Map<String, dynamic>.from(entry.value as Map);
-        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) continue;
+        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
+          continue;
+        }
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
-        if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) continue;
+        if (providerServices.isNotEmpty &&
+            !providerServices.any((s) => s == svcName)) continue;
         if (mounted) {
-          setState(() { _incomingBooking = bk; _incomingBookingKey = entry.key; _countdownSeconds = 30; });
+          setState(() {
+            _incomingBooking = bk;
+            _incomingBookingKey = entry.key;
+            _countdownSeconds = 30;
+          });
           _startCountdown();
           _watchBookingStatus(entry.key);
         }
@@ -206,77 +293,201 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
   void _watchBookingStatus(String bookingKey) {
     _bookingWatcher?.cancel();
-    _bookingWatcher = FirebaseDatabase.instance.ref('active_bookings/$bookingKey/status').onValue.listen((event) {
+    _bookingWatcher = FirebaseDatabase.instance
+        .ref('active_bookings/$bookingKey/status')
+        .onValue
+        .listen((event) {
       if (!mounted) return;
       final status = event.snapshot.value?.toString() ?? '';
       if (_incomingBookingKey != bookingKey) return;
       if (status == 'cancelled') {
-        _alertCountdown?.cancel(); _bookingWatcher?.cancel(); Vibration.cancel(); _audioPlayer.stop();
-        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Customer cancelled this booking.'), backgroundColor: AppColors.muted));
+        _alertCountdown?.cancel();
+        _bookingWatcher?.cancel();
+        _stopAlert();
+        setState(() {
+          _incomingBooking = null;
+          _incomingBookingKey = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Customer cancelled this booking.'),
+            backgroundColor: AppColors.muted));
       } else if (status == 'accepted') {
-        FirebaseDatabase.instance.ref('active_bookings/$bookingKey/acceptedBy/id').get().then((snap) {
+        FirebaseDatabase.instance
+            .ref('active_bookings/$bookingKey/acceptedBy/id')
+            .get()
+            .then((snap) {
           if (snap.value?.toString() != _pid) {
-            _alertCountdown?.cancel(); _bookingWatcher?.cancel(); Vibration.cancel(); _audioPlayer.stop();
-            if (mounted) setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+            _alertCountdown?.cancel();
+            _bookingWatcher?.cancel();
+            _stopAlert();
+            if (mounted) {
+              setState(() {
+                _incomingBooking = null;
+                _incomingBookingKey = null;
+              });
+            }
           }
         });
       }
     });
   }
 
+  void _stopAlert() {
+    try {
+      Vibration.cancel();
+      _audioPlayer.stop();
+    } catch (e) {}
+  }
+
   void _startCountdown() {
-    // Vibration
-    try { Vibration.vibrate(pattern: [0, 600, 200, 600, 200, 600], repeat: 3); } catch (e) {}
-    // Sound
-    try { _audioPlayer.play(AssetSource('sounds/alert.mp3')); } catch (e) {}
-    
+    try {
+      Vibration.vibrate(
+          pattern: [0, 600, 200, 600, 200, 600], repeat: 0);
+    } catch (e) {}
+    try {
+      _audioPlayer.play(AssetSource('sounds/alert.mp3'));
+    } catch (e) {}
     _alertCountdown?.cancel();
-    _alertCountdown = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) { t.cancel(); return; }
+    _alertCountdown =
+        Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
       setState(() => _countdownSeconds--);
       if (_countdownSeconds <= 0) {
-        t.cancel(); _bookingWatcher?.cancel(); Vibration.cancel(); _audioPlayer.stop();
-        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+        t.cancel();
+        _bookingWatcher?.cancel();
+        _stopAlert();
+        setState(() {
+          _incomingBooking = null;
+          _incomingBookingKey = null;
+        });
       }
     });
   }
 
   Future<void> _acceptBooking() async {
     if (_incomingBooking == null || _incomingBookingKey == null) return;
-    _alertCountdown?.cancel(); _bookingWatcher?.cancel(); Vibration.cancel(); _audioPlayer.stop();
+    _alertCountdown?.cancel();
+    _bookingWatcher?.cancel();
+    _stopAlert();
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
-    setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+    setState(() {
+      _incomingBooking = null;
+      _incomingBookingKey = null;
+    });
     try {
-      final snap = await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get();
+      final snap = await FirebaseDatabase.instance
+          .ref('active_bookings/$bookingKey')
+          .get();
       if (!snap.exists) return;
       final current = Map<String, dynamic>.from(snap.value as Map);
-      if (current['acceptedBy'] != null && current['acceptedBy'].toString() != 'null') {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Booking already accepted by another provider.'), backgroundColor: AppColors.red));
+      if (current['acceptedBy'] != null &&
+          current['acceptedBy'].toString() != 'null') {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content:
+                  Text('Booking already accepted by another provider.'),
+              backgroundColor: AppColors.red));
+        }
         return;
       }
-      final providerInfo = {'id': _pid, 'name': _providerData?['name'] ?? '', 'phone': _providerData?['phone'] ?? '', 'photo': _providerData?['photo'] ?? ''};
-      await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({'acceptedBy': providerInfo, 'status': 'accepted', 'providerId': _pid, 'providerName': _providerData?['name'] ?? '', 'acceptedAt': DateTime.now().toIso8601String()});
-      await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({'acceptedBy': providerInfo, 'status': 'accepted', 'providerId': _pid, 'providerName': _providerData?['name'] ?? '', 'acceptedAt': DateTime.now().toIso8601String()});
-      if (mounted) Navigator.push(context, MaterialPageRoute(builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking, providerId: _pid)));
+      final providerInfo = {
+        'id': _pid,
+        'name': _providerData?['name'] ?? '',
+        'phone': _providerData?['phone'] ?? '',
+        'photo': _providerData?['photo'] ?? '',
+      };
+      await FirebaseDatabase.instance
+          .ref('active_bookings/$bookingKey')
+          .update({
+        'acceptedBy': providerInfo,
+        'status': 'accepted',
+        'providerId': _pid,
+        'providerName': _providerData?['name'] ?? '',
+        'acceptedAt': DateTime.now().toIso8601String(),
+      });
+      await FirebaseDatabase.instance
+          .ref('bookings/$bookingKey')
+          .update({
+        'acceptedBy': providerInfo,
+        'status': 'accepted',
+        'providerId': _pid,
+        'providerName': _providerData?['name'] ?? '',
+        'acceptedAt': DateTime.now().toIso8601String(),
+      });
+      if (mounted) {
+        Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => ActiveBookingScreen(
+                    bookingKey: bookingKey,
+                    booking: booking,
+                    providerId: _pid)));
+      }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppColors.red));
+      }
+    }
+  }
+
+  Future<void> _standbyBooking() async {
+    if (_incomingBooking == null || _incomingBookingKey == null) return;
+    _alertCountdown?.cancel();
+    _bookingWatcher?.cancel();
+    _stopAlert();
+    final bookingKey = _incomingBookingKey!;
+    final booking = Map<String, dynamic>.from(_incomingBooking!);
+    setState(() {
+      _incomingBooking = null;
+      _incomingBookingKey = null;
+    });
+    // Save to standby list locally in Firebase under provider
+    await FirebaseDatabase.instance
+        .ref('providers/$_pid/standbyJobs/$bookingKey')
+        .set({
+      ...booking,
+      'id': bookingKey,
+      'standbyAt': DateTime.now().toIso8601String(),
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Job saved to standby. You can accept it from Open Jobs later.'),
+          backgroundColor: AppColors.teal,
+          duration: Duration(seconds: 3)));
     }
   }
 
   void _declineBooking() {
-    _alertCountdown?.cancel(); _bookingWatcher?.cancel(); Vibration.cancel(); _audioPlayer.stop();
-    setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+    _alertCountdown?.cancel();
+    _bookingWatcher?.cancel();
+    _stopAlert();
+    setState(() {
+      _incomingBooking = null;
+      _incomingBookingKey = null;
+    });
   }
 
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('provider_id'); await prefs.remove('provider_email'); await prefs.setBool('provider_logged_in', false);
-    try { await FirebaseDatabase.instance.ref('providers/$_pid').update({'available': false}); } catch (e) {}
-    if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+    await prefs.remove('provider_id');
+    await prefs.remove('provider_email');
+    await prefs.setBool('provider_logged_in', false);
+    try {
+      await FirebaseDatabase.instance
+          .ref('providers/$_pid')
+          .update({'available': false});
+    } catch (e) {}
+    if (mounted) {
+      Navigator.pushReplacement(context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()));
+    }
   }
 
   @override
@@ -286,7 +497,12 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: Colors.white,
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, -2))],
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.08),
+                blurRadius: 12,
+                offset: const Offset(0, -2))
+          ],
         ),
         child: BottomNavigationBar(
           currentIndex: _currentTab,
@@ -296,29 +512,45 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           backgroundColor: Colors.transparent,
           elevation: 0,
           type: BottomNavigationBarType.fixed,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+          selectedLabelStyle: const TextStyle(
+              fontWeight: FontWeight.w700, fontSize: 11),
           items: [
-            const BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Overview'),
-            const BottomNavigationBarItem(icon: Icon(Icons.receipt_long_rounded), label: 'Bookings'),
+            const BottomNavigationBarItem(
+                icon: Icon(Icons.dashboard_rounded), label: 'Overview'),
+            const BottomNavigationBarItem(
+                icon: Icon(Icons.receipt_long_rounded),
+                label: 'Bookings'),
             BottomNavigationBarItem(
               icon: Stack(children: [
                 const Icon(Icons.work_outline_rounded),
-                if (_openJobsCount > 0) Positioned(right: 0, top: 0,
-                  child: Container(width: 9, height: 9, decoration: const BoxDecoration(color: AppColors.red, shape: BoxShape.circle))),
+                if (_openJobsCount > 0)
+                  Positioned(
+                      right: 0,
+                      top: 0,
+                      child: Container(
+                          width: 9,
+                          height: 9,
+                          decoration: const BoxDecoration(
+                              color: AppColors.red,
+                              shape: BoxShape.circle))),
               ]),
               label: 'Open Jobs',
             ),
-            const BottomNavigationBarItem(icon: Icon(Icons.person_rounded), label: 'Profile'),
+            const BottomNavigationBarItem(
+                icon: Icon(Icons.person_rounded), label: 'Profile'),
           ],
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.teal))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.teal))
           : Stack(children: [
               IndexedStack(index: _currentTab, children: [
                 _buildOverview(),
                 _buildBookings(),
-                OpenJobsScreen(providerId: _pid, providerData: _providerData),
+                OpenJobsScreen(
+                    providerId: _pid,
+                    providerData: _providerData),
                 _buildProfile(),
               ]),
               if (_incomingBooking != null) _buildIncomingAlert(),
@@ -326,12 +558,14 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
+  // ── OVERVIEW ──────────────────────────────────────────────────
   Widget _buildOverview() {
-    final isApproved = (_providerData?['status'] ?? 'pending') == 'approved';
-    final activeBookings = _bookings.where((b) => ['accepted','active'].contains(b['status'])).toList();
+    final isApproved =
+        (_providerData?['status'] ?? 'pending') == 'approved';
+    final activeBookings = _bookings
+        .where((b) => ['accepted', 'active'].contains(b['status']))
+        .toList();
     final totalEarned = _providerData?['totalEarned'] ?? 0;
-    final totalJobs = _providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0;
-    final rating = _providerData?['rating'] ?? '5.0';
     final photo = _providerData?['photo'] as String?;
     final name = _providerData?['name'] ?? 'Provider';
 
@@ -340,251 +574,441 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       body: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
-          // App bar with gradient
           SliverAppBar(
-            expandedHeight: 180,
+            expandedHeight: 160,
             pinned: true,
             backgroundColor: AppColors.teal,
-            actions: [IconButton(icon: const Icon(Icons.logout, color: Colors.white), onPressed: _logout)],
+            actions: [
+              IconButton(
+                  icon: const Icon(Icons.logout, color: Colors.white),
+                  onPressed: _logout)
+            ],
             flexibleSpace: FlexibleSpaceBar(
               background: Container(
                 decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0xFF0A2E36), AppColors.teal],
-                    begin: Alignment.topLeft, end: Alignment.bottomRight),
+                  gradient: LinearGradient(
+                      colors: [Color(0xFF0A2E36), AppColors.teal],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight),
                 ),
                 child: SafeArea(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 60, 16),
+                    padding:
+                        const EdgeInsets.fromLTRB(20, 8, 60, 16),
                     child: Row(children: [
                       Stack(children: [
                         CircleAvatar(
-                          radius: 36,
+                          radius: 32,
                           backgroundColor: AppColors.brand,
-                          backgroundImage: (photo?.isNotEmpty == true) ? NetworkImage(photo!) : null,
+                          backgroundImage:
+                              (photo?.isNotEmpty == true)
+                                  ? NetworkImage(photo!)
+                                  : null,
                           child: (photo == null || photo.isEmpty)
-                              ? Text(name[0].toUpperCase(), style: const TextStyle(fontSize: 28, color: Colors.white, fontWeight: FontWeight.w800))
+                              ? Text(name[0].toUpperCase(),
+                                  style: const TextStyle(
+                                      fontSize: 24,
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800))
                               : null,
                         ),
-                        Positioned(bottom: 0, right: 0,
-                          child: Container(width: 14, height: 14,
-                            decoration: BoxDecoration(
-                              color: _available ? AppColors.green : AppColors.muted,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2)))),
+                        Positioned(
+                            bottom: 0,
+                            right: 0,
+                            child: Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                    color: _available
+                                        ? AppColors.green
+                                        : AppColors.muted,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                        color: Colors.white,
+                                        width: 2)))),
                       ]),
                       const SizedBox(width: 14),
-                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
-                        Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
-                        Text(_providerData?['email'] ?? '', style: const TextStyle(fontSize: 11, color: Colors.white60)),
-                        const SizedBox(height: 6),
-                        Row(children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: isApproved ? Colors.green.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: isApproved ? AppColors.green : AppColors.yellow),
-                            ),
-                            child: Text(isApproved ? '✓ Approved' : '⏳ Pending',
-                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
-                                color: isApproved ? AppColors.green : AppColors.yellow)),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(_pid, style: const TextStyle(fontSize: 9, color: Colors.white70, fontWeight: FontWeight.w600)),
-                          ),
-                        ]),
-                      ])),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              mainAxisAlignment:
+                                  MainAxisAlignment.center,
+                              children: [
+                            Text(name,
+                                style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white)),
+                            Text(_providerData?['email'] ?? '',
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.white60)),
+                            const SizedBox(height: 4),
+                            Row(children: [
+                              Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                      color: isApproved
+                                          ? Colors.green
+                                              .withOpacity(0.3)
+                                          : Colors.orange
+                                              .withOpacity(0.3),
+                                      borderRadius:
+                                          BorderRadius.circular(20),
+                                      border: Border.all(
+                                          color: isApproved
+                                              ? AppColors.green
+                                              : AppColors.yellow)),
+                                  child: Text(
+                                      isApproved
+                                          ? 'Approved'
+                                          : 'Pending',
+                                      style: TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w800,
+                                          color: isApproved
+                                              ? AppColors.green
+                                              : AppColors.yellow))),
+                            ]),
+                          ])),
                     ]),
                   ),
                 ),
               ),
             ),
           ),
-
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(children: [
+            child: RefreshIndicator(
+              onRefresh: _loadProfile,
+              color: AppColors.teal,
+              child: SingleChildScrollView(
+                physics:
+                    const NeverScrollableScrollPhysics(),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(children: [
+                    // Pending warning
+                    if (!isApproved) ...[
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                            color:
+                                AppColors.yellow.withOpacity(0.1),
+                            borderRadius:
+                                BorderRadius.circular(14),
+                            border: Border.all(
+                                color: AppColors.yellow
+                                    .withOpacity(0.3))),
+                        child: const Row(children: [
+                          Icon(Icons.info_outline_rounded,
+                              color: AppColors.yellow),
+                          SizedBox(width: 10),
+                          Expanded(
+                              child: Text(
+                                  'Your account is pending admin approval.',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      color: AppColors.ink2))),
+                        ]),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
 
-                // Pending warning
-                if (!isApproved) ...[
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(color: AppColors.yellow.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: AppColors.yellow.withOpacity(0.3))),
-                    child: const Row(children: [
-                      Icon(Icons.info_outline_rounded, color: AppColors.yellow),
-                      SizedBox(width: 10),
-                      Expanded(child: Text('Your account is pending admin approval.',
-                        style: TextStyle(fontSize: 13, color: AppColors.ink2))),
-                    ]),
-                  ),
-                  const SizedBox(height: 14),
-                ],
-
-                // Availability card
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                  decoration: BoxDecoration(
-                    color: _available ? AppColors.green.withOpacity(0.08) : Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: _available ? AppColors.green.withOpacity(0.4) : AppColors.line),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)],
-                  ),
-                  child: Row(children: [
+                    // Availability
                     Container(
-                      width: 44, height: 44,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 14),
                       decoration: BoxDecoration(
-                        color: _available ? AppColors.green.withOpacity(0.15) : AppColors.bg,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(_available ? Icons.wifi_tethering_rounded : Icons.wifi_tethering_off_rounded,
-                        color: _available ? AppColors.green : AppColors.muted, size: 22),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(_available ? 'You are Online' : 'You are Offline',
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800,
-                          color: _available ? AppColors.green : AppColors.ink)),
-                      Text(_available ? 'Receiving booking alerts' : 'Toggle to start receiving bookings',
-                        style: const TextStyle(fontSize: 11, color: AppColors.muted)),
-                    ])),
-                    Switch(value: _available, onChanged: isApproved ? _toggleAvailability : null,
-                      activeColor: AppColors.green),
-                  ]),
-                ),
-
-                const SizedBox(height: 14),
-
-                // Stats row
-                Row(children: [
-                  _statTile('Total Jobs', '$totalJobs', Icons.work_rounded, AppColors.teal),
-                  const SizedBox(width: 10),
-                  _statTile('Avg Rating', '$rating', Icons.star_rounded, AppColors.yellow),
-                  const SizedBox(width: 10),
-                  _statTile('Reviews', '${_providerData?['reviews'] ?? 0}', Icons.reviews_rounded, AppColors.brand),
-                ]),
-
-                const SizedBox(height: 12),
-
-                // Earnings card
-                GestureDetector(
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid))),
-                  child: Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [Color(0xFF1B5E20), Color(0xFF388E3C)],
-                        begin: Alignment.topLeft, end: Alignment.bottomRight),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [BoxShadow(color: Colors.green.withOpacity(0.25), blurRadius: 12, offset: const Offset(0, 4))],
-                    ),
-                    child: Row(children: [
-                      Container(
-                        width: 52, height: 52,
-                        decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(14)),
-                        child: const Icon(Icons.account_balance_wallet_rounded, color: Colors.white, size: 28),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        const Text('Total Earnings', style: TextStyle(fontSize: 12, color: Colors.white70, fontWeight: FontWeight.w600)),
-                        Text('₹$totalEarned', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.white)),
-                        const Text('Tap to view details & withdraw', style: TextStyle(fontSize: 11, color: Colors.white60)),
-                      ])),
-                      Container(
-                        width: 36, height: 36,
-                        decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
-                        child: const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
-                      ),
-                    ]),
-                  ),
-                ),
-
-                const SizedBox(height: 14),
-
-                // Quick actions
-                Row(children: [
-                  _actionTile('Ratings', Icons.star_rounded, AppColors.yellow, () =>
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => RatingsScreen(providerId: _pid)))),
-                  const SizedBox(width: 10),
-                  _actionTile('Services', Icons.build_rounded, AppColors.teal, () async {
-                    final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-                    if (result == true) _loadProfile();
-                  }),
-                  const SizedBox(width: 10),
-                  _actionTile('Open Jobs', Icons.work_outline_rounded, AppColors.brand,
-                    () => setState(() => _currentTab = 2),
-                    badge: _openJobsCount > 0 ? '$_openJobsCount' : null),
-                ]),
-
-                // Open jobs alert
-                if (_openJobsCount > 0) ...[
-                  const SizedBox(height: 12),
-                  GestureDetector(
-                    onTap: () => setState(() => _currentTab = 2),
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: AppColors.brand.withOpacity(0.08),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: AppColors.brand.withOpacity(0.3)),
-                      ),
+                          color: _available
+                              ? AppColors.green.withOpacity(0.08)
+                              : Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                              color: _available
+                                  ? AppColors.green
+                                      .withOpacity(0.4)
+                                  : AppColors.line),
+                          boxShadow: [
+                            BoxShadow(
+                                color:
+                                    Colors.black.withOpacity(0.04),
+                                blurRadius: 8)
+                          ]),
                       child: Row(children: [
-                        Container(width: 36, height: 36,
-                          decoration: BoxDecoration(color: AppColors.brand.withOpacity(0.15), shape: BoxShape.circle),
-                          child: const Icon(Icons.notifications_active_rounded, color: AppColors.brand, size: 18)),
-                        const SizedBox(width: 12),
-                        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text('$_openJobsCount New Job${_openJobsCount == 1 ? '' : 's'} Available!',
-                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.brand)),
-                          const Text('Pending bookings matching your services',
-                            style: TextStyle(fontSize: 11, color: AppColors.muted)),
-                        ])),
-                        const Icon(Icons.chevron_right, color: AppColors.brand),
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                              color: _available
+                                  ? AppColors.green
+                                      .withOpacity(0.15)
+                                  : AppColors.bg,
+                              shape: BoxShape.circle),
+                          child: Icon(
+                              _available
+                                  ? Icons
+                                      .wifi_tethering_rounded
+                                  : Icons
+                                      .wifi_tethering_off_rounded,
+                              color: _available
+                                  ? AppColors.green
+                                  : AppColors.muted,
+                              size: 22),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                            child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                children: [
+                              Text(
+                                  _available
+                                      ? 'You are Online'
+                                      : 'You are Offline',
+                                  style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: _available
+                                          ? AppColors.green
+                                          : AppColors.ink)),
+                              Text(
+                                  _available
+                                      ? 'Receiving booking alerts'
+                                      : 'Toggle to start receiving bookings',
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppColors.muted)),
+                            ])),
+                        Switch(
+                            value: _available,
+                            onChanged: isApproved
+                                ? _toggleAvailability
+                                : null,
+                            activeColor: AppColors.green),
                       ]),
                     ),
-                  ),
-                ],
 
-                // Active bookings
-                if (activeBookings.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    const Text('Active Bookings', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                    Text('${activeBookings.length} active', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-                  ]),
-                  const SizedBox(height: 10),
-                  ...activeBookings.take(3).map((b) => _bookingCard(b, compact: true)),
-                ],
+                    const SizedBox(height: 12),
 
-                const SizedBox(height: 14),
+                    // BIG EARNINGS CARD — FIRST
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => EarningsScreen(
+                                  providerId: _pid))),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                              colors: [
+                                Color(0xFF1B5E20),
+                                Color(0xFF388E3C)
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight),
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                                color: Colors.green
+                                    .withOpacity(0.25),
+                                blurRadius: 12,
+                                offset: const Offset(0, 4))
+                          ],
+                        ),
+                        child: Row(children: [
+                          Container(
+                            width: 52,
+                            height: 52,
+                            decoration: BoxDecoration(
+                                color:
+                                    Colors.white.withOpacity(0.2),
+                                borderRadius:
+                                    BorderRadius.circular(14)),
+                            child: const Icon(
+                                Icons
+                                    .account_balance_wallet_rounded,
+                                color: Colors.white,
+                                size: 28),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                              child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                const Text('Available Balance',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.white70,
+                                        fontWeight:
+                                            FontWeight.w600)),
+                                Text('Rs.$totalEarned',
+                                    style: const TextStyle(
+                                        fontSize: 34,
+                                        fontWeight:
+                                            FontWeight.w900,
+                                        color: Colors.white)),
+                                const Text(
+                                    'Tap to view details & withdraw',
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.white60)),
+                              ])),
+                          Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                                color:
+                                    Colors.white.withOpacity(0.2),
+                                shape: BoxShape.circle),
+                            child: const Icon(
+                                Icons.arrow_forward_rounded,
+                                color: Colors.white,
+                                size: 18),
+                          ),
+                        ]),
+                      ),
+                    ),
 
-                // Support
-                GestureDetector(
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen())),
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
-                    child: Row(children: [
-                      Container(width: 40, height: 40,
-                        decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
-                        child: const Icon(Icons.headset_mic_rounded, color: AppColors.teal, size: 20)),
-                      const SizedBox(width: 12),
-                      const Expanded(child: Text('Help & Support',
-                        style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink))),
-                      const Icon(Icons.chevron_right, color: AppColors.muted),
+                    const SizedBox(height: 12),
+
+                    // Stats — Jobs + Rating only
+                    Row(children: [
+                      _statTile(
+                          'Total Jobs',
+                          '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}',
+                          Icons.work_rounded,
+                          AppColors.teal),
+                      const SizedBox(width: 10),
+                      _statTile(
+                          'Rating',
+                          '${_providerData?['rating'] ?? '5.0'}',
+                          Icons.star_rounded,
+                          AppColors.yellow),
+                      const SizedBox(width: 10),
+                      _statTile(
+                          'Reviews',
+                          '${_providerData?['reviews'] ?? 0}',
+                          Icons.reviews_rounded,
+                          AppColors.brand),
                     ]),
-                  ),
+
+                    // Open jobs banner
+                    if (_openJobsCount > 0) ...[
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: () =>
+                            setState(() => _currentTab = 2),
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                              color: AppColors.brand
+                                  .withOpacity(0.08),
+                              borderRadius:
+                                  BorderRadius.circular(14),
+                              border: Border.all(
+                                  color: AppColors.brand
+                                      .withOpacity(0.3))),
+                          child: Row(children: [
+                            Container(
+                                width: 36,
+                                height: 36,
+                                decoration: BoxDecoration(
+                                    color: AppColors.brand
+                                        .withOpacity(0.15),
+                                    shape: BoxShape.circle),
+                                child: const Icon(
+                                    Icons
+                                        .notifications_active_rounded,
+                                    color: AppColors.brand,
+                                    size: 18)),
+                            const SizedBox(width: 12),
+                            Expanded(
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                  Text(
+                                      '$_openJobsCount New Job${_openJobsCount == 1 ? '' : 's'} Available!',
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight:
+                                              FontWeight.w800,
+                                          color: AppColors.brand)),
+                                  const Text(
+                                      'Tap to view pending bookings',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: AppColors.muted)),
+                                ])),
+                            const Icon(Icons.chevron_right,
+                                color: AppColors.brand),
+                          ]),
+                        ),
+                      ),
+                    ],
+
+                    // Active bookings
+                    if (activeBookings.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Row(
+                          mainAxisAlignment:
+                              MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('Active Bookings',
+                                style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.ink)),
+                            Text(
+                                '${activeBookings.length} active',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.muted)),
+                          ]),
+                      const SizedBox(height: 10),
+                      ...activeBookings
+                          .take(3)
+                          .map((b) =>
+                              _bookingCard(b, compact: true)),
+                    ],
+
+                    // Online status
+                    if (_available && isApproved) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                            color: AppColors.greenSoft,
+                            borderRadius:
+                                BorderRadius.circular(14),
+                            border: Border.all(
+                                color: AppColors.green
+                                    .withOpacity(0.3))),
+                        child: const Row(children: [
+                          Icon(Icons.radar_rounded,
+                              color: AppColors.green),
+                          SizedBox(width: 10),
+                          Expanded(
+                              child: Text(
+                                  'You are online. Booking alerts will appear automatically.',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      color: AppColors.green,
+                                      fontWeight:
+                                          FontWeight.w600))),
+                        ]),
+                      ),
+                    ],
+
+                    const SizedBox(height: 20),
+                  ]),
                 ),
-                const SizedBox(height: 20),
-              ]),
+              ),
             ),
           ),
         ],
@@ -592,58 +1016,64 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  Widget _statTile(String label, String value, IconData icon, Color color) {
+  Widget _statTile(
+      String label, String value, IconData icon, Color color) {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 8)
+            ]),
         child: Column(children: [
           Icon(icon, color: color, size: 24),
           const SizedBox(height: 6),
-          Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: color)),
-          Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted, fontWeight: FontWeight.w600)),
+          Text(value,
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                  color: color)),
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 10,
+                  color: AppColors.muted,
+                  fontWeight: FontWeight.w600)),
         ]),
       ),
     );
   }
 
-  Widget _actionTile(String label, IconData icon, Color color, VoidCallback onTap, {String? badge}) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
-          child: Stack(alignment: Alignment.center, children: [
-            Column(mainAxisSize: MainAxisSize.min, children: [
-              Icon(icon, color: color, size: 26),
-              const SizedBox(height: 6),
-              Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.ink2)),
-            ]),
-            if (badge != null) Positioned(top: 0, right: 8,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                decoration: BoxDecoration(color: AppColors.red, borderRadius: BorderRadius.circular(10)),
-                child: Text(badge, style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w800)),
-              )),
-          ]),
-        ),
-      ),
-    );
-  }
-
+  // ── BOOKINGS ──────────────────────────────────────────────────
   Widget _buildBookings() {
-    final active = _bookings.where((b) => ['accepted','active'].contains(b['status'])).toList();
-    final completed = _bookings.where((b) => b['status'] == 'completed').toList();
-    final cancelled = _bookings.where((b) => b['status'] == 'cancelled').toList();
+    final active = _bookings
+        .where((b) =>
+            ['accepted', 'active'].contains(b['status']))
+        .toList();
+    final completed = _bookings
+        .where((b) => b['status'] == 'completed')
+        .toList();
+    final cancelled = _bookings
+        .where((b) => b['status'] == 'cancelled')
+        .toList();
     return DefaultTabController(
       length: 3,
       child: Scaffold(
-        appBar: AppBar(title: const Text('My Bookings'), backgroundColor: AppColors.teal,
-          bottom: const TabBar(indicatorColor: AppColors.brand, labelColor: Colors.white, unselectedLabelColor: Colors.white70,
-            tabs: [Tab(text: 'Active'), Tab(text: 'Completed'), Tab(text: 'Cancelled')])),
+        appBar: AppBar(
+            title: const Text('My Bookings'),
+            backgroundColor: AppColors.teal,
+            bottom: const TabBar(
+                indicatorColor: AppColors.brand,
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white70,
+                tabs: [
+                  Tab(text: 'Active'),
+                  Tab(text: 'Completed'),
+                  Tab(text: 'Cancelled')
+                ])),
         body: TabBarView(children: [
           _bookingList(active, 'No active bookings'),
           _bookingList(completed, 'No completed bookings yet'),
@@ -653,238 +1083,451 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  Widget _bookingList(List<Map<String, dynamic>> list, String emptyMsg) {
-    if (list.isEmpty) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      const Icon(Icons.receipt_long_rounded, size: 56, color: AppColors.muted),
-      const SizedBox(height: 12),
-      Text(emptyMsg, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.muted)),
-    ]));
-    return RefreshIndicator(onRefresh: _loadBookings, color: AppColors.teal,
-      child: ListView.builder(padding: const EdgeInsets.all(16), itemCount: list.length,
-        itemBuilder: (_, i) => _bookingCard(list[i])));
+  Widget _bookingList(
+      List<Map<String, dynamic>> list, String emptyMsg) {
+    if (list.isEmpty) {
+      return Center(
+          child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+            const Icon(Icons.receipt_long_rounded,
+                size: 56, color: AppColors.muted),
+            const SizedBox(height: 12),
+            Text(emptyMsg,
+                style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.muted)),
+          ]));
+    }
+    return RefreshIndicator(
+      onRefresh: _loadBookings,
+      color: AppColors.teal,
+      child: ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: list.length,
+          itemBuilder: (_, i) => _bookingCard(list[i])),
+    );
   }
 
-  Widget _bookingCard(Map<String, dynamic> b, {bool compact = false}) {
+  Widget _bookingCard(Map<String, dynamic> b,
+      {bool compact = false}) {
     final status = b['status'] ?? '';
     final statusColor = _statusColor(status);
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
-        border: Border.all(color: statusColor.withOpacity(0.15))),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 8)
+          ],
+          border:
+              Border.all(color: statusColor.withOpacity(0.15))),
       child: Column(children: [
         Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: statusColor.withOpacity(0.05),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(14))),
-          child: Row(children: [
-            Expanded(child: Text(b['service'] ?? 'Service',
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink))),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(color: statusColor.withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
-              child: Text(_statusLabel(status),
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: statusColor))),
-          ])),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+                color: statusColor.withOpacity(0.05),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(14))),
+            child: Row(children: [
+              Expanded(
+                  child: Text(b['service'] ?? 'Service',
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.ink))),
+              Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                      color: statusColor.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20)),
+                  child: Text(_statusLabel(status),
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: statusColor))),
+            ])),
         Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              const Icon(Icons.person_rounded, size: 13, color: AppColors.muted),
-              const SizedBox(width: 6),
-              Text(status == 'completed' ? '${b['customer'] ?? ''}' : '${b['customer'] ?? ''} · ${b['phone'] ?? ''}',
-                style: const TextStyle(fontSize: 12, color: AppColors.ink2, fontWeight: FontWeight.w600)),
-            ]),
-            const SizedBox(height: 4),
-            Row(children: [
-              const Icon(Icons.calendar_today_rounded, size: 13, color: AppColors.muted),
-              const SizedBox(width: 6),
-              Text('${b['date'] ?? ''} · ${b['time'] ?? ''} · ₹${b['price'] ?? 0}',
-                style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-            ]),
-            if (!compact) ...[
+            padding: const EdgeInsets.all(14),
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Row(children: [
+                const Icon(Icons.person_rounded,
+                    size: 13, color: AppColors.muted),
+                const SizedBox(width: 6),
+                Text(
+                    status == 'completed'
+                        ? '${b['customer'] ?? ''}'
+                        : '${b['customer'] ?? ''} - ${b['phone'] ?? ''}',
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.ink2,
+                        fontWeight: FontWeight.w600)),
+              ]),
               const SizedBox(height: 4),
               Row(children: [
-                const Icon(Icons.location_on_rounded, size: 13, color: AppColors.muted),
+                const Icon(Icons.calendar_today_rounded,
+                    size: 13, color: AppColors.muted),
                 const SizedBox(width: 6),
-                Expanded(child: Text(b['address'] ?? '', style: const TextStyle(fontSize: 12, color: AppColors.muted))),
+                Text(
+                    '${b['date'] ?? ''} - ${b['time'] ?? ''} - Rs.${b['price'] ?? 0}',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppColors.muted)),
               ]),
-            ],
-            if (['accepted','active'].contains(status)) ...[
-              const SizedBox(height: 10),
-              SizedBox(width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.push(context, MaterialPageRoute(
-                    builder: (_) => ActiveBookingScreen(bookingKey: b['id'] ?? '', booking: b, providerId: _pid))),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.teal,
-                    minimumSize: const Size(double.infinity, 40),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-                  child: const Text('View & Manage', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)))),
-            ],
-          ])),
+              if (!compact) ...[
+                const SizedBox(height: 4),
+                Row(children: [
+                  const Icon(Icons.location_on_rounded,
+                      size: 13, color: AppColors.muted),
+                  const SizedBox(width: 6),
+                  Expanded(
+                      child: Text(b['address'] ?? '',
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.muted))),
+                ]),
+              ],
+              if (['accepted', 'active']
+                  .contains(status)) ...[
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => ActiveBookingScreen(
+                                bookingKey: b['id'] ?? '',
+                                booking: b,
+                                providerId: _pid))),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.teal,
+                        minimumSize:
+                            const Size(double.infinity, 40),
+                        shape: RoundedRectangleBorder(
+                            borderRadius:
+                                BorderRadius.circular(10))),
+                    child: const Text('View and Manage',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13)),
+                  ),
+                ),
+              ],
+            ])),
       ]),
     );
   }
 
+  // ── PROFILE ───────────────────────────────────────────────────
   Widget _buildProfile() {
     final photo = _providerData?['photo'] as String?;
     final name = _providerData?['name'] ?? 'Provider';
     return Scaffold(
       backgroundColor: AppColors.bg,
-      body: CustomScrollView(
-        slivers: [
-          SliverAppBar(
-            expandedHeight: 200,
-            pinned: true,
-            backgroundColor: AppColors.teal,
-            automaticallyImplyLeading: false,
-            actions: [IconButton(icon: const Icon(Icons.logout, color: Colors.white), onPressed: _logout)],
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0xFF0A2E36), AppColors.teal],
-                    begin: Alignment.topLeft, end: Alignment.bottomRight)),
-                child: SafeArea(
-                  child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    CircleAvatar(
-                      radius: 44, backgroundColor: AppColors.brand,
-                      backgroundImage: (photo?.isNotEmpty == true) ? NetworkImage(photo!) : null,
-                      child: (photo == null || photo.isEmpty)
-                          ? Text(name[0].toUpperCase(), style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w800))
-                          : null,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
-                    Text(_providerData?['email'] ?? '', style: const TextStyle(fontSize: 12, color: Colors.white70)),
-                  ]),
-                ),
+      body: CustomScrollView(slivers: [
+        SliverAppBar(
+          expandedHeight: 200,
+          pinned: true,
+          backgroundColor: AppColors.teal,
+          automaticallyImplyLeading: false,
+          actions: [
+            IconButton(
+                icon: const Icon(Icons.logout, color: Colors.white),
+                onPressed: _logout)
+          ],
+          flexibleSpace: FlexibleSpaceBar(
+            background: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                    colors: [Color(0xFF0A2E36), AppColors.teal],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight)),
+              child: SafeArea(
+                child: Column(
+                    mainAxisAlignment:
+                        MainAxisAlignment.center,
+                    children: [
+                  CircleAvatar(
+                    radius: 44,
+                    backgroundColor: AppColors.brand,
+                    backgroundImage:
+                        (photo?.isNotEmpty == true)
+                            ? NetworkImage(photo!)
+                            : null,
+                    child:
+                        (photo == null || photo.isEmpty)
+                            ? Text(name[0].toUpperCase(),
+                                style: const TextStyle(
+                                    fontSize: 32,
+                                    color: Colors.white,
+                                    fontWeight:
+                                        FontWeight.w800))
+                            : null,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(name,
+                      style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white)),
+                  Text(_providerData?['email'] ?? '',
+                      style: const TextStyle(
+                          fontSize: 12, color: Colors.white70)),
+                ]),
               ),
             ),
           ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(children: [
-                // Status + Edit
-                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(children: [
+              // Status + Edit
+              Row(
+                  mainAxisAlignment:
+                      MainAxisAlignment.center,
+                  children: [
+                Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 5),
                     decoration: BoxDecoration(
-                      color: (_providerData?['status'] == 'approved') ? AppColors.greenSoft : AppColors.yellow.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: (_providerData?['status'] == 'approved') ? AppColors.green : AppColors.yellow)),
+                        color: (_providerData?['status'] ==
+                                'approved')
+                            ? AppColors.greenSoft
+                            : AppColors.yellow.withOpacity(0.1),
+                        borderRadius:
+                            BorderRadius.circular(20),
+                        border: Border.all(
+                            color: (_providerData?['status'] ==
+                                    'approved')
+                                ? AppColors.green
+                                : AppColors.yellow)),
                     child: Text(
-                      (_providerData?['status'] == 'approved') ? 'Approved Provider' : 'Pending Approval',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
-                        color: (_providerData?['status'] == 'approved') ? AppColors.green : AppColors.yellow))),
-                  const SizedBox(width: 10),
-                  OutlinedButton.icon(
+                        (_providerData?['status'] ==
+                                'approved')
+                            ? 'Approved Provider'
+                            : 'Pending Approval',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color:
+                                (_providerData?['status'] ==
+                                        'approved')
+                                    ? AppColors.green
+                                    : AppColors.yellow))),
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
                     onPressed: () async {
-                      final result = await Navigator.push(context, MaterialPageRoute(
-                        builder: (_) => ProfileEditScreen(providerId: _pid, providerData: _providerData)));
+                      final result = await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => ProfileEditScreen(
+                                  providerId: _pid,
+                                  providerData:
+                                      _providerData)));
                       if (result == true) _loadProfile();
                     },
-                    icon: const Icon(Icons.edit_rounded, size: 14, color: AppColors.teal),
-                    label: const Text('Edit', style: TextStyle(color: AppColors.teal, fontSize: 12, fontWeight: FontWeight.w700)),
+                    icon: const Icon(Icons.edit_rounded,
+                        size: 14, color: AppColors.teal),
+                    label: const Text('Edit',
+                        style: TextStyle(
+                            color: AppColors.teal,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700)),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppColors.teal),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)))),
-                ]),
-
-                const SizedBox(height: 16),
-
-                // Stats
-                Row(children: [
-                  _statTile('Jobs Done', '${_providerData?['totalBookings'] ?? 0}', Icons.work_rounded, AppColors.teal),
-                  const SizedBox(width: 10),
-                  _statTile('Rating', '${_providerData?['rating'] ?? '5.0'}', Icons.star_rounded, AppColors.yellow),
-                  const SizedBox(width: 10),
-                  _statTile('Earned', '₹${_providerData?['totalEarned'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
-                ]),
-
-                const SizedBox(height: 16),
-
-                // Info
-                _infoCard(Icons.phone_rounded, 'Phone', _providerData?['phone'] ?? 'Not set'),
-                const SizedBox(height: 10),
-                _infoCard(Icons.location_city_rounded, 'City', _providerData?['city'] ?? 'Not set'),
-                const SizedBox(height: 10),
-                _infoCard(Icons.work_history_rounded, 'Experience', _providerData?['experience'] ?? 'Not set'),
-                const SizedBox(height: 10),
-                _infoCard(Icons.badge_rounded, 'Provider ID', _pid),
-
-                const SizedBox(height: 16),
-
-                // Menu
-                _menuTile('Earnings & Withdrawals', Icons.account_balance_wallet_rounded, AppColors.green, () =>
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)))),
-                const SizedBox(height: 10),
-                _menuTile('My Ratings & Reviews', Icons.star_rounded, AppColors.yellow, () =>
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => RatingsScreen(providerId: _pid)))),
-                const SizedBox(height: 10),
-                _menuTile('My Services', Icons.build_rounded, AppColors.teal, () async {
-                  final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-                  if (result == true) _loadProfile();
-                }),
-                const SizedBox(height: 10),
-                _menuTile('Help & Support', Icons.headset_mic_rounded, AppColors.muted, () =>
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen()))),
-
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _logout,
-                    icon: const Icon(Icons.logout, color: AppColors.red, size: 18),
-                    label: const Text('Sign Out', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700, fontSize: 15)),
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size(double.infinity, 50),
-                      side: const BorderSide(color: AppColors.red),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)))),
-                ),
-                const SizedBox(height: 32),
+                        side: const BorderSide(
+                            color: AppColors.teal),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        shape: RoundedRectangleBorder(
+                            borderRadius:
+                                BorderRadius.circular(20)))),
               ]),
-            ),
+
+              const SizedBox(height: 16),
+
+              // Stats
+              Row(children: [
+                _statTile(
+                    'Jobs Done',
+                    '${_providerData?['totalBookings'] ?? 0}',
+                    Icons.work_rounded,
+                    AppColors.teal),
+                const SizedBox(width: 10),
+                _statTile(
+                    'Rating',
+                    '${_providerData?['rating'] ?? '5.0'}',
+                    Icons.star_rounded,
+                    AppColors.yellow),
+                const SizedBox(width: 10),
+                _statTile(
+                    'Earned',
+                    'Rs.${_providerData?['totalEarned'] ?? 0}',
+                    Icons.currency_rupee_rounded,
+                    AppColors.green),
+              ]),
+
+              const SizedBox(height: 16),
+
+              // Info cards
+              _infoCard(Icons.phone_rounded, 'Phone',
+                  _providerData?['phone'] ?? 'Not set'),
+              const SizedBox(height: 10),
+              _infoCard(Icons.location_city_rounded, 'City',
+                  _providerData?['city'] ?? 'Not set'),
+              const SizedBox(height: 10),
+              _infoCard(Icons.work_history_rounded, 'Experience',
+                  _providerData?['experience'] ?? 'Not set'),
+              const SizedBox(height: 10),
+              _infoCard(Icons.badge_rounded, 'Provider ID', _pid),
+
+              const SizedBox(height: 16),
+
+              // Menu items
+              _menuTile(
+                  'Earnings and Withdrawals',
+                  Icons.account_balance_wallet_rounded,
+                  AppColors.green,
+                  () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) =>
+                              EarningsScreen(providerId: _pid)))),
+              const SizedBox(height: 10),
+              _menuTile(
+                  'My Ratings and Reviews',
+                  Icons.star_rounded,
+                  AppColors.yellow,
+                  () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) =>
+                              RatingsScreen(providerId: _pid)))),
+              const SizedBox(height: 10),
+              _menuTile('My Services', Icons.build_rounded,
+                  AppColors.teal, () async {
+                final result = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) =>
+                            ServicesScreen(providerId: _pid)));
+                if (result == true) _loadProfile();
+              }),
+              const SizedBox(height: 10),
+              _menuTile(
+                  'Help and Support',
+                  Icons.headset_mic_rounded,
+                  AppColors.muted,
+                  () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) =>
+                              const SupportScreen()))),
+
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _logout,
+                  icon: const Icon(Icons.logout,
+                      color: AppColors.red, size: 18),
+                  label: const Text('Sign Out',
+                      style: TextStyle(
+                          color: AppColors.red,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15)),
+                  style: OutlinedButton.styleFrom(
+                      minimumSize:
+                          const Size(double.infinity, 50),
+                      side:
+                          const BorderSide(color: AppColors.red),
+                      shape: RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(14))),
+                ),
+              ),
+              const SizedBox(height: 32),
+            ]),
           ),
-        ],
-      ),
+        ),
+      ]),
     );
   }
 
   Widget _infoCard(IconData icon, String label, String value) {
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)]),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 6)
+          ]),
       child: Row(children: [
-        Container(width: 36, height: 36,
-          decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
-          child: Icon(icon, color: AppColors.teal, size: 18)),
+        Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+                color: AppColors.tealSoft,
+                borderRadius: BorderRadius.circular(10)),
+            child: Icon(icon, color: AppColors.teal, size: 18)),
         const SizedBox(width: 12),
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
-          Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.ink)),
+        Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.muted,
+                  fontWeight: FontWeight.w600)),
+          Text(value,
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.ink)),
         ]),
       ]),
     );
   }
 
-  Widget _menuTile(String label, IconData icon, Color color, VoidCallback onTap) {
+  Widget _menuTile(
+      String label, IconData icon, Color color, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 8)
+            ]),
         child: Row(children: [
-          Container(width: 40, height: 40,
-            decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, color: color, size: 20)),
+          Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10)),
+              child: Icon(icon, color: color, size: 20)),
           const SizedBox(width: 14),
-          Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink, fontSize: 14))),
+          Expanded(
+              child: Text(label,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                      fontSize: 14))),
           const Icon(Icons.chevron_right, color: AppColors.muted),
         ]),
       ),
@@ -893,25 +1536,36 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
   Color _statusColor(String s) {
     switch (s) {
-      case 'accepted': return AppColors.teal;
-      case 'active': return AppColors.brand;
-      case 'completed': return AppColors.green;
-      case 'cancelled': return AppColors.red;
-      default: return AppColors.muted;
+      case 'accepted':
+        return AppColors.teal;
+      case 'active':
+        return AppColors.brand;
+      case 'completed':
+        return AppColors.green;
+      case 'cancelled':
+        return AppColors.red;
+      default:
+        return AppColors.muted;
     }
   }
 
   String _statusLabel(String s) {
     switch (s) {
-      case 'accepted': return 'Accepted';
-      case 'active': return 'In Progress';
-      case 'completed': return 'Completed';
-      case 'cancelled': return 'Cancelled';
-      default: return s;
+      case 'accepted':
+        return 'Accepted';
+      case 'active':
+        return 'In Progress';
+      case 'completed':
+        return 'Completed';
+      case 'cancelled':
+        return 'Cancelled';
+      default:
+        return s;
     }
   }
 
-    Widget _buildIncomingAlert() {
+  // ── INCOMING ALERT ────────────────────────────────────────────
+  Widget _buildIncomingAlert() {
     final bk = _incomingBooking!;
     return Container(
       color: Colors.black.withOpacity(0.75),
@@ -930,7 +1584,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               color: Colors.white,
               borderRadius: BorderRadius.circular(24),
               boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 40)
+                BoxShadow(
+                    color: Colors.black.withOpacity(0.4),
+                    blurRadius: 40)
               ],
             ),
             child: Column(
@@ -945,7 +1601,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                    borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(24)),
                   ),
                   child: Row(
                     children: [
@@ -956,17 +1613,27 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                           color: Colors.white.withOpacity(0.2),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(Icons.notifications_active_rounded, color: Colors.white, size: 24),
+                        child: const Icon(
+                            Icons.notifications_active_rounded,
+                            color: Colors.white,
+                            size: 24),
                       ),
                       const SizedBox(width: 12),
                       const Expanded(
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
                           children: [
                             Text('New Booking Alert!',
-                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
-                            Text('Accept quickly before it expires',
-                              style: TextStyle(fontSize: 11, color: Colors.white70)),
+                                style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white)),
+                            Text(
+                                'Accept quickly before it expires',
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.white70)),
                           ],
                         ),
                       ),
@@ -974,14 +1641,20 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                         width: 48,
                         height: 48,
                         decoration: BoxDecoration(
-                          color: _countdownSeconds <= 10 ? Colors.red.withOpacity(0.8) : AppColors.brand,
+                          color: _countdownSeconds <= 10
+                              ? Colors.red.withOpacity(0.8)
+                              : AppColors.brand,
                           shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2),
+                          border: Border.all(
+                              color: Colors.white, width: 2),
                         ),
                         child: Center(
                           child: Text(
                             '$_countdownSeconds',
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white),
+                            style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white),
                           ),
                         ),
                       ),
@@ -998,69 +1671,187 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
                             color: AppColors.bg,
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius:
+                                BorderRadius.circular(12),
                           ),
                           child: Column(
                             children: [
-                              _alertRow2(Icons.home_repair_service_rounded, 'Service', bk['service'] ?? '', AppColors.teal),
-                              const Divider(height: 16, color: AppColors.line),
-                              _alertRow2(Icons.currency_rupee_rounded, 'Price', 'Rs.${bk['price'] ?? bk['priceVal'] ?? 0}', AppColors.green),
-                              const Divider(height: 16, color: AppColors.line),
-                              _alertRow2(Icons.calendar_today_rounded, 'Date', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}', AppColors.brand),
-                              const Divider(height: 16, color: AppColors.line),
-                              _alertRow2(Icons.location_on_rounded, 'Address', bk['address'] ?? '', AppColors.red),
-                              const Divider(height: 16, color: AppColors.line),
-                              _alertRow2(Icons.person_rounded, 'Customer', '${bk['customer'] ?? ''} - ${bk['phone'] ?? ''}', AppColors.muted),
+                              _alertRow2(
+                                  Icons
+                                      .home_repair_service_rounded,
+                                  'Service',
+                                  bk['service'] ?? '',
+                                  AppColors.teal),
+                              const Divider(
+                                  height: 16,
+                                  color: AppColors.line),
+                              _alertRow2(
+                                  Icons.currency_rupee_rounded,
+                                  'Price',
+                                  'Rs.${bk['price'] ?? bk['priceVal'] ?? 0}',
+                                  AppColors.green),
+                              const Divider(
+                                  height: 16,
+                                  color: AppColors.line),
+                              _alertRow2(
+                                  Icons.calendar_today_rounded,
+                                  'Date',
+                                  '${bk['date'] ?? ''} at ${bk['time'] ?? ''}',
+                                  AppColors.brand),
+                              const Divider(
+                                  height: 16,
+                                  color: AppColors.line),
+                              _alertRow2(
+                                  Icons.location_on_rounded,
+                                  'Address',
+                                  bk['address'] ?? '',
+                                  AppColors.red),
+                              const Divider(
+                                  height: 16,
+                                  color: AppColors.line),
+                              _alertRow2(
+                                  Icons.person_rounded,
+                                  'Customer',
+                                  '${bk['customer'] ?? ''} - ${bk['phone'] ?? ''}',
+                                  AppColors.muted),
                             ],
                           ),
                         ),
-                        if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
+                        if ((bk['summary'] as List?)
+                                ?.isNotEmpty ==
+                            true) ...[
                           const SizedBox(height: 10),
                           Wrap(
                             spacing: 6,
                             runSpacing: 6,
-                            children: (bk['summary'] as List).map((s) {
-                              final parts = s.toString().split(' > ');
+                            children:
+                                (bk['summary'] as List).map((s) {
+                              final parts =
+                                  s.toString().split(' > ');
                               return Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                padding:
+                                    const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 5),
                                 decoration: BoxDecoration(
                                   color: AppColors.tealSoft,
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(color: AppColors.teal.withOpacity(0.3)),
+                                  borderRadius:
+                                      BorderRadius.circular(20),
+                                  border: Border.all(
+                                      color: AppColors.teal
+                                          .withOpacity(0.3)),
                                 ),
                                 child: Text(
-                                  parts.length > 1 ? parts.sublist(1).join(' > ') : s.toString(),
-                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal),
+                                  parts.length > 1
+                                      ? parts
+                                          .sublist(1)
+                                          .join(' > ')
+                                      : s.toString(),
+                                  style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.teal),
                                 ),
                               );
                             }).toList(),
                           ),
                         ],
                         const SizedBox(height: 16),
+                        // THREE BUTTONS
                         Row(
                           children: [
+                            // Decline
                             Expanded(
-                              child: OutlinedButton.icon(
+                              child: OutlinedButton(
                                 onPressed: _declineBooking,
-                                icon: const Icon(Icons.close, color: AppColors.red, size: 18),
-                                label: const Text('Decline', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
                                 style: OutlinedButton.styleFrom(
-                                  minimumSize: const Size(double.infinity, 50),
-                                  side: const BorderSide(color: AppColors.red),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                  minimumSize: const Size(
+                                      double.infinity, 48),
+                                  side: const BorderSide(
+                                      color: AppColors.red),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius:
+                                          BorderRadius.circular(
+                                              12)),
+                                ),
+                                child: const Column(
+                                  mainAxisSize:
+                                      MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.close,
+                                        color: AppColors.red,
+                                        size: 18),
+                                    Text('Decline',
+                                        style: TextStyle(
+                                            color: AppColors.red,
+                                            fontWeight:
+                                                FontWeight.w700,
+                                            fontSize: 12)),
+                                  ],
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 12),
+                            const SizedBox(width: 8),
+                            // Standby
                             Expanded(
-                              child: ElevatedButton.icon(
+                              child: OutlinedButton(
+                                onPressed: _standbyBooking,
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size(
+                                      double.infinity, 48),
+                                  side: const BorderSide(
+                                      color: AppColors.yellow),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius:
+                                          BorderRadius.circular(
+                                              12)),
+                                ),
+                                child: const Column(
+                                  mainAxisSize:
+                                      MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.pause_circle_rounded,
+                                        color: AppColors.yellow,
+                                        size: 18),
+                                    Text('Standby',
+                                        style: TextStyle(
+                                            color:
+                                                AppColors.yellow,
+                                            fontWeight:
+                                                FontWeight.w700,
+                                            fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            // Accept
+                            Expanded(
+                              child: ElevatedButton(
                                 onPressed: _acceptBooking,
-                                icon: const Icon(Icons.check_rounded, color: Colors.white, size: 20),
-                                label: const Text('Accept', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: AppColors.green,
-                                  minimumSize: const Size(double.infinity, 50),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                  minimumSize: const Size(
+                                      double.infinity, 48),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius:
+                                          BorderRadius.circular(
+                                              12)),
+                                ),
+                                child: const Column(
+                                  mainAxisSize:
+                                      MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.check_rounded,
+                                        color: Colors.white,
+                                        size: 18),
+                                    Text('Accept',
+                                        style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight:
+                                                FontWeight.w800,
+                                            fontSize: 12)),
+                                  ],
                                 ),
                               ),
                             ),
@@ -1078,7 +1869,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  Widget _alertRow2(IconData icon, String label, String value, Color color) {
+  Widget _alertRow2(
+      IconData icon, String label, String value, Color color) {
     return Row(
       children: [
         Container(
@@ -1095,21 +1887,19 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted, fontWeight: FontWeight.w600)),
-              Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink)),
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 10,
+                      color: AppColors.muted,
+                      fontWeight: FontWeight.w600)),
+              Text(value,
+                  style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink)),
             ],
           ),
         ),
-      ],
-    );
-  }
-
-  Widget _alertRow(String label, String value) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(width: 80, child: Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600))),
-        Expanded(child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink))),
       ],
     );
   }
