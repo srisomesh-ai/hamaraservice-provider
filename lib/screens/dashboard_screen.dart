@@ -638,7 +638,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           ),
         ]),
         const SizedBox(height: 6),
-        Text('${b['customer'] ?? ''} · ${b['phone'] ?? ''}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+        Text(b['status'] == 'completed'
+             ? '${b['customer'] ?? ''}'
+             : '${b['customer'] ?? ''} · ${b['phone'] ?? ''}',
         Text('${b['date'] ?? ''} at ${b['time'] ?? ''} · ₹${b['price'] ?? 0}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
         if (!compact) ...[
           const SizedBox(height: 4),
