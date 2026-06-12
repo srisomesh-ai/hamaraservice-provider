@@ -949,6 +949,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                     child: Center(child: Text('$_countdownSeconds',
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white)))),
                 ])),
+              ),
               // Booking details
               Flexible(
                 child: SingleChildScrollView(
@@ -1004,8 +1005,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))))),
                     ]),
                   ])),
-            ),
-          ]),
+            ]),
+          ),
         ),
       ),
     );
