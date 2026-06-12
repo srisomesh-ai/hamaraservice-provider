@@ -295,48 +295,58 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _watchBookingStatus(String bookingKey) {
     _bookingWatcher?.cancel();
-    // Check immediately if already cancelled
-    FirebaseDatabase.instance.ref('active_bookings/$bookingKey/status').get().then((snap) {
-      final status = snap.value?.toString() ?? '';
-      if (status == 'cancelled' && mounted && _incomingBookingKey == bookingKey) {
+    // Check immediately — handles already-cancelled or already-deleted
+    FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get().then((snap) {
+      if (!mounted || _incomingBookingKey != bookingKey) return;
+      if (!snap.exists) {
+        _alertCountdown?.cancel();
+        _stopAlert();
+        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+        return;
+      }
+      final status = (snap.value as Map?)?['status']?.toString() ?? '';
+      if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _stopAlert();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
       }
     });
+    // Watch FULL node — catches both status change AND node deletion
     _bookingWatcher = FirebaseDatabase.instance
-        .ref('active_bookings/$bookingKey/status')
+        .ref('active_bookings/$bookingKey')
         .onValue
         .listen((event) {
-      if (!mounted) return;
-      final status = event.snapshot.value?.toString() ?? '';
-      if (_incomingBookingKey != bookingKey) return;
+      if (!mounted || _incomingBookingKey != bookingKey) return;
+      // Node deleted = customer cancelled search
+      if (!event.snapshot.exists) {
+        _alertCountdown?.cancel();
+        _bookingWatcher?.cancel();
+        _stopAlert();
+        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Customer cancelled the search.'),
+          backgroundColor: AppColors.muted,
+          behavior: SnackBarBehavior.floating));
+        return;
+      }
+      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final status = data['status']?.toString() ?? '';
       if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
         _stopAlert();
-        setState(() {
-          _incomingBooking = null;
-          _incomingBookingKey = null;
-        });
+        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Customer cancelled this booking.'),
-            backgroundColor: AppColors.muted));
+          content: Text('Customer cancelled this booking.'),
+          backgroundColor: AppColors.muted,
+          behavior: SnackBarBehavior.floating));
       } else if (status == 'accepted') {
-        FirebaseDatabase.instance
-            .ref('active_bookings/$bookingKey/acceptedBy/id')
-            .get()
-            .then((snap) {
+        FirebaseDatabase.instance.ref('active_bookings/$bookingKey/acceptedBy/id').get().then((snap) {
           if (snap.value?.toString() != _pid) {
             _alertCountdown?.cancel();
             _bookingWatcher?.cancel();
             _stopAlert();
-            if (mounted) {
-              setState(() {
-                _incomingBooking = null;
-                _incomingBookingKey = null;
-              });
-            }
+            if (mounted) setState(() { _incomingBooking = null; _incomingBookingKey = null; });
           }
         });
       }
