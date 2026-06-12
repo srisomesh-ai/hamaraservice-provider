@@ -11,6 +11,9 @@ import 'login_screen.dart';
 import 'active_booking_screen.dart';
 import 'services_screen.dart';
 import 'support_screen.dart';
+import 'earnings_screen.dart';
+import 'ratings_screen.dart';
+import 'open_jobs_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String providerId;
@@ -32,6 +35,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   StreamSubscription? _bookingWatcher;
   StreamSubscription? _newBookingListener;
   int _countdownSeconds = 30;
+  int _openJobsCount = 0;
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
@@ -45,6 +49,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     _pulseAnim = Tween(begin: 1.0, end: 1.05).animate(_pulseCtrl);
     _loadProfile();
     _startPolling();
+    _watchOpenJobs();
   }
 
   @override
@@ -98,6 +103,26 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     } catch (e) {}
   }
 
+  void _watchOpenJobs() {
+    FirebaseDatabase.instance.ref('active_bookings').onValue.listen((event) {
+      if (!event.snapshot.exists || !mounted) return;
+      final all = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final providerServices = (_providerData?['services'] as List?)
+          ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
+          .toList() ?? [];
+      int count = 0;
+      for (final entry in all.entries) {
+        final b = Map<String, dynamic>.from(entry.value as Map);
+        if (b['status'] != 'pending') continue;
+        if (b['acceptedBy'] != null) continue;
+        final svcName = (b['service'] ?? '').toString().toLowerCase();
+        if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) continue;
+        count++;
+      }
+      if (mounted) setState(() => _openJobsCount = count);
+    });
+  }
+
   Future<void> _toggleAvailability(bool val) async {
     setState(() => _available = val);
     if (val) {
@@ -119,7 +144,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   void _startPolling() {
-    // Real-time listener on active_bookings
     _newBookingListener = FirebaseDatabase.instance.ref('active_bookings')
       .onChildAdded.listen((event) {
         if (!mounted || !_available) return;
@@ -144,7 +168,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         } catch (e) {}
       });
 
-    // Poll every 5 seconds as backup
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
   }
 
@@ -194,11 +217,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         Vibration.cancel();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Customer cancelled this booking.'),
-            backgroundColor: AppColors.muted,
-            behavior: SnackBarBehavior.floating,
-          ));
+          const SnackBar(content: Text('Customer cancelled this booking.'),
+            backgroundColor: AppColors.muted, behavior: SnackBarBehavior.floating));
       } else if (status == 'accepted') {
         FirebaseDatabase.instance
             .ref('active_bookings/$bookingKey/acceptedBy/id')
@@ -242,7 +262,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
-
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
 
     try {
@@ -259,38 +278,26 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       }
 
       final providerInfo = {
-        'id': _pid,
-        'name': _providerData?['name'] ?? '',
-        'phone': _providerData?['phone'] ?? '',
-        'photo': _providerData?['photo'] ?? '',
+        'id': _pid, 'name': _providerData?['name'] ?? '',
+        'phone': _providerData?['phone'] ?? '', 'photo': _providerData?['photo'] ?? '',
       };
 
       await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
-        'acceptedBy': providerInfo,
-        'status': 'accepted',
-        'providerId': _pid,
-        'providerName': _providerData?['name'] ?? '',
+        'acceptedBy': providerInfo, 'status': 'accepted',
+        'providerId': _pid, 'providerName': _providerData?['name'] ?? '',
         'acceptedAt': DateTime.now().toIso8601String(),
       });
-
       await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({
-        'acceptedBy': providerInfo,
-        'status': 'accepted',
-        'providerId': _pid,
-        'providerName': _providerData?['name'] ?? '',
+        'acceptedBy': providerInfo, 'status': 'accepted',
+        'providerId': _pid, 'providerName': _providerData?['name'] ?? '',
         'acceptedAt': DateTime.now().toIso8601String(),
       });
 
       if (mounted) Navigator.push(context, MaterialPageRoute(
-        builder: (_) => ActiveBookingScreen(
-          bookingKey: bookingKey,
-          booking: booking,
-          providerId: _pid,
-        )));
+        builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking, providerId: _pid)));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error accepting booking: $e'),
-          backgroundColor: AppColors.red));
+        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
     }
   }
 
@@ -306,11 +313,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     await prefs.remove('provider_id');
     await prefs.remove('provider_email');
     await prefs.setBool('provider_logged_in', false);
-    try {
-      await FirebaseDatabase.instance.ref('providers/$_pid').update({'available': false});
-    } catch (e) {}
-    if (mounted) Navigator.pushReplacement(context,
-      MaterialPageRoute(builder: (_) => const LoginScreen()));
+    try { await FirebaseDatabase.instance.ref('providers/$_pid').update({'available': false}); } catch (e) {}
+    if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
   }
 
   @override
@@ -325,11 +329,19 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         backgroundColor: Colors.white,
         type: BottomNavigationBarType.fixed,
         elevation: 8,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Overview'),
-          BottomNavigationBarItem(icon: Icon(Icons.receipt_long_rounded), label: 'Bookings'),
-          BottomNavigationBarItem(icon: Icon(Icons.build_rounded), label: 'Services'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_rounded), label: 'Profile'),
+        items: [
+          const BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Overview'),
+          const BottomNavigationBarItem(icon: Icon(Icons.receipt_long_rounded), label: 'Bookings'),
+          BottomNavigationBarItem(
+            icon: Stack(children: [
+              const Icon(Icons.work_outline_rounded),
+              if (_openJobsCount > 0) Positioned(right: 0, top: 0,
+                child: Container(width: 8, height: 8,
+                  decoration: const BoxDecoration(color: AppColors.red, shape: BoxShape.circle))),
+            ]),
+            label: 'Open Jobs',
+          ),
+          const BottomNavigationBarItem(icon: Icon(Icons.person_rounded), label: 'Profile'),
         ],
       ),
       body: _loading
@@ -340,7 +352,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 children: [
                   _buildOverview(),
                   _buildBookings(),
-                  _buildServices(),
+                  OpenJobsScreen(providerId: _pid, providerData: _providerData),
                   _buildProfile(),
                 ],
               ),
@@ -352,8 +364,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Widget _buildOverview() {
     final status = _providerData?['status'] ?? 'pending';
     final isApproved = status == 'approved';
-    final activeBookings = _bookings.where((b) =>
-      ['accepted','active'].contains(b['status'])).toList();
+    final activeBookings = _bookings.where((b) => ['accepted','active'].contains(b['status'])).toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -370,27 +381,23 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           child: Column(children: [
+            // Profile card
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF0D3D47), AppColors.teal],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
-                ),
+                gradient: const LinearGradient(colors: [Color(0xFF0D3D47), AppColors.teal],
+                  begin: Alignment.topLeft, end: Alignment.bottomRight),
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Row(children: [
-                CircleAvatar(
-                  radius: 30, backgroundColor: AppColors.brand,
+                CircleAvatar(radius: 30, backgroundColor: AppColors.brand,
                   child: Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
-                    style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700)),
-                ),
+                    style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700))),
                 const SizedBox(width: 14),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(_providerData?['name'] ?? 'Provider',
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
-                  Text(_providerData?['email'] ?? '',
-                    style: const TextStyle(fontSize: 11, color: Colors.white60)),
+                  Text(_providerData?['email'] ?? '', style: const TextStyle(fontSize: 11, color: Colors.white60)),
                   Text('ID: $_pid', style: const TextStyle(fontSize: 10, color: Colors.white54)),
                   const SizedBox(height: 6),
                   Container(
@@ -413,11 +420,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             if (!isApproved) ...[
               Container(
                 padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppColors.yellow.withOpacity(0.1),
+                decoration: BoxDecoration(color: AppColors.yellow.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.yellow.withOpacity(0.3)),
-                ),
+                  border: Border.all(color: AppColors.yellow.withOpacity(0.3))),
                 child: const Row(children: [
                   Icon(Icons.info_outline_rounded, color: AppColors.yellow),
                   SizedBox(width: 10),
@@ -428,6 +433,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               const SizedBox(height: 14),
             ],
 
+            // Availability
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16),
@@ -438,30 +444,77 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                   Text(_available ? 'You are Online' : 'You are Offline',
                     style: TextStyle(fontSize: 12, color: _available ? AppColors.green : AppColors.muted)),
                 ])),
-                Switch(value: _available, onChanged: isApproved ? _toggleAvailability : null,
-                  activeColor: AppColors.green),
+                Switch(value: _available, onChanged: isApproved ? _toggleAvailability : null, activeColor: AppColors.green),
               ]),
             ),
 
             const SizedBox(height: 14),
 
+            // Stats
             Row(children: [
               _statCard('Total Jobs', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
               const SizedBox(width: 10),
               _statCard('Rating', '${_providerData?['rating'] ?? '5.0'}', Icons.star_rounded, AppColors.yellow),
               const SizedBox(width: 10),
-              _statCard('Earned', '₹${_providerData?['totalEarned'] ?? _providerData?['totalEarnings'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
+              _statCard('Earned', '₹${_providerData?['totalEarned'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
             ]),
 
             const SizedBox(height: 14),
 
+            // Quick action buttons
+            Row(children: [
+              Expanded(
+                child: _quickAction('Earnings', Icons.account_balance_wallet_rounded, AppColors.green, () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)));
+                }),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _quickAction('Ratings', Icons.star_rounded, AppColors.yellow, () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => RatingsScreen(providerId: _pid)));
+                }),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _quickAction('Services', Icons.build_rounded, AppColors.teal, () async {
+                  final result = await Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
+                  if (result == true) _loadProfile();
+                }),
+              ),
+            ]),
+
+            const SizedBox(height: 14),
+
+            // Open jobs banner
+            if (_openJobsCount > 0)
+              GestureDetector(
+                onTap: () => setState(() => _currentTab = 2),
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.brand.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppColors.brand.withOpacity(0.3)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.work_rounded, color: AppColors.brand),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text('$_openJobsCount pending job${_openJobsCount == 1 ? '' : 's'} available near you!',
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.brand))),
+                    const Icon(Icons.chevron_right, color: AppColors.brand),
+                  ]),
+                ),
+              ),
+
             if (activeBookings.isNotEmpty) ...[
+              const SizedBox(height: 14),
               _sectionHeader('Active Bookings', '${activeBookings.length} in progress'),
               ...activeBookings.take(3).map((b) => _bookingCard(b, compact: true)),
-              const SizedBox(height: 8),
             ],
 
             if (_available && isApproved) ...[
+              const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(color: AppColors.greenSoft, borderRadius: BorderRadius.circular(14),
@@ -473,8 +526,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                     style: TextStyle(fontSize: 13, color: AppColors.green, fontWeight: FontWeight.w600))),
                 ]),
               ),
-              const SizedBox(height: 14),
             ],
+
+            const SizedBox(height: 14),
 
             GestureDetector(
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen())),
@@ -494,6 +548,22 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             const SizedBox(height: 20),
           ]),
         ),
+      ),
+    );
+  }
+
+  Widget _quickAction(String label, IconData icon, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
+        child: Column(children: [
+          Icon(icon, color: color, size: 26),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.ink2)),
+        ]),
       ),
     );
   }
@@ -551,8 +621,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        color: Colors.white, borderRadius: BorderRadius.circular(14),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
         border: Border.all(color: statusColor.withOpacity(0.2)),
       ),
@@ -568,10 +637,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           ),
         ]),
         const SizedBox(height: 6),
-        Text('${b['customer'] ?? ''} · ${b['phone'] ?? ''}',
-          style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-        Text('${b['date'] ?? ''} at ${b['time'] ?? ''} · ₹${b['price'] ?? 0}',
-          style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+        Text('${b['customer'] ?? ''} · ${b['phone'] ?? ''}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+        Text('${b['date'] ?? ''} at ${b['time'] ?? ''} · ₹${b['price'] ?? 0}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
         if (!compact) ...[
           const SizedBox(height: 4),
           Text(b['address'] ?? '', style: const TextStyle(fontSize: 12, color: AppColors.ink2)),
@@ -582,15 +649,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             width: double.infinity,
             child: OutlinedButton(
               onPressed: () => Navigator.push(context, MaterialPageRoute(
-                builder: (_) => ActiveBookingScreen(
-                  bookingKey: b['id'] ?? '', booking: b, providerId: _pid))),
+                builder: (_) => ActiveBookingScreen(bookingKey: b['id'] ?? '', booking: b, providerId: _pid))),
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: AppColors.teal),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 minimumSize: const Size(double.infinity, 38),
               ),
-              child: const Text('View Booking',
-                style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+              child: const Text('View Booking', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
           ),
         ],
@@ -598,103 +663,21 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     );
   }
 
-  Widget _buildServices() {
-    final services = (_providerData?['services'] as List?) ?? [];
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('My Services'),
-        backgroundColor: AppColors.teal,
-        actions: [
-          TextButton(
-            onPressed: () async {
-              final result = await Navigator.push(context,
-                MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-              if (result == true) _loadProfile();
-            },
-            child: const Text('Edit', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-          ),
-        ],
-      ),
-      body: services.isEmpty
-          ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              const Icon(Icons.build_rounded, size: 48, color: AppColors.muted),
-              const SizedBox(height: 12),
-              const Text('No services added yet',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.muted)),
-              const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: () async {
-                  final result = await Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-                  if (result == true) _loadProfile();
-                },
-                child: const Text('Add Services'),
-              ),
-            ]))
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: services.length,
-              itemBuilder: (_, i) {
-                final svc = services[i] as Map;
-                final subtasks = (svc['subtasks'] as List?) ?? [];
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Row(children: [
-                      Expanded(child: Text(svc['name'] ?? '',
-                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink))),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(20)),
-                        child: Text(svc['cat'] ?? svc['subcategory'] ?? '',
-                          style: const TextStyle(fontSize: 10, color: AppColors.teal, fontWeight: FontWeight.w700)),
-                      ),
-                    ]),
-                    if (subtasks.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Wrap(spacing: 6, runSpacing: 6,
-                        children: subtasks.map((s) => Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: AppColors.line)),
-                          child: Text(s.toString(),
-                            style: const TextStyle(fontSize: 11, color: AppColors.ink2)),
-                        )).toList()),
-                    ],
-                  ]),
-                );
-              },
-            ),
-    );
-  }
-
   Widget _buildProfile() {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('My Profile'),
-        backgroundColor: AppColors.teal,
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
-        ],
-      ),
+      appBar: AppBar(title: const Text('My Profile'), backgroundColor: AppColors.teal,
+        actions: [IconButton(icon: const Icon(Icons.logout), onPressed: _logout)]),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(children: [
           const SizedBox(height: 8),
-          CircleAvatar(
-            radius: 48, backgroundColor: AppColors.teal,
+          CircleAvatar(radius: 48, backgroundColor: AppColors.teal,
             child: Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
-              style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700)),
-          ),
+              style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700))),
           const SizedBox(height: 12),
           Text(_providerData?['name'] ?? 'Provider',
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.ink)),
-          Text(_providerData?['email'] ?? '',
-            style: const TextStyle(fontSize: 13, color: AppColors.muted)),
-          const SizedBox(height: 4),
+          Text(_providerData?['email'] ?? '', style: const TextStyle(fontSize: 13, color: AppColors.muted)),
           Text('ID: $_pid', style: const TextStyle(fontSize: 11, color: AppColors.muted)),
           const SizedBox(height: 8),
           Container(
@@ -707,12 +690,11 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             child: Text(
               (_providerData?['status'] == 'approved') ? 'Approved Provider' : 'Pending Approval',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
-                color: (_providerData?['status'] == 'approved') ? AppColors.green : AppColors.yellow),
-            ),
+                color: (_providerData?['status'] == 'approved') ? AppColors.green : AppColors.yellow)),
           ),
           const SizedBox(height: 24),
           Row(children: [
-            _statCard('Jobs Done', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
+            _statCard('Jobs Done', '${_providerData?['totalBookings'] ?? 0}', Icons.work_rounded, AppColors.teal),
             const SizedBox(width: 10),
             _statCard('Rating', '${_providerData?['rating'] ?? '5.0'}', Icons.star_rounded, AppColors.yellow),
             const SizedBox(width: 10),
@@ -725,21 +707,25 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           const SizedBox(height: 10),
           _profileInfoRow('City', _providerData?['city'] ?? _providerData?['address'] ?? 'Not set', Icons.location_city_rounded),
           const SizedBox(height: 20),
-          GestureDetector(
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen())),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
-              child: const Row(children: [
-                Icon(Icons.headset_mic_rounded, color: AppColors.teal),
-                SizedBox(width: 12),
-                Expanded(child: Text('Help & Support',
-                  style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink))),
-                Icon(Icons.chevron_right, color: AppColors.muted),
-              ]),
-            ),
-          ),
+
+          // Menu items
+          _menuItem('Earnings', Icons.account_balance_wallet_rounded, AppColors.green, () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)));
+          }),
+          const SizedBox(height: 10),
+          _menuItem('My Ratings', Icons.star_rounded, AppColors.yellow, () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => RatingsScreen(providerId: _pid)));
+          }),
+          const SizedBox(height: 10),
+          _menuItem('My Services', Icons.build_rounded, AppColors.teal, () async {
+            final result = await Navigator.push(context,
+              MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
+            if (result == true) _loadProfile();
+          }),
+          const SizedBox(height: 10),
+          _menuItem('Help & Support', Icons.headset_mic_rounded, AppColors.muted, () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const SupportScreen()));
+          }),
           const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
@@ -750,11 +736,27 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 side: const BorderSide(color: AppColors.red),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
-              child: const Text('Sign Out',
-                style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700, fontSize: 15)),
+              child: const Text('Sign Out', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700, fontSize: 15)),
             ),
           ),
           const SizedBox(height: 32),
+        ]),
+      ),
+    );
+  }
+
+  Widget _menuItem(String label, IconData icon, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
+        child: Row(children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(width: 12),
+          Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink))),
+          const Icon(Icons.chevron_right, color: AppColors.muted),
         ]),
       ),
     );
