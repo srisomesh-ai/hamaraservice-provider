@@ -15,7 +15,6 @@ import 'earnings_screen.dart';
 import 'ratings_screen.dart';
 import 'open_jobs_screen.dart';
 import 'profile_edit_screen.dart';
-import 'profile_edit_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String providerId;
@@ -128,7 +127,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   Future<void> _toggleAvailability(bool val) async {
     setState(() => _available = val);
     if (val) {
-      // Ask provider about location update
       final choice = await showDialog<String>(
         context: context,
         builder: (_) => AlertDialog(
@@ -147,18 +145,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           ],
         ),
       );
-
       if (choice == 'update') {
         try {
           final permission = await Geolocator.requestPermission();
-          if (permission != LocationPermission.denied &&
-              permission != LocationPermission.deniedForever) {
-            final pos = await Geolocator.getCurrentPosition(
-              desiredAccuracy: LocationAccuracy.high);
+          if (permission != LocationPermission.denied && permission != LocationPermission.deniedForever) {
+            final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
             await FirebaseDatabase.instance.ref('providers/$_pid').update({
-              'available': true,
-              'lat': pos.latitude,
-              'lng': pos.longitude,
+              'available': true, 'lat': pos.latitude, 'lng': pos.longitude,
               'updatedAt': DateTime.now().toIso8601String(),
             });
             return;
@@ -167,8 +160,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       }
     }
     await FirebaseDatabase.instance.ref('providers/$_pid').update({
-      'available': val,
-      'updatedAt': DateTime.now().toIso8601String(),
+      'available': val, 'updatedAt': DateTime.now().toIso8601String(),
     });
   }
 
@@ -185,8 +177,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           final providerServices = (_providerData?['services'] as List?)
               ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
               .toList() ?? [];
-          if (providerServices.isNotEmpty &&
-              !providerServices.any((s) => s == svcName)) return;
+          if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) return;
           setState(() {
             _incomingBooking = bk;
             _incomingBookingKey = event.snapshot.key;
@@ -196,7 +187,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           _watchBookingStatus(event.snapshot.key!);
         } catch (e) {}
       });
-
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkForBookings());
   }
 
@@ -209,7 +199,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
       final providerServices = (_providerData?['services'] as List?)
           ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
           .toList() ?? [];
-
       for (final entry in all.entries) {
         final bk = Map<String, dynamic>.from(entry.value as Map);
         if (bk['status'] != 'searching') continue;
@@ -234,12 +223,10 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     _bookingWatcher?.cancel();
     _bookingWatcher = FirebaseDatabase.instance
         .ref('active_bookings/$bookingKey/status')
-        .onValue
-        .listen((event) {
+        .onValue.listen((event) {
       if (!mounted) return;
       final status = event.snapshot.value?.toString() ?? '';
       if (_incomingBookingKey != bookingKey) return;
-
       if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
@@ -249,10 +236,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           const SnackBar(content: Text('Customer cancelled this booking.'),
             backgroundColor: AppColors.muted, behavior: SnackBarBehavior.floating));
       } else if (status == 'accepted') {
-        FirebaseDatabase.instance
-            .ref('active_bookings/$bookingKey/acceptedBy/id')
-            .get()
-            .then((snap) {
+        FirebaseDatabase.instance.ref('active_bookings/$bookingKey/acceptedBy/id').get().then((snap) {
           if (snap.value?.toString() != _pid) {
             _alertCountdown?.cancel();
             _bookingWatcher?.cancel();
@@ -288,16 +272,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
     Vibration.cancel();
-
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
     setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-
     try {
       final snap = await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get();
       if (!snap.exists) return;
       final current = Map<String, dynamic>.from(snap.value as Map);
-
       final existingAccept = current['acceptedBy'];
       if (existingAccept != null && existingAccept.toString() != 'null') {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(
@@ -305,12 +286,10 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
             backgroundColor: AppColors.red));
         return;
       }
-
       final providerInfo = {
         'id': _pid, 'name': _providerData?['name'] ?? '',
         'phone': _providerData?['phone'] ?? '', 'photo': _providerData?['photo'] ?? '',
       };
-
       await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
         'acceptedBy': providerInfo, 'status': 'accepted',
         'providerId': _pid, 'providerName': _providerData?['name'] ?? '',
@@ -321,7 +300,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         'providerId': _pid, 'providerName': _providerData?['name'] ?? '',
         'acceptedAt': DateTime.now().toIso8601String(),
       });
-
       if (mounted) Navigator.push(context, MaterialPageRoute(
         builder: (_) => ActiveBookingScreen(bookingKey: bookingKey, booking: booking, providerId: _pid)));
     } catch (e) {
@@ -394,14 +372,13 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     final status = _providerData?['status'] ?? 'pending';
     final isApproved = status == 'approved';
     final activeBookings = _bookings.where((b) => ['accepted','active'].contains(b['status'])).toList();
+    final totalEarned = _providerData?['totalEarned'] ?? 0;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Overview'),
         backgroundColor: AppColors.teal,
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
-        ],
+        actions: [IconButton(icon: const Icon(Icons.logout), onPressed: _logout)],
       ),
       body: RefreshIndicator(
         onRefresh: _loadProfile,
@@ -410,6 +387,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           child: Column(children: [
+
             // Profile card
             Container(
               padding: const EdgeInsets.all(20),
@@ -419,9 +397,15 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Row(children: [
-                CircleAvatar(radius: 30, backgroundColor: AppColors.brand,
-                  child: Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
-                    style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700))),
+                CircleAvatar(
+                  radius: 30, backgroundColor: AppColors.brand,
+                  backgroundImage: (_providerData?['photo'] as String?)?.isNotEmpty == true
+                      ? NetworkImage(_providerData!['photo']) : null,
+                  child: (_providerData?['photo'] == null || (_providerData?['photo'] as String?)?.isEmpty == true)
+                      ? Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
+                          style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700))
+                      : null,
+                ),
                 const SizedBox(width: 14),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(_providerData?['name'] ?? 'Provider',
@@ -462,7 +446,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
               const SizedBox(height: 14),
             ],
 
-            // Availability
+            // Availability toggle
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16),
@@ -479,38 +463,60 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
 
             const SizedBox(height: 14),
 
-            // Stats
+            // Stats row — Jobs + Rating
             Row(children: [
               _statCard('Total Jobs', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
               const SizedBox(width: 10),
               _statCard('Rating', '${_providerData?['rating'] ?? '5.0'}', Icons.star_rounded, AppColors.yellow),
-              const SizedBox(width: 10),
-              _statCard('Earned', '₹${_providerData?['totalEarned'] ?? 0}', Icons.currency_rupee_rounded, AppColors.green),
             ]),
+
+            const SizedBox(height: 10),
+
+            // Big earnings card
+            GestureDetector(
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid))),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF1B5E20), Color(0xFF2E7D32)],
+                    begin: Alignment.topLeft, end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [BoxShadow(color: Colors.green.withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4))],
+                ),
+                child: Row(children: [
+                  const Icon(Icons.account_balance_wallet_rounded, color: Colors.white, size: 40),
+                  const SizedBox(width: 14),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Total Earnings', style: TextStyle(fontSize: 13, color: Colors.white70, fontWeight: FontWeight.w600)),
+                    Text('₹$totalEarned',
+                      style: const TextStyle(fontSize: 36, fontWeight: FontWeight.w900, color: Colors.white)),
+                    const Text('Tap to view & withdraw', style: TextStyle(fontSize: 11, color: Colors.white60)),
+                  ])),
+                  const Icon(Icons.chevron_right, color: Colors.white70),
+                ]),
+              ),
+            ),
 
             const SizedBox(height: 14),
 
             // Quick action buttons
             Row(children: [
-              Expanded(
-                child: _quickAction('Earnings', Icons.account_balance_wallet_rounded, AppColors.green, () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)));
-                }),
-              ),
+              Expanded(child: _quickAction('Ratings', Icons.star_rounded, AppColors.yellow, () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => RatingsScreen(providerId: _pid)));
+              })),
               const SizedBox(width: 10),
-              Expanded(
-                child: _quickAction('Ratings', Icons.star_rounded, AppColors.yellow, () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => RatingsScreen(providerId: _pid)));
-                }),
-              ),
+              Expanded(child: _quickAction('Services', Icons.build_rounded, AppColors.teal, () async {
+                final result = await Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
+                if (result == true) _loadProfile();
+              })),
               const SizedBox(width: 10),
-              Expanded(
-                child: _quickAction('Services', Icons.build_rounded, AppColors.teal, () async {
-                  final result = await Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-                  if (result == true) _loadProfile();
-                }),
-              ),
+              Expanded(child: _quickAction('Open Jobs', Icons.work_outline_rounded, AppColors.brand, () {
+                setState(() => _currentTab = 2);
+              })),
             ]),
 
             const SizedBox(height: 14),
@@ -521,11 +527,9 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
                 onTap: () => setState(() => _currentTab = 2),
                 child: Container(
                   padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: AppColors.brand.withOpacity(0.1),
+                  decoration: BoxDecoration(color: AppColors.brand.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: AppColors.brand.withOpacity(0.3)),
-                  ),
+                    border: Border.all(color: AppColors.brand.withOpacity(0.3))),
                   child: Row(children: [
                     const Icon(Icons.work_rounded, color: AppColors.brand),
                     const SizedBox(width: 10),
@@ -601,7 +605,6 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     final active = _bookings.where((b) => ['accepted','active'].contains(b['status'])).toList();
     final completed = _bookings.where((b) => b['status'] == 'completed').toList();
     final cancelled = _bookings.where((b) => b['status'] == 'cancelled').toList();
-
     return DefaultTabController(
       length: 3,
       child: Scaffold(
@@ -666,12 +669,14 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           ),
         ]),
         const SizedBox(height: 6),
+        // Hide phone for completed bookings
         Text(
           status == 'completed'
               ? '${b['customer'] ?? ''}'
               : '${b['customer'] ?? ''} · ${b['phone'] ?? ''}',
           style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-        Text('${b['date'] ?? ''} at ${b['time'] ?? ''} · ₹${b['price'] ?? 0}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+        Text('${b['date'] ?? ''} at ${b['time'] ?? ''} · ₹${b['price'] ?? 0}',
+          style: const TextStyle(fontSize: 12, color: AppColors.muted)),
         if (!compact) ...[
           const SizedBox(height: 4),
           Text(b['address'] ?? '', style: const TextStyle(fontSize: 12, color: AppColors.ink2)),
@@ -704,9 +709,15 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
         padding: const EdgeInsets.all(20),
         child: Column(children: [
           const SizedBox(height: 8),
-          CircleAvatar(radius: 48, backgroundColor: AppColors.teal,
-            child: Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
-              style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700))),
+          CircleAvatar(
+            radius: 48, backgroundColor: AppColors.teal,
+            backgroundImage: (_providerData?['photo'] as String?)?.isNotEmpty == true
+                ? NetworkImage(_providerData!['photo']) : null,
+            child: (_providerData?['photo'] == null || (_providerData?['photo'] as String?)?.isEmpty == true)
+                ? Text((_providerData?['name'] ?? 'P')[0].toUpperCase(),
+                    style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700))
+                : null,
+          ),
           const SizedBox(height: 12),
           Text(_providerData?['name'] ?? 'Provider',
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.ink)),
@@ -736,7 +747,7 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           ),
           const SizedBox(height: 24),
           Row(children: [
-            _statCard('Jobs Done', '${_providerData?['totalBookings'] ?? 0}', Icons.work_rounded, AppColors.teal),
+            _statCard('Jobs Done', '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}', Icons.work_rounded, AppColors.teal),
             const SizedBox(width: 10),
             _statCard('Rating', '${_providerData?['rating'] ?? '5.0'}', Icons.star_rounded, AppColors.yellow),
             const SizedBox(width: 10),
@@ -747,10 +758,8 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
           const SizedBox(height: 10),
           _profileInfoRow('Experience', _providerData?['experience'] ?? 'Not set', Icons.work_history_rounded),
           const SizedBox(height: 10),
-          _profileInfoRow('City', _providerData?['city'] ?? _providerData?['address'] ?? 'Not set', Icons.location_city_rounded),
+          _profileInfoRow('City', _providerData?['city'] ?? 'Not set', Icons.location_city_rounded),
           const SizedBox(height: 20),
-
-          // Menu items
           _menuItem('Earnings', Icons.account_balance_wallet_rounded, AppColors.green, () {
             Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)));
           }),
