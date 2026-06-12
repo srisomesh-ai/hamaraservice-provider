@@ -24,7 +24,6 @@ class ActiveBookingScreen extends StatefulWidget {
 class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   String _status = 'accepted';
   bool _loading = false;
-  String _otp = '';
   bool _showOtpEntry = false;
   final List<TextEditingController> _otpCtrls = List.generate(4, (_) => TextEditingController());
   final List<FocusNode> _otpFocus = List.generate(4, (_) => FocusNode());
@@ -52,33 +51,25 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         .onValue
         .listen((event) {
       final status = event.snapshot.value?.toString() ?? '';
-      if (mounted && status.isNotEmpty) {
-        setState(() => _status = status);
-      }
+      if (mounted && status.isNotEmpty) setState(() => _status = status);
     });
   }
 
   Future<void> _updateStatus(String newStatus) async {
     setState(() => _loading = true);
     await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-      'status': newStatus,
-      'updatedAt': DateTime.now().toIso8601String(),
+      'status': newStatus, 'updatedAt': DateTime.now().toIso8601String(),
     });
     await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'status': newStatus,
-      'updatedAt': DateTime.now().toIso8601String(),
+      'status': newStatus, 'updatedAt': DateTime.now().toIso8601String(),
     });
     setState(() { _status = newStatus; _loading = false; });
   }
 
   Future<void> _initiateOTP() async {
     setState(() => _loading = true);
-
-    // Generate 4-digit OTP
     final otp = (1000 + Random().nextInt(9000)).toString();
-    setState(() { _otp = otp; _loading = false; });
 
-    // Write OTP to Firebase — customer will see this
     await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').set({
       'otp': otp,
       'bookingId': widget.bookingKey,
@@ -90,14 +81,13 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     });
 
     await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-      'status': 'otp_sent',
-      'otpSentAt': DateTime.now().millisecondsSinceEpoch,
+      'status': 'otp_sent', 'otpSentAt': DateTime.now().millisecondsSinceEpoch,
     });
     await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
       'status': 'otp_sent',
     });
 
-    setState(() { _status = 'otp_sent'; _showOtpEntry = true; });
+    setState(() { _status = 'otp_sent'; _showOtpEntry = true; _loading = false; });
   }
 
   Future<void> _verifyOTP() async {
@@ -106,8 +96,6 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       setState(() => _otpError = 'Please enter all 4 digits');
       return;
     }
-
-    // Read OTP from Firebase
     final snap = await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}/otp').get();
     final correctOtp = snap.value?.toString() ?? '';
 
@@ -119,23 +107,17 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       return;
     }
 
-    // OTP correct — complete job
     setState(() { _loading = true; _otpError = ''; });
 
     await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').update({
-      'status': 'verified',
-      'verifiedAt': DateTime.now().millisecondsSinceEpoch,
+      'status': 'verified', 'verifiedAt': DateTime.now().millisecondsSinceEpoch,
     });
-
     await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-      'status': 'completed',
-      'otpVerifiedAt': DateTime.now().millisecondsSinceEpoch,
+      'status': 'completed', 'otpVerifiedAt': DateTime.now().millisecondsSinceEpoch,
       'completedAt': DateTime.now().toIso8601String(),
     });
-
     await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'status': 'completed',
-      'completedAt': DateTime.now().toIso8601String(),
+      'status': 'completed', 'completedAt': DateTime.now().toIso8601String(),
     });
 
     // Update provider stats
@@ -146,13 +128,11 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       final price = (widget.booking['priceVal'] ?? widget.booking['price'] ?? 0);
       final earned = ((data['totalEarned'] ?? 0) as num).toDouble() + (price is num ? price.toDouble() : 0);
       await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
-        'totalBookings': totalBookings,
-        'totalJobs': totalBookings,
-        'totalEarned': earned,
+        'totalBookings': totalBookings, 'totalJobs': totalBookings, 'totalEarned': earned,
       });
     }
 
-    setState(() => _loading = false );
+    setState(() => _loading = false);
 
     if (mounted) {
       showDialog(
@@ -183,17 +163,24 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   }
 
   void _openMaps() {
-  final lat = widget.booking['lat'];
-  final lng = widget.booking['lng'];
-  if (lat != null && lng != null && lat.toString() != '0.0') {
-    // Use exact GPS coordinates
-    launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng'));
-  } else {
+    final lat = widget.booking['lat'];
+    final lng = widget.booking['lng'];
+
+    // Use GPS coordinates if available and valid
+    if (lat != null && lng != null) {
+      final latD = (lat is num) ? lat.toDouble() : double.tryParse(lat.toString()) ?? 0.0;
+      final lngD = (lng is num) ? lng.toDouble() : double.tryParse(lng.toString()) ?? 0.0;
+      if (latD != 0.0 && lngD != 0.0) {
+        launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$latD,$lngD&travelmode=driving'));
+        return;
+      }
+    }
     // Fallback to address
     final address = Uri.encodeComponent(widget.booking['address'] ?? '');
-    launchUrl(Uri.parse('https://www.google.com/maps/search/?api=1&query=$address'));
+    if (address.isNotEmpty) {
+      launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$address&travelmode=driving'));
+    }
   }
-}
 
   @override
   Widget build(BuildContext context) {
@@ -208,15 +195,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(children: [
-
           // Status banner
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF0D3D47), AppColors.teal],
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-              ),
+              gradient: const LinearGradient(colors: [Color(0xFF0D3D47), AppColors.teal],
+                begin: Alignment.topLeft, end: Alignment.bottomRight),
               borderRadius: BorderRadius.circular(16),
             ),
             child: Row(children: [
@@ -241,13 +225,16 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Customer Details', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
+              const Text('Customer Details',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
               const SizedBox(height: 12),
               _detailRow(Icons.person_rounded, 'Name', bk['customer'] ?? ''),
               _detailRow(Icons.phone_rounded, 'Phone', bk['phone'] ?? ''),
-              _detailRow(Icons.calendar_today_rounded, 'Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
+              _detailRow(Icons.calendar_today_rounded, 'Date & Time',
+                '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
               _detailRow(Icons.location_on_rounded, 'Address', bk['address'] ?? ''),
-              _detailRow(Icons.currency_rupee_rounded, 'Amount', '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
+              _detailRow(Icons.currency_rupee_rounded, 'Amount',
+                '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
             ]),
           ),
 
@@ -260,14 +247,16 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Selected Services', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                const Text('Selected Services',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.ink)),
                 const SizedBox(height: 10),
                 Wrap(spacing: 6, runSpacing: 6,
                   children: (bk['summary'] as List).map((s) {
                     final parts = s.toString().split(' > ');
                     return Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(20),
+                      decoration: BoxDecoration(color: AppColors.tealSoft,
+                        borderRadius: BorderRadius.circular(20),
                         border: Border.all(color: AppColors.teal.withOpacity(0.3))),
                       child: Text(parts.length > 1 ? parts.sublist(1).join(' › ') : s.toString(),
                         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
@@ -279,7 +268,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
           const SizedBox(height: 16),
 
-          // Action buttons — Call & Navigate
+          // Call & Navigate buttons
           Row(children: [
             Expanded(
               child: OutlinedButton.icon(
@@ -297,7 +286,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: _openMaps,
-                icon: const Icon(Icons.map_rounded, color: AppColors.brand),
+                icon: const Icon(Icons.navigation_rounded, color: AppColors.brand),
                 label: const Text('Navigate', style: TextStyle(color: AppColors.brand, fontWeight: FontWeight.w700)),
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size(double.infinity, 48),
@@ -310,8 +299,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
           const SizedBox(height: 16),
 
-          // Action buttons based on status
-          if (_status == 'accepted') ...[
+          // Action buttons
+          if (_status == 'accepted')
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
@@ -321,12 +310,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                   minimumSize: const Size(double.infinity, 52),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
-                child: const Text('Start Service', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
+                child: const Text('Start Service',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
               ),
             ),
-          ],
 
-          if (_status == 'active') ...[
+          if (_status == 'active')
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
@@ -338,20 +327,20 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                 ),
                 child: _loading
                     ? const SizedBox(width: 22, height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white)))
-                    : const Text('Complete Job (Get OTP)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
+                        child: CircularProgressIndicator(strokeWidth: 2.5,
+                          valueColor: AlwaysStoppedAnimation(Colors.white)))
+                    : const Text('Complete Job (Get OTP)',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
               ),
             ),
-          ],
 
-          // OTP entry section
+          // OTP entry
           if (_status == 'otp_sent' || _showOtpEntry) ...[
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
+                color: Colors.white, borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: AppColors.green.withOpacity(0.3)),
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
               ),
@@ -361,12 +350,10 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                 const Text('Enter OTP from Customer',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
                 const SizedBox(height: 6),
-                Text('Ask ${bk['customer'] ?? 'customer'} to open their app and read you the 4-digit code.',
+                Text('Ask ${bk['customer'] ?? 'customer'} to read you the 4-digit code from their app.',
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 13, color: AppColors.muted)),
                 const SizedBox(height: 20),
-
-                // OTP input boxes
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: List.generate(4, (i) => Container(
@@ -383,7 +370,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                         counterText: '',
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: AppColors.line, width: 2),
+                          borderSide: const BorderSide(color: AppColors.line, width: 2),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
@@ -391,36 +378,25 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                         ),
                       ),
                       onChanged: (v) {
-                        if (v.isNotEmpty && i < 3) {
-                          _otpFocus[i + 1].requestFocus();
-                        }
-                        if (v.isEmpty && i > 0) {
-                          _otpFocus[i - 1].requestFocus();
-                        }
-                        // Auto verify when all 4 entered
+                        if (v.isNotEmpty && i < 3) _otpFocus[i + 1].requestFocus();
+                        if (v.isEmpty && i > 0) _otpFocus[i - 1].requestFocus();
                         final all = _otpCtrls.map((c) => c.text).join('');
                         if (all.length == 4) _verifyOTP();
                       },
                     ),
                   )),
                 ),
-
                 if (_otpError.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Container(
                     padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF5F5),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.red),
-                    ),
+                    decoration: BoxDecoration(color: const Color(0xFFFFF5F5),
+                      borderRadius: BorderRadius.circular(8), border: Border.all(color: AppColors.red)),
                     child: Text(_otpError,
                       style: const TextStyle(fontSize: 12, color: AppColors.red, fontWeight: FontWeight.w600)),
                   ),
                 ],
-
                 const SizedBox(height: 16),
-
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
@@ -432,7 +408,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                     ),
                     child: _loading
                         ? const SizedBox(width: 22, height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white)))
+                            child: CircularProgressIndicator(strokeWidth: 2.5,
+                              valueColor: AlwaysStoppedAnimation(Colors.white)))
                         : const Text('Verify OTP & Complete',
                             style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
                   ),
@@ -454,8 +431,10 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         Icon(icon, size: 16, color: AppColors.teal),
         const SizedBox(width: 10),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
-          Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink)),
+          Text(label,
+            style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
+          Text(value,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink)),
         ])),
       ]),
     );
