@@ -911,101 +911,167 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
     }
   }
 
-  Widget _buildIncomingAlert() {
+    Widget _buildIncomingAlert() {
     final bk = _incomingBooking!;
     return Container(
       color: Colors.black.withOpacity(0.75),
       child: Center(
         child: AnimatedBuilder(
           animation: _pulseCtrl,
-          builder: (_, child) => Transform.scale(scale: _pulseAnim.value, child: child),
+          builder: (context, child) {
+            return Transform.scale(
+              scale: _pulseAnim.value,
+              child: child,
+            );
+          },
           child: Container(
             margin: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24),
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 40)]),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // Alert header
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0xFF0A2E36), AppColors.teal],
-                    begin: Alignment.topLeft, end: Alignment.bottomRight),
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-                child: Row(children: [
-                  Container(width: 44, height: 44,
-                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(12)),
-                    child: const Icon(Icons.notifications_active_rounded, color: Colors.white, size: 24)),
-                  const SizedBox(width: 12),
-                  const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('New Booking Alert!', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
-                    Text('Accept quickly before it expires', style: TextStyle(fontSize: 11, color: Colors.white70)),
-                  ])),
-                  Container(
-                    width: 48, height: 48,
-                    decoration: BoxDecoration(
-                      color: _countdownSeconds <= 10 ? Colors.red.withOpacity(0.8) : AppColors.brand,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2)),
-                    child: Center(child: Text('$_countdownSeconds',
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white)))),
-                ])),
-              ),
-              // Booking details
-              Flexible(
-                child: SingleChildScrollView(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 40)
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Container(
                   padding: const EdgeInsets.all(20),
-                  child: Column(children: [
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(12)),
-                      child: Column(children: [
-                        _alertRow2(Icons.home_repair_service_rounded, 'Service', bk['service'] ?? '', AppColors.teal),
-                        const Divider(height: 16, color: AppColors.line),
-                        _alertRow2(Icons.currency_rupee_rounded, 'Price', '₹${bk['price'] ?? bk['priceVal'] ?? 0}', AppColors.green),
-                        const Divider(height: 16, color: AppColors.line),
-                        _alertRow2(Icons.calendar_today_rounded, 'Date & Time', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}', AppColors.brand),
-                        const Divider(height: 16, color: AppColors.line),
-                        _alertRow2(Icons.location_on_rounded, 'Address', bk['address'] ?? '', AppColors.red),
-                        const Divider(height: 16, color: AppColors.line),
-                        _alertRow2(Icons.person_rounded, 'Customer', '${bk['customer'] ?? ''} · ${bk['phone'] ?? ''}', AppColors.muted),
-                      ])),
-                    if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
-                      const SizedBox(height: 10),
-                      Wrap(spacing: 6, runSpacing: 6,
-                        children: (bk['summary'] as List).map((s) {
-                          final parts = s.toString().split(' > ');
-                          return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                            decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: AppColors.teal.withOpacity(0.3))),
-                            child: Text(parts.length > 1 ? parts.sublist(1).join(' > ') : s.toString(),
-                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)));
-                        }).toList()),
-                    ],
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _declineBooking,
-                          icon: const Icon(Icons.close, color: AppColors.red, size: 18),
-                          label: const Text('Decline', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size(double.infinity, 50),
-                            side: const BorderSide(color: AppColors.red),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))))),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Color(0xFF0A2E36), AppColors.teal],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(Icons.notifications_active_rounded, color: Colors.white, size: 24),
+                      ),
                       const SizedBox(width: 12),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _acceptBooking,
-                          icon: const Icon(Icons.check_rounded, color: Colors.white, size: 20),
-                          label: const Text('Accept', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.green,
-                            minimumSize: const Size(double.infinity, 50),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))))),
-                    ]),
-                  ])),
-            ]),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('New Booking Alert!',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
+                            Text('Accept quickly before it expires',
+                              style: TextStyle(fontSize: 11, color: Colors.white70)),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: _countdownSeconds <= 10 ? Colors.red.withOpacity(0.8) : AppColors.brand,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '$_countdownSeconds',
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Body
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: AppColors.bg,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            children: [
+                              _alertRow2(Icons.home_repair_service_rounded, 'Service', bk['service'] ?? '', AppColors.teal),
+                              const Divider(height: 16, color: AppColors.line),
+                              _alertRow2(Icons.currency_rupee_rounded, 'Price', 'Rs.${bk['price'] ?? bk['priceVal'] ?? 0}', AppColors.green),
+                              const Divider(height: 16, color: AppColors.line),
+                              _alertRow2(Icons.calendar_today_rounded, 'Date', '${bk['date'] ?? ''} at ${bk['time'] ?? ''}', AppColors.brand),
+                              const Divider(height: 16, color: AppColors.line),
+                              _alertRow2(Icons.location_on_rounded, 'Address', bk['address'] ?? '', AppColors.red),
+                              const Divider(height: 16, color: AppColors.line),
+                              _alertRow2(Icons.person_rounded, 'Customer', '${bk['customer'] ?? ''} - ${bk['phone'] ?? ''}', AppColors.muted),
+                            ],
+                          ),
+                        ),
+                        if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: (bk['summary'] as List).map((s) {
+                              final parts = s.toString().split(' > ');
+                              return Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: AppColors.tealSoft,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: AppColors.teal.withOpacity(0.3)),
+                                ),
+                                child: Text(
+                                  parts.length > 1 ? parts.sublist(1).join(' > ') : s.toString(),
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _declineBooking,
+                                icon: const Icon(Icons.close, color: AppColors.red, size: 18),
+                                label: const Text('Decline', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size(double.infinity, 50),
+                                  side: const BorderSide(color: AppColors.red),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: _acceptBooking,
+                                icon: const Icon(Icons.check_rounded, color: Colors.white, size: 20),
+                                label: const Text('Accept', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.green,
+                                  minimumSize: const Size(double.infinity, 50),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1013,22 +1079,38 @@ class _DashboardScreenState extends State<DashboardScreen> with TickerProviderSt
   }
 
   Widget _alertRow2(IconData icon, String label, String value, Color color) {
-    return Row(children: [
-      Container(width: 32, height: 32,
-        decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-        child: Icon(icon, color: color, size: 16)),
-      const SizedBox(width: 10),
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted, fontWeight: FontWeight.w600)),
-        Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink)),
-      ])),
-    ]);
+    return Row(
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: color, size: 16),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted, fontWeight: FontWeight.w600)),
+              Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink)),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _alertRow(String label, String value) {
-    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      SizedBox(width: 80, child: Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600))),
-      Expanded(child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink))),
-    ]);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(width: 80, child: Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600))),
+        Expanded(child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink))),
+      ],
+    );
   }
 }
