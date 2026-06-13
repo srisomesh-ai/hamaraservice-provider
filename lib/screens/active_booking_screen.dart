@@ -120,17 +120,19 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       'status': 'completed', 'completedAt': DateTime.now().toIso8601String(),
     });
 
-    // Update provider stats
+    // Update job count only — earnings update after customer pays
     final provSnap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}').get();
     if (provSnap.exists) {
       final data = Map<String, dynamic>.from(provSnap.value as Map);
       final totalBookings = ((data['totalBookings'] ?? data['totalJobs'] ?? 0) as num).toInt() + 1;
-      final price = (widget.booking['priceVal'] ?? widget.booking['price'] ?? 0);
-      final earned = ((data['totalEarned'] ?? 0) as num).toDouble() + (price is num ? price.toDouble() : 0);
       await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
-        'totalBookings': totalBookings, 'totalJobs': totalBookings, 'totalEarned': earned,
+        'totalBookings': totalBookings, 'totalJobs': totalBookings,
       });
     }
+    // Mark booking as awaiting customer payment
+    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
+      'paymentStatus': 'pending_customer',
+    });
 
     setState(() => _loading = false);
 
