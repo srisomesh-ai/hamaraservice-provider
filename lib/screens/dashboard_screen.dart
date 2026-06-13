@@ -41,6 +41,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   int _countdownSeconds = 30;
   int _openJobsCount = 0;
   final _audioPlayer = AudioPlayer();
+  // Track declined/standby so they never reappear
+  final Set<String> _dismissedBookingKeys = {};
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
@@ -232,6 +234,8 @@ class _DashboardScreenState extends State<DashboardScreen>
           return;
         }
         if (bk['status'] == 'cancelled') return;
+        // Skip if provider already declined or standbyed this booking
+        if (_dismissedBookingKeys.contains(event.snapshot.key)) return;
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         final providerServices =
             (_providerData?['services'] as List?)
@@ -276,6 +280,8 @@ class _DashboardScreenState extends State<DashboardScreen>
           continue;
         }
         if (bk['status'] == 'cancelled') continue;
+        // Skip dismissed bookings
+        if (_dismissedBookingKeys.contains(entry.key)) continue;
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         if (providerServices.isNotEmpty &&
             !providerServices.any((s) => s == svcName)) continue;
@@ -464,6 +470,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     _stopAlert();
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
+    // Remember this booking so it never pops up again this session
+    _dismissedBookingKeys.add(bookingKey);
     setState(() {
       _incomingBooking = null;
       _incomingBookingKey = null;
@@ -489,6 +497,10 @@ class _DashboardScreenState extends State<DashboardScreen>
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
     _stopAlert();
+    // Remember this booking so it never pops up again this session
+    if (_incomingBookingKey != null) {
+      _dismissedBookingKeys.add(_incomingBookingKey!);
+    }
     setState(() {
       _incomingBooking = null;
       _incomingBookingKey = null;
