@@ -52,6 +52,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         .listen((event) {
       final status = event.snapshot.value?.toString() ?? '';
       if (mounted && status.isNotEmpty) setState(() => _status = status);
+      // When customer pays, status changes to 'completed'
+      if (status == 'completed' && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Payment received! Job completed.'),
+          backgroundColor: AppColors.green));
+      }
     });
   }
 
@@ -112,27 +118,29 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').update({
       'status': 'verified', 'verifiedAt': DateTime.now().millisecondsSinceEpoch,
     });
+    // Status = 'payment_pending' — NOT completed yet
+    // Job only becomes 'completed' after customer pays via payment screen
     await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-      'status': 'completed', 'otpVerifiedAt': DateTime.now().millisecondsSinceEpoch,
-      'completedAt': DateTime.now().toIso8601String(),
+      'status': 'payment_pending',
+      'otpVerifiedAt': DateTime.now().millisecondsSinceEpoch,
+      'otpVerifiedDate': DateTime.now().toIso8601String(),
     });
     await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'status': 'completed', 'completedAt': DateTime.now().toIso8601String(),
+      'status': 'payment_pending',
+      'paymentStatus': 'awaiting_customer',
+      'otpVerifiedDate': DateTime.now().toIso8601String(),
     });
 
-    // Update job count only — earnings update after customer pays
+    // Update job count only — totalEarned updates after customer pays
     final provSnap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}').get();
     if (provSnap.exists) {
       final data = Map<String, dynamic>.from(provSnap.value as Map);
       final totalBookings = ((data['totalBookings'] ?? data['totalJobs'] ?? 0) as num).toInt() + 1;
       await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
         'totalBookings': totalBookings, 'totalJobs': totalBookings,
+        // totalEarned is updated by customer payment screen after payment succeeds
       });
     }
-    // Mark booking as awaiting customer payment
-    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'paymentStatus': 'pending_customer',
-    });
 
     setState(() => _loading = false);
 
@@ -142,8 +150,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         barrierDismissible: false,
         builder: (_) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('Job Completed! 🎉', style: TextStyle(fontWeight: FontWeight.w800)),
-          content: const Text('Great work! The booking has been marked as completed.'),
+          title: const Text('OTP Verified! 🎉', style: TextStyle(fontWeight: FontWeight.w800)),
+          content: const Text('Service verified! Waiting for customer to complete payment.'),
           actions: [
             TextButton(
               onPressed: () {
@@ -447,7 +455,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       case 'accepted': return 'Accepted — Ready to Start';
       case 'active': return 'In Progress';
       case 'otp_sent': return 'Waiting for OTP Verification';
-      case 'completed': return 'Completed';
+      case 'payment_pending': return 'Awaiting Customer Payment';
+      case 'completed': return 'Completed — Payment Received';
       default: return s;
     }
   }
