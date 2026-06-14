@@ -23,7 +23,11 @@
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <meta-data android:name="io.flutter.embedding.android.NormalTheme" android:resource="@style/NormalTheme"/>
-            <meta-data android:name="flutterEmbedding" android:value="2"/>
+            <!-- Default notification channel -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="hamaraservice_high_priority"/>
+        <meta-data android:name="flutterEmbedding" android:value="2"/>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
