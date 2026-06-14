@@ -11,6 +11,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:vibration/vibration.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../utils/theme.dart';
+import 'test_console_screen.dart';
 import 'login_screen.dart';
 import 'active_booking_screen.dart';
 import 'services_screen.dart';
@@ -44,6 +45,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   int _openJobsCount = 0;
   final _audioPlayer = AudioPlayer();
   final Set<String> _dismissedBookingKeys = {};
+  int _testTapCount = 0;
+  DateTime? _lastTestTap;
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
@@ -1681,6 +1684,20 @@ class _DashboardScreenState extends State<DashboardScreen>
     return '{$entries}';
   }
 
+
+  void _secretTap() {
+    final now = DateTime.now();
+    if (_lastTestTap != null && now.difference(_lastTestTap!).inSeconds > 2) {
+      _testTapCount = 0;
+    }
+    _lastTestTap = now;
+    _testTapCount++;
+    if (_testTapCount >= 5) {
+      _testTapCount = 0;
+      Navigator.push(context, MaterialPageRoute(
+        builder: (_) => TestConsoleScreen(providerId: _pid)));
+    }
+  }
   // ── INCOMING ALERT ────────────────────────────────────────────
   Widget _buildIncomingAlert() {
     final bk = _incomingBooking!;
