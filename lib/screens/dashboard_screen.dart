@@ -17,6 +17,7 @@ import 'active_booking_screen.dart';
 import 'services_screen.dart';
 import 'support_screen.dart';
 import 'earnings_screen.dart';
+import 'provider_services_screen.dart';
 import 'ratings_screen.dart';
 import 'open_jobs_screen.dart';
 import 'profile_edit_screen.dart';
