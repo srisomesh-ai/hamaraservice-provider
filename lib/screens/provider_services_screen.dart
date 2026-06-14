@@ -96,8 +96,8 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(_myServices.contains(id)
-          ? '✅ \${svc['name']} added to your services'
-          : '❌ \${svc['name']} removed'),
+          ? '✅ \${svc["name"]} added to your services'
+          : '❌ \${svc["name"]} removed'),
         backgroundColor: _myServices.contains(id) ? AppColors.green : AppColors.muted,
         duration: const Duration(seconds: 2)));
     }
@@ -198,7 +198,7 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
                         const SizedBox(width: 6),
                         _pill('You earn: ₹$providerEarns', AppColors.green),
                         const SizedBox(width: 6),
-                        _pill('$commission% comm', AppColors.purple),
+                        _pill('$commission% comm', const Color(0xFF8B5CF6)),
                       ]),
                     ])),
                     Container(width: 28, height: 28,
