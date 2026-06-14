@@ -898,15 +898,15 @@ class _DashboardScreenState extends State<DashboardScreen>
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
-                          color: AppColors.purple.withOpacity(0.08),
+                          color: const Color(0xFF8B5CF6).withOpacity(0.08),
                           borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: AppColors.purple.withOpacity(0.3))),
+                          border: Border.all(color: const Color(0xFF8B5CF6).withOpacity(0.3))),
                         child: Row(children: [
                           Container(width: 40, height: 40,
-                            decoration: BoxDecoration(color: AppColors.purple.withOpacity(0.15),
+                            decoration: BoxDecoration(color: const Color(0xFF8B5CF6).withOpacity(0.15),
                               borderRadius: BorderRadius.circular(10)),
                             child: const Icon(Icons.miscellaneous_services_rounded,
-                              color: AppColors.purple, size: 22)),
+                              color: const Color(0xFF8B5CF6), size: 22)),
                           const SizedBox(width: 12),
                           const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             Text('My Services', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
