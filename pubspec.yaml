@@ -19,6 +19,7 @@ dependencies:
   geocoding: ^3.0.0
   shared_preferences: ^2.2.3
   url_launcher: ^6.3.1
+  http: ^1.2.0
   vibration: ^1.8.4
   image_picker: ^1.1.2
   firebase_storage: ^11.7.7
