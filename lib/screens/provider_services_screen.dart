@@ -96,7 +96,7 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(_myServices.contains(id)
-          ? '✅ ${svc["name"]} added to your services'
+          ? '✅ ${svc[\'name\']} added to your services'
           : '❌ ${svc["name"]} removed'),
         backgroundColor: _myServices.contains(id) ? AppColors.green : AppColors.muted,
         duration: const Duration(seconds: 2)));
