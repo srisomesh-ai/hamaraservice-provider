@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
@@ -1666,7 +1667,11 @@ class _DashboardScreenState extends State<DashboardScreen>
       await http.post(
         Uri.parse('https://hamaraservice.com/api/notify_booking.php'),
         headers: {'Content-Type': 'application/json'},
-        body: '{"event":"$event","fcmToken":"$fcmToken","data":${_mapToJson(data)}}',
+        body: jsonEncode({
+          'event': event,
+          'fcmToken': fcmToken,
+          'data': data,
+        }),
       );
     } catch (_) {}
   }
