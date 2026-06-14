@@ -1167,7 +1167,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           ]));
     }
     return RefreshIndicator(
-      onRefresh: _loadBookings,
+      onRefresh: () async => _listenBookings(),
       color: AppColors.teal,
       child: ListView.builder(
           padding: const EdgeInsets.all(16),
