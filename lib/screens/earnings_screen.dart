@@ -192,19 +192,22 @@ class _EarningsScreenState extends State<EarningsScreen> {
 
     setState(() => _requesting = true);
     try {
+      // Load provider name first
+      final provSnap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}').get();
+      final provData = provSnap.exists ? Map<String, dynamic>.from(provSnap.value as Map) : <String, dynamic>{};
+      final provName = provData['name']?.toString() ?? '';
+      final provPhone = provData['phone']?.toString() ?? '';
+
       await FirebaseDatabase.instance.ref('payout_requests').push().set({
         'providerId': widget.providerId,
-        'providerName': '', // will be filled from provider data
+        'providerName': provName,
+        'providerPhone': provPhone,
         'amount': amount,
         'bankDetails': _bankCtrl.text.trim(),
         'status': 'pending',
         'requestedAt': DateTime.now().toIso8601String(),
+        'availableBalance': _availableBalance,
       });
-
-      // Load provider name
-      final provSnap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}/name').get();
-      final provName = provSnap.value?.toString() ?? '';
-      final lastPayout = (await FirebaseDatabase.instance.ref('payout_requests').orderByChild('providerId').equalTo(widget.providerId).limitToLast(1).get());
 
       _amountCtrl.clear();
       _bankCtrl.clear();
