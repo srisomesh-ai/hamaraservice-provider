@@ -490,6 +490,21 @@ class _DashboardScreenState extends State<DashboardScreen>
         'providerName': _providerData?['name'] ?? '',
         'acceptedAt': DateTime.now().toIso8601String(),
       });
+      // Send push notification to customer
+      try {
+        final customerSnap = await FirebaseDatabase.instance
+            .ref('customers/${bk['customerId']}/fcmToken').get();
+        final customerToken = customerSnap.value?.toString() ?? '';
+        await _sendPushNotification(
+          fcmToken: customerToken,
+          event: 'booking_accepted',
+          data: {
+            'providerName': _providerData?['name']?.toString() ?? '',
+            'service': bk['service']?.toString() ?? '',
+            'bookingId': bookingKey,
+          },
+        );
+      } catch (_) {}
       if (mounted) {
         Navigator.push(
             context,
