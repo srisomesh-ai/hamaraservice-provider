@@ -494,14 +494,14 @@ class _DashboardScreenState extends State<DashboardScreen>
       // Send push notification to customer
       try {
         final customerSnap = await FirebaseDatabase.instance
-            .ref('customers/${bk['customerId']}/fcmToken').get();
+            .ref('customers/${booking['customerId']}/fcmToken').get();
         final customerToken = customerSnap.value?.toString() ?? '';
         await _sendPushNotification(
           fcmToken: customerToken,
           event: 'booking_accepted',
           data: {
             'providerName': _providerData?['name']?.toString() ?? '',
-            'service': bk['service']?.toString() ?? '',
+            'service': booking['service']?.toString() ?? '',
             'bookingId': bookingKey,
           },
         );
