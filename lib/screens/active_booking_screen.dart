@@ -47,16 +47,19 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
   void _watchStatus() {
     _statusWatcher = FirebaseDatabase.instance
-        .ref('active_bookings/${widget.bookingKey}/status')
+        .ref('active_bookings/${widget.bookingKey}')
         .onValue
         .listen((event) {
-      final status = event.snapshot.value?.toString() ?? '';
-      if (mounted && status.isNotEmpty) setState(() => _status = status);
-      // When customer pays, status changes to 'completed'
-      if (status == 'completed' && mounted) {
+      if (!event.snapshot.exists || !mounted) return;
+      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final status = data['status']?.toString() ?? '';
+      if (status.isNotEmpty) setState(() => _status = status);
+      // Customer paid — show success snackbar
+      if (status == 'completed') {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Payment received! Job completed.'),
-          backgroundColor: AppColors.green));
+          content: Text('🎉 Payment received! Job completed.'),
+          backgroundColor: AppColors.green,
+          duration: Duration(seconds: 4)));
       }
     });
   }
@@ -118,8 +121,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').update({
       'status': 'verified', 'verifiedAt': DateTime.now().millisecondsSinceEpoch,
     });
-    // Status = 'payment_pending' — NOT completed yet
-    // Job only becomes 'completed' after customer pays via payment screen
+    // Set payment_pending — NOT completed yet
+    // Job becomes completed only after customer pays
     await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
       'status': 'payment_pending',
       'otpVerifiedAt': DateTime.now().millisecondsSinceEpoch,
@@ -138,11 +141,10 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       final totalBookings = ((data['totalBookings'] ?? data['totalJobs'] ?? 0) as num).toInt() + 1;
       await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
         'totalBookings': totalBookings, 'totalJobs': totalBookings,
-        // totalEarned is updated by customer payment screen after payment succeeds
       });
     }
 
-    setState(() => _loading = false);
+    setState(() { _loading = false; _status = 'payment_pending'; });
 
     if (mounted) {
       showDialog(
@@ -150,16 +152,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         barrierDismissible: false,
         builder: (_) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('OTP Verified! 🎉', style: TextStyle(fontWeight: FontWeight.w800)),
-          content: const Text('Service verified! Waiting for customer to complete payment.'),
+          title: const Text('OTP Verified! ✅', style: TextStyle(fontWeight: FontWeight.w800)),
+          content: const Text('Service verified! Waiting for customer to complete payment. The job will appear under Active until payment is done.'),
           actions: [
             TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.pushReplacement(context, MaterialPageRoute(
-                  builder: (_) => DashboardScreen(providerId: widget.providerId)));
-              },
-              child: const Text('Done', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
           ],
         ),
@@ -345,6 +343,29 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
             ),
 
           // OTP entry
+          // Payment pending banner
+          if (_status == 'payment_pending') ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.yellow.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.yellow.withOpacity(0.4))),
+              child: const Column(children: [
+                Row(children: [
+                  Icon(Icons.hourglass_top_rounded, color: AppColors.yellow, size: 22),
+                  SizedBox(width: 10),
+                  Expanded(child: Text('Awaiting Customer Payment',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink))),
+                ]),
+                SizedBox(height: 8),
+                Text('OTP verified! Waiting for customer to complete payment via the app. You will be notified when payment is done.',
+                  style: TextStyle(fontSize: 13, color: AppColors.muted, height: 1.4)),
+              ]),
+            ),
+          ],
+
           if (_status == 'otp_sent' || _showOtpEntry) ...[
             const SizedBox(height: 16),
             Container(
@@ -455,8 +476,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       case 'accepted': return 'Accepted — Ready to Start';
       case 'active': return 'In Progress';
       case 'otp_sent': return 'Waiting for OTP Verification';
-      case 'payment_pending': return 'Awaiting Customer Payment';
-      case 'completed': return 'Completed — Payment Received';
+      case 'payment_pending': return '⏳ Awaiting Customer Payment';
+      case 'completed': return '✅ Completed — Payment Received';
       default: return s;
     }
   }
