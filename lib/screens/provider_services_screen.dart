@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -17,18 +16,13 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
   bool _loading = true;
   String _filterCat = 'All';
 
-  // All 25 services — reads prices from Firebase (admin-controlled)
   static const _cats = ['All','Home Cleaning','Appliance Care','Vehicle Care',
     'Medical','Beauty & Grooming','Care Services','Cooking','Repairs','Pest Control','Painting'];
 
   @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
+  void initState() { super.initState(); _loadData(); }
 
   Future<void> _loadData() async {
-    // Load all services from Firebase service_catalog
     final catalogSnap = await FirebaseDatabase.instance.ref('service_catalog').get();
     List<Map<String, dynamic>> services = [];
 
@@ -39,16 +33,12 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
         services.add({...svc, 'id': entry.key});
       }
     } else {
-      // Fallback — use hardcoded list if Firebase not seeded yet
-      services = _fallbackServices;
+      services = List<Map<String, dynamic>>.from(_fallbackServices);
     }
-
-    // Sort by SVC ID
     services.sort((a, b) => (a['id'] as String).compareTo(b['id'] as String));
 
-    // Load provider's current services
     final provSnap = await FirebaseDatabase.instance
-        .ref('providers/\${widget.providerId}/services').get();
+        .ref('providers/${widget.providerId}/services').get();
     Set<String> myServices = {};
     if (provSnap.exists) {
       final list = provSnap.value;
@@ -59,46 +49,33 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
         }
       }
     }
-
-    setState(() {
-      _allServices = services;
-      _myServices = myServices;
-      _loading = false;
-    });
+    setState(() { _allServices = services; _myServices = myServices; _loading = false; });
   }
 
   Future<void> _toggleService(Map<String, dynamic> svc) async {
     HapticFeedback.mediumImpact();
     final id = svc['id'] as String;
+    final svcName = svc['name']?.toString() ?? id;
+    final wasSelected = _myServices.contains(id);
+
     setState(() {
-      if (_myServices.contains(id)) {
-        _myServices.remove(id);
-      } else {
-        _myServices.add(id);
-      }
+      if (wasSelected) _myServices.remove(id);
+      else _myServices.add(id);
     });
 
-    // Save to Firebase
     final servicesList = _myServices.map((svcId) {
-      final s = _allServices.firstWhere((s) => s['id'] == svcId, orElse: () => {'id': svcId, 'name': svcId});
-      return {
-        'id': svcId,
-        'name': s['name'] ?? svcId,
-        'icon': s['icon'] ?? '🔧',
-        'cat': s['cat'] ?? '',
-      };
+      final s = _allServices.firstWhere((s) => s['id'] == svcId, orElse: () => {'id': svcId});
+      return {'id': svcId, 'name': s['name'] ?? svcId, 'icon': s['icon'] ?? '🔧', 'cat': s['cat'] ?? ''};
     }).toList();
 
     await FirebaseDatabase.instance
-        .ref('providers/\${widget.providerId}/services')
-        .set(servicesList);
+        .ref('providers/${widget.providerId}/services').set(servicesList);
 
     if (mounted) {
+      final msg = wasSelected ? '$svcName removed' : '$svcName added to your services';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(_myServices.contains(id)
-          ? '✅ ${svc[\'name\']} added to your services'
-          : '❌ ${svc["name"]} removed'),
-        backgroundColor: _myServices.contains(id) ? AppColors.green : AppColors.muted,
+        content: Text(wasSelected ? '❌ $msg' : '✅ $msg'),
+        backgroundColor: wasSelected ? AppColors.muted : AppColors.green,
         duration: const Duration(seconds: 2)));
     }
   }
@@ -122,11 +99,11 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)),
-              child: Text('\${_myServices.length} selected',
+              child: Text('${_myServices.length} selected',
                 style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700))))),
         ]),
       body: Column(children: [
-        // Category filter tabs
+        // Category filter
         Container(color: Colors.white, padding: const EdgeInsets.symmetric(vertical: 10),
           child: SingleChildScrollView(scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -146,15 +123,16 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
             }).toList()))),
 
         // Info banner
-        Container(color: AppColors.tealSoft, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(children: [
-            const Icon(Icons.info_outline_rounded, color: AppColors.teal, size: 16),
-            const SizedBox(width: 8),
-            const Expanded(child: Text('Tap a service to add/remove it. Only selected services will show to customers.',
+        Container(color: AppColors.tealSoft,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: const Row(children: [
+            Icon(Icons.info_outline_rounded, color: AppColors.teal, size: 16),
+            SizedBox(width: 8),
+            Expanded(child: Text('Tap to add or remove services. Prices set by HamaraService.',
               style: TextStyle(fontSize: 11, color: AppColors.teal, fontWeight: FontWeight.w500))),
           ])),
 
-        // Service list
+        // List
         Expanded(child: RefreshIndicator(
           onRefresh: _loadData,
           child: ListView.builder(
@@ -165,7 +143,7 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
               final id = svc['id'] as String;
               final selected = _myServices.contains(id);
               final basePrice = ServicePriceService().getBasePrice(id);
-              final commission = svc['commission'] ?? 12;
+              final commission = (svc['commission'] ?? 12) as int;
               final commAmt = (basePrice * commission / 100).round();
               final providerEarns = basePrice - commAmt;
 
@@ -189,24 +167,30 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
                         style: const TextStyle(fontSize: 24)))),
                     const SizedBox(width: 12),
                     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(svc['name'] ?? '', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
-                        color: selected ? AppColors.teal : AppColors.ink)),
-                      Text(svc['cat'] ?? '', style: const TextStyle(fontSize: 11, color: AppColors.muted)),
+                      Text(svc['name'] ?? '',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
+                          color: selected ? AppColors.teal : AppColors.ink)),
+                      Text(svc['cat'] ?? '',
+                        style: const TextStyle(fontSize: 11, color: AppColors.muted)),
                       const SizedBox(height: 4),
                       Row(children: [
                         _pill('₹$basePrice', AppColors.teal),
                         const SizedBox(width: 6),
-                        _pill('You earn: ₹$providerEarns', AppColors.green),
+                        _pill('You earn ₹$providerEarns', AppColors.green),
                         const SizedBox(width: 6),
-                        _pill('$commission% comm', const Color(0xFF8B5CF6)),
+                        _pill('$commission% comm', AppColors.yellow),
                       ]),
                     ])),
+                    const SizedBox(width: 8),
                     Container(width: 28, height: 28,
                       decoration: BoxDecoration(
                         color: selected ? AppColors.teal : Colors.transparent,
-                        border: Border.all(color: selected ? AppColors.teal : AppColors.line, width: 2),
+                        border: Border.all(
+                          color: selected ? AppColors.teal : AppColors.line, width: 2),
                         borderRadius: BorderRadius.circular(8)),
-                      child: selected ? const Icon(Icons.check_rounded, color: Colors.white, size: 16) : null),
+                      child: selected
+                        ? const Icon(Icons.check_rounded, color: Colors.white, size: 16)
+                        : null),
                   ])));
             }))),
       ]));
@@ -214,10 +198,11 @@ class _ProviderServicesState extends State<ProviderServicesScreen> {
 
   Widget _pill(String text, Color color) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(5)),
-    child: Text(text, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: color)));
+    decoration: BoxDecoration(
+      color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(5)),
+    child: Text(text, style: TextStyle(
+      fontSize: 10, fontWeight: FontWeight.w700, color: color)));
 
-  // Fallback if Firebase not seeded
   static const _fallbackServices = [
     {'id':'SVC001','icon':'🧹','name':'House Maid (Hourly)','cat':'Home Cleaning','commission':10},
     {'id':'SVC002','icon':'🫧','name':'Deep House Cleaning','cat':'Home Cleaning','commission':12},
