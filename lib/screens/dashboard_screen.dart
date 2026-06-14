@@ -41,8 +41,6 @@ class _DashboardScreenState extends State<DashboardScreen>
   int _countdownSeconds = 30;
   int _openJobsCount = 0;
   final _audioPlayer = AudioPlayer();
-  // Track declined/standby so they never reappear
-  final Set<String> _dismissedBookingKeys = {};
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
@@ -73,56 +71,101 @@ class _DashboardScreenState extends State<DashboardScreen>
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
     _newBookingListener?.cancel();
+    _providerDataListener?.cancel();
+    _bookingsListener?.cancel();
     _pulseCtrl.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }
 
+  StreamSubscription? _providerDataListener;
+  StreamSubscription? _bookingsListener;
+
   Future<void> _loadProfile() async {
     try {
-      try {
-        final token = await FirebaseMessaging.instance.getToken();
-        if (token != null) {
-          await FirebaseDatabase.instance
-              .ref('providers/$_pid/fcmToken')
-              .set(token);
-        }
-      } catch (e) {}
-      final snap =
-          await FirebaseDatabase.instance.ref('providers/$_pid').get();
-      if (snap.exists) {
-        final data = Map<String, dynamic>.from(snap.value as Map);
-        setState(() {
-          _providerData = data;
-          _available = data['available'] == true;
-          _loading = false;
-        });
-      } else {
-        setState(() => _loading = false);
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token != null) {
+        await FirebaseDatabase.instance.ref('providers/$_pid/fcmToken').set(token);
       }
-    } catch (e) {
-      setState(() => _loading = false);
-    }
-    _loadBookings();
+    } catch (e) {}
+
+    // Real-time provider data listener — updates overview instantly
+    _providerDataListener = FirebaseDatabase.instance
+        .ref('providers/$_pid')
+        .onValue
+        .listen((event) {
+      if (!event.snapshot.exists || !mounted) return;
+      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+      setState(() {
+        _providerData = data;
+        _available = data['available'] == true;
+        _loading = false;
+      });
+    }, onError: (_) => setState(() => _loading = false));
+
+    _listenBookings();
   }
 
-  Future<void> _loadBookings() async {
-    try {
-      final snap =
-          await FirebaseDatabase.instance.ref('bookings').get();
-      if (!snap.exists) return;
-      final all = Map<String, dynamic>.from(snap.value as Map);
-      final mine = all.values
-          .map((v) => Map<String, dynamic>.from(v as Map))
-          .where((b) =>
-              b['providerId'] == _pid ||
-              (b['acceptedBy'] is Map &&
-                  b['acceptedBy']['id'] == _pid))
+  void _listenBookings() {
+    // Real-time bookings listener — updates immediately when status changes
+    _bookingsListener = FirebaseDatabase.instance
+        .ref('bookings')
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      if (!event.snapshot.exists) {
+        setState(() => _bookings = []);
+        return;
+      }
+      final all = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final mine = all.entries
+          .where((e) {
+            final b = e.value as Map;
+            return b['providerId'] == _pid ||
+                (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid);
+          })
+          .map((e) => Map<String, dynamic>.from({...e.value as Map, 'id': e.key}))
           .toList()
-        ..sort((a, b) =>
-            (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
+        ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
+
+      // Check for new review/rating
+      for (final b in mine) {
+        if ((b['rating'] != null) && !(b['reviewNotified'] == true)) {
+          _notifyNewReview(b);
+          // Mark as notified
+          FirebaseDatabase.instance
+              .ref('bookings/${b['id']}/reviewNotified').set(true);
+        }
+      }
+
       if (mounted) setState(() => _bookings = mine);
-    } catch (e) {}
+    });
+  }
+
+  void _notifyNewReview(Map<String, dynamic> booking) {
+    if (!mounted) return;
+    final rating = booking['rating']?.toString() ?? '';
+    final review = booking['review']?.toString() ?? '';
+    final service = booking['service']?.toString() ?? 'Service';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(children: [
+        const Text('⭐', style: TextStyle(fontSize: 20)),
+        const SizedBox(width: 8),
+        Expanded(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('New $rating★ review for $service',
+              style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.white)),
+            if (review.isNotEmpty)
+              Text('"$review"',
+                style: const TextStyle(fontSize: 11, color: Colors.white70),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+          ])),
+      ]),
+      backgroundColor: AppColors.green,
+      duration: const Duration(seconds: 5),
+      behavior: SnackBarBehavior.floating));
   }
 
   void _watchOpenJobs() {
@@ -234,8 +277,6 @@ class _DashboardScreenState extends State<DashboardScreen>
           return;
         }
         if (bk['status'] == 'cancelled') return;
-        // Skip if provider already declined or standbyed this booking
-        if (_dismissedBookingKeys.contains(event.snapshot.key)) return;
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         final providerServices =
             (_providerData?['services'] as List?)
@@ -280,8 +321,6 @@ class _DashboardScreenState extends State<DashboardScreen>
           continue;
         }
         if (bk['status'] == 'cancelled') continue;
-        // Skip dismissed bookings
-        if (_dismissedBookingKeys.contains(entry.key)) continue;
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         if (providerServices.isNotEmpty &&
             !providerServices.any((s) => s == svcName)) continue;
@@ -470,8 +509,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     _stopAlert();
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
-    // Remember this booking so it never pops up again this session
-    _dismissedBookingKeys.add(bookingKey);
     setState(() {
       _incomingBooking = null;
       _incomingBookingKey = null;
@@ -497,10 +534,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
     _stopAlert();
-    // Remember this booking so it never pops up again this session
-    if (_incomingBookingKey != null) {
-      _dismissedBookingKeys.add(_incomingBookingKey!);
-    }
     setState(() {
       _incomingBooking = null;
       _incomingBookingKey = null;
@@ -596,7 +629,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     final isApproved =
         (_providerData?['status'] ?? 'pending') == 'approved';
     final activeBookings = _bookings
-        .where((b) => ['accepted', 'active'].contains(b['status']))
+        .where((b) => ['accepted', 'active', 'otp_sent', 'payment_pending'].contains(b['status']))
         .toList();
     final totalEarned = _providerData?['totalEarned'] ?? 0;
     final photo = _providerData?['photo'] as String?;
@@ -1084,7 +1117,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   Widget _buildBookings() {
     final active = _bookings
         .where((b) =>
-            ['accepted', 'active'].contains(b['status']))
+            ['accepted', 'active', 'otp_sent', 'payment_pending'].contains(b['status']))
         .toList();
     final completed = _bookings
         .where((b) => b['status'] == 'completed')
@@ -1226,7 +1259,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                               color: AppColors.muted))),
                 ]),
               ],
-              if (['accepted', 'active']
+              if (['accepted', 'active', 'otp_sent', 'payment_pending']
                   .contains(status)) ...[
                 const SizedBox(height: 10),
                 SizedBox(
@@ -1584,16 +1617,13 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   String _statusLabel(String s) {
     switch (s) {
-      case 'accepted':
-        return 'Accepted';
-      case 'active':
-        return 'In Progress';
-      case 'completed':
-        return 'Completed';
-      case 'cancelled':
-        return 'Cancelled';
-      default:
-        return s;
+      case 'accepted': return 'Accepted';
+      case 'active': return 'In Progress';
+      case 'otp_sent': return 'OTP Sent';
+      case 'payment_pending': return '⏳ Awaiting Payment';
+      case 'completed': return 'Completed';
+      case 'cancelled': return 'Cancelled';
+      default: return s;
     }
   }
 
