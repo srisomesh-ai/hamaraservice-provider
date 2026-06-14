@@ -141,7 +141,8 @@ class _EarningsScreenState extends State<EarningsScreen> {
           final p = Map<String, dynamic>.from(entry.value as Map);
           if (p['providerId'] == widget.providerId) {
             final amt = ((p['amount'] ?? 0) as num).toDouble();
-            if (p['status'] == 'approved') withdrawn += amt;
+            // Deduct both pending AND approved from available balance
+            if (p['status'] == 'approved' || p['status'] == 'pending') withdrawn += amt;
             withdrawals.add({...p, 'id': entry.key});
           }
         }
