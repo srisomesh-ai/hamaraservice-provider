@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1636,6 +1637,28 @@ class _DashboardScreenState extends State<DashboardScreen>
       case 'cancelled': return 'Cancelled';
       default: return s;
     }
+  }
+
+
+  // ── Send push notification via Hostinger API ────────────────
+  Future<void> _sendPushNotification({
+    required String fcmToken,
+    required String event,
+    required Map<String, String> data,
+  }) async {
+    if (fcmToken.isEmpty) return;
+    try {
+      await http.post(
+        Uri.parse('https://hamaraservice.com/api/notify_booking.php'),
+        headers: {'Content-Type': 'application/json'},
+        body: '{"event":"$event","fcmToken":"$fcmToken","data":${_mapToJson(data)}}',
+      );
+    } catch (_) {}
+  }
+
+  String _mapToJson(Map<String, String> map) {
+    final entries = map.entries.map((e) => '"${e.key}":"${e.value}"').join(',');
+    return '{$entries}';
   }
 
   // ── INCOMING ALERT ────────────────────────────────────────────
