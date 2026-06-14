@@ -1668,7 +1668,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (fcmToken.isEmpty) return;
     try {
       await http.post(
-        Uri.parse('https://hamaraservice.com/api/notify_booking.php'),
+        Uri.parse('https://asia-southeast1-hamaraservice-s009.cloudfunctions.net/notifyBooking'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'event': event,
