@@ -93,6 +93,23 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
       'status': 'otp_sent', 'otpSentAt': DateTime.now().millisecondsSinceEpoch,
     });
+
+    // Notify customer — OTP required (push notification)
+    try {
+      final custId = widget.booking['customerId']?.toString() ?? '';
+      if (custId.isNotEmpty) {
+        final snap = await FirebaseDatabase.instance
+            .ref('customers/$custId/fcmToken').get();
+        final fcmToken = snap.value?.toString() ?? '';
+        if (fcmToken.isNotEmpty) {
+          await http.post(
+            Uri.parse('https://hamaraservice.com/api/notify_booking.php'),
+            headers: {'Content-Type': 'application/json'},
+            body: '{"event":"otp_requested","fcmToken":"$fcmToken","data":{"otp":"$otp","service":"${widget.booking['service'] ?? ''}"}}',
+          );
+        }
+      }
+    } catch (_) {}
     await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
       'status': 'otp_sent',
     });
