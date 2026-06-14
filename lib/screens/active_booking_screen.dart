@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -105,7 +106,14 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
           await http.post(
             Uri.parse('https://hamaraservice.com/api/notify_booking.php'),
             headers: {'Content-Type': 'application/json'},
-            body: '{"event":"otp_requested","fcmToken":"$fcmToken","data":{"otp":"$otp","service":"${widget.booking['service'] ?? ''}"}}',
+            body: jsonEncode({
+              'event': 'otp_requested',
+              'fcmToken': fcmToken,
+              'data': {
+                'otp': otp,
+                'service': widget.booking['service']?.toString() ?? '',
+              },
+            }),
           );
         }
       }
