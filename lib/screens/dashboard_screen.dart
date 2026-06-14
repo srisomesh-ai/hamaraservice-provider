@@ -890,6 +890,31 @@ class _DashboardScreenState extends State<DashboardScreen>
 
                     const SizedBox(height: 12),
 
+                    // MY SERVICES BUTTON
+                    GestureDetector(
+                      onTap: () => Navigator.push(context, MaterialPageRoute(
+                        builder: (_) => ProviderServicesScreen(providerId: _pid))),
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppColors.purple.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: AppColors.purple.withOpacity(0.3))),
+                        child: Row(children: [
+                          Container(width: 40, height: 40,
+                            decoration: BoxDecoration(color: AppColors.purple.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(10)),
+                            child: const Icon(Icons.miscellaneous_services_rounded,
+                              color: AppColors.purple, size: 22)),
+                          const SizedBox(width: 12),
+                          const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text('My Services', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                            Text('Manage your 25 available services', style: TextStyle(fontSize: 11, color: AppColors.muted)),
+                          ])),
+                          const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
+                        ]))),
+
                     // BIG EARNINGS CARD — FIRST
                     GestureDetector(
                       onTap: () => Navigator.push(
