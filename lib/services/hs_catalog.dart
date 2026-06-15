@@ -60,7 +60,7 @@ class HSCatalog {
 
     // ── SVC001 House Maid ──────────────────────────────────────────
     HSService(id:'SVC001', name:'House Maid', icon:'🧹', cat:'Home Cleaning', basePrice:0, groups:[
-      HSGroup(key:'task', title:'Select Tasks', style:'label', items:[
+      HSGroup(key:'task', title:'Select Tasks', style:'task', items:[
         HSOption(key:'sweep',   name:'Sweeping & Mopping',    ico:'🧹'),
         HSOption(key:'dust',    name:'Dusting',               ico:'🪣'),
         HSOption(key:'dishes',  name:'Dishwashing',           ico:'🍽️'),
