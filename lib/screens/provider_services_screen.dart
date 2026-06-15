@@ -1,233 +1,216 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../utils/theme.dart';
-import '../services/service_price_service.dart';
+import '../services/hs_catalog.dart';
 
 class ProviderServicesScreen extends StatefulWidget {
   final String providerId;
   const ProviderServicesScreen({super.key, required this.providerId});
-  @override State<ProviderServicesScreen> createState() => _ProviderServicesState();
+  @override
+  State<ProviderServicesScreen> createState() => _ProviderServicesState();
 }
 
 class _ProviderServicesState extends State<ProviderServicesScreen> {
-  List<Map<String, dynamic>> _allServices = [];
   Set<String> _myServices = {};
   bool _loading = true;
+  bool _saving = false;
   String _filterCat = 'All';
 
-  static const _cats = ['All','Home Cleaning','Appliance Care','Vehicle Care',
-    'Medical','Beauty & Grooming','Care Services','Cooking','Repairs','Pest Control','Painting'];
+  final _cats = [
+    'All', 'Home Cleaning', 'Home Services', 'Vehicle Care',
+    'Cooking', 'Beauty & Wellness', 'Health Services',
+    'Care Services', 'Outdoor', 'Security', 'Pest Control',
+  ];
 
   @override
-  void initState() { super.initState(); _loadData(); }
-
-  Future<void> _loadData() async {
-    final catalogSnap = await FirebaseDatabase.instance.ref('service_catalog').get();
-    List<Map<String, dynamic>> services = [];
-
-    if (catalogSnap.exists) {
-      final data = Map<String, dynamic>.from(catalogSnap.value as Map);
-      for (final entry in data.entries) {
-        final svc = Map<String, dynamic>.from(entry.value as Map);
-        services.add({...svc, 'id': entry.key});
-      }
-    } else {
-      services = List<Map<String, dynamic>>.from(_fallbackServices);
-    }
-    services.sort((a, b) => (a['id'] as String).compareTo(b['id'] as String));
-
-    final provSnap = await FirebaseDatabase.instance
-        .ref('providers/${widget.providerId}/services').get();
-    Set<String> myServices = {};
-    if (provSnap.exists) {
-      final list = provSnap.value;
-      if (list is List) {
-        for (final item in list) {
-          if (item is Map && item['id'] != null) myServices.add(item['id'].toString());
-          else if (item is String) myServices.add(item);
-        }
-      }
-    }
-    setState(() { _allServices = services; _myServices = myServices; _loading = false; });
+  void initState() {
+    super.initState();
+    _loadMyServices();
   }
 
-  Future<void> _toggleService(Map<String, dynamic> svc) async {
-    HapticFeedback.mediumImpact();
-    final id = svc['id'] as String;
-    final svcName = svc['name']?.toString() ?? id;
-    final wasSelected = _myServices.contains(id);
+  Future<void> _loadMyServices() async {
+    try {
+      final snap = await FirebaseDatabase.instance
+          .ref('providers/${widget.providerId}/services')
+          .get();
+      if (snap.exists) {
+        final data = Map<String, dynamic>.from(snap.value as Map);
+        _myServices = data.entries
+            .where((e) => e.value == true)
+            .map((e) => e.key)
+            .toSet();
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _loading = false);
+  }
 
+  Future<void> _toggle(String svcId) async {
+    HapticFeedback.selectionClick();
     setState(() {
-      if (wasSelected) _myServices.remove(id);
-      else _myServices.add(id);
+      if (_myServices.contains(svcId)) {
+        _myServices.remove(svcId);
+      } else {
+        _myServices.add(svcId);
+      }
     });
-
-    final servicesList = _myServices.map((svcId) {
-      final s = _allServices.firstWhere((s) => s['id'] == svcId, orElse: () => {'id': svcId});
-      return {'id': svcId, 'name': s['name'] ?? svcId, 'icon': s['icon'] ?? '🔧', 'cat': s['cat'] ?? ''};
-    }).toList();
-
-    await FirebaseDatabase.instance
-        .ref('providers/${widget.providerId}/services').set(servicesList);
-
-    if (mounted) {
-      final msg = wasSelected ? '$svcName removed' : '$svcName added to your services';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(wasSelected ? '❌ $msg' : '✅ $msg'),
-        backgroundColor: wasSelected ? AppColors.muted : AppColors.green,
-        duration: const Duration(seconds: 2)));
-    }
   }
 
-  List<Map<String, dynamic>> get _filtered {
-    if (_filterCat == 'All') return _allServices;
-    return _allServices.where((s) => s['cat'] == _filterCat).toList();
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      final Map<String, dynamic> updates = {};
+      for (final svc in HSCatalog.services) {
+        updates[svc.id] = _myServices.contains(svc.id);
+      }
+      await FirebaseDatabase.instance
+          .ref('providers/${widget.providerId}/services')
+          .update(updates);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Services updated successfully!'),
+          backgroundColor: AppColors.green));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: AppColors.red));
+      }
+    }
+    if (mounted) setState(() => _saving = false);
+  }
+
+  List<HSService> get _filtered {
+    if (_filterCat == 'All') return HSCatalog.services;
+    return HSCatalog.services.where((s) => s.cat == _filterCat).toList();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_loading) return const Scaffold(
+      body: Center(child: CircularProgressIndicator()));
 
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
         title: const Text('My Services'),
         backgroundColor: AppColors.teal,
+        foregroundColor: Colors.white,
         actions: [
-          Center(child: Padding(padding: const EdgeInsets.only(right: 16),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)),
-              child: Text('${_myServices.length} selected',
-                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700))))),
+          TextButton(
+            onPressed: _saving ? null : _save,
+            child: _saving
+              ? const SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+              : const Text('SAVE', style: TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14))),
         ]),
       body: Column(children: [
+        // Summary bar
+        Container(
+          color: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.tealSoft,
+                borderRadius: BorderRadius.circular(20)),
+              child: Text('${_myServices.length} selected',
+                style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.teal))),
+            const SizedBox(width: 10),
+            const Text('Select all services you can provide',
+              style: TextStyle(fontSize: 12, color: AppColors.muted)),
+          ])),
         // Category filter
-        Container(color: Colors.white, padding: const EdgeInsets.symmetric(vertical: 10),
-          child: SingleChildScrollView(scrollDirection: Axis.horizontal,
+        Container(
+          color: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(children: _cats.map((cat) {
-              final sel = _filterCat == cat;
+            child: Row(children: _cats.map((c) {
+              final sel = _filterCat == c;
               return GestureDetector(
-                onTap: () { HapticFeedback.selectionClick(); setState(() => _filterCat = cat); },
+                onTap: () => setState(() => _filterCat = c),
                 child: Container(
                   margin: const EdgeInsets.only(right: 8),
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: sel ? AppColors.teal : AppColors.bg,
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: sel ? AppColors.teal : AppColors.line)),
-                  child: Text(cat, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                    border: Border.all(
+                      color: sel ? AppColors.teal : AppColors.line)),
+                  child: Text(c, style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w700,
                     color: sel ? Colors.white : AppColors.muted))));
             }).toList()))),
-
-        // Info banner
-        Container(color: AppColors.tealSoft,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: const Row(children: [
-            Icon(Icons.info_outline_rounded, color: AppColors.teal, size: 16),
-            SizedBox(width: 8),
-            Expanded(child: Text('Tap to add or remove services. Prices set by HamaraService.',
-              style: TextStyle(fontSize: 11, color: AppColors.teal, fontWeight: FontWeight.w500))),
-          ])),
-
-        // List
-        Expanded(child: RefreshIndicator(
-          onRefresh: _loadData,
-          child: ListView.builder(
-            padding: const EdgeInsets.all(12),
-            itemCount: _filtered.length,
-            itemBuilder: (_, i) {
-              final svc = _filtered[i];
-              final id = svc['id'] as String;
-              final selected = _myServices.contains(id);
-              final basePrice = ServicePriceService().getBasePrice(id);
-              final commission = (svc['commission'] ?? 12) as int;
-              final commAmt = (basePrice * commission / 100).round();
-              final providerEarns = basePrice - commAmt;
-
-              return GestureDetector(
-                onTap: () => _toggleService(svc),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: selected ? AppColors.tealSoft : Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: selected ? AppColors.teal : AppColors.line,
-                      width: selected ? 2 : 1)),
-                  child: Row(children: [
-                    Container(width: 48, height: 48,
-                      decoration: BoxDecoration(
-                        color: selected ? AppColors.teal.withOpacity(0.15) : AppColors.bg,
-                        borderRadius: BorderRadius.circular(12)),
-                      child: Center(child: Text(svc['icon'] ?? '🔧',
-                        style: const TextStyle(fontSize: 24)))),
-                    const SizedBox(width: 12),
-                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(svc['name'] ?? '',
-                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
-                          color: selected ? AppColors.teal : AppColors.ink)),
-                      Text(svc['cat'] ?? '',
-                        style: const TextStyle(fontSize: 11, color: AppColors.muted)),
-                      const SizedBox(height: 4),
-                      Row(children: [
-                        _pill('₹$basePrice', AppColors.teal),
-                        const SizedBox(width: 6),
-                        _pill('You earn ₹$providerEarns', AppColors.green),
-                        const SizedBox(width: 6),
-                        _pill('$commission% comm', AppColors.yellow),
-                      ]),
+        // Service list
+        Expanded(child: ListView.builder(
+          padding: const EdgeInsets.all(12),
+          itemCount: _filtered.length,
+          itemBuilder: (_, i) {
+            final svc = _filtered[i];
+            final selected = _myServices.contains(svc.id);
+            return GestureDetector(
+              onTap: () => _toggle(svc.id),
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: selected ? AppColors.tealSoft : Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: selected ? AppColors.teal : AppColors.line,
+                    width: selected ? 2 : 1)),
+                child: Row(children: [
+                  Container(
+                    width: 44, height: 44,
+                    decoration: BoxDecoration(
+                      color: selected
+                        ? AppColors.teal.withOpacity(0.15)
+                        : AppColors.bg,
+                      borderRadius: BorderRadius.circular(10)),
+                    child: Center(child: Text(svc.icon,
+                      style: const TextStyle(fontSize: 24)))),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(svc.name, style: TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700,
+                        color: selected ? AppColors.teal : AppColors.ink)),
+                      Text(svc.cat, style: const TextStyle(
+                        fontSize: 11, color: AppColors.muted)),
                     ])),
-                    const SizedBox(width: 8),
-                    Container(width: 28, height: 28,
-                      decoration: BoxDecoration(
-                        color: selected ? AppColors.teal : Colors.transparent,
-                        border: Border.all(
-                          color: selected ? AppColors.teal : AppColors.line, width: 2),
-                        borderRadius: BorderRadius.circular(8)),
-                      child: selected
-                        ? const Icon(Icons.check_rounded, color: Colors.white, size: 16)
-                        : null),
-                  ])));
-            }))),
+                  if (selected)
+                    const Icon(Icons.check_circle_rounded,
+                      color: AppColors.teal, size: 24)
+                  else
+                    const Icon(Icons.radio_button_unchecked_rounded,
+                      color: AppColors.muted, size: 24),
+                ])));
+          })),
+        // Save button at bottom
+        Container(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+          color: Colors.white,
+          child: ElevatedButton(
+            onPressed: _saving ? null : _save,
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 52),
+              backgroundColor: AppColors.teal,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14))),
+            child: _saving
+              ? const CircularProgressIndicator(color: Colors.white)
+              : Text(
+                  'Save ${_myServices.length} Services',
+                  style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)))),
       ]));
   }
-
-  Widget _pill(String text, Color color) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(
-      color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(5)),
-    child: Text(text, style: TextStyle(
-      fontSize: 10, fontWeight: FontWeight.w700, color: color)));
-
-  static const _fallbackServices = [
-    {'id':'SVC001','icon':'🧹','name':'House Maid (Hourly)','cat':'Home Cleaning','commission':10},
-    {'id':'SVC002','icon':'🫧','name':'Deep House Cleaning','cat':'Home Cleaning','commission':12},
-    {'id':'SVC003','icon':'🚿','name':'Bathroom Cleaning','cat':'Home Cleaning','commission':10},
-    {'id':'SVC004','icon':'🍳','name':'Kitchen Cleaning','cat':'Home Cleaning','commission':12},
-    {'id':'SVC005','icon':'❄️','name':'AC Cleaning','cat':'Appliance Care','commission':12},
-    {'id':'SVC006','icon':'🔩','name':'AC Repair','cat':'Appliance Care','commission':18},
-    {'id':'SVC007','icon':'🫙','name':'Washing Machine Repair','cat':'Appliance Care','commission':19},
-    {'id':'SVC008','icon':'🚗','name':'Car Wash','cat':'Vehicle Care','commission':10},
-    {'id':'SVC009','icon':'🏍️','name':'Bike Wash','cat':'Vehicle Care','commission':10},
-    {'id':'SVC010','icon':'👨‍⚕️','name':'Doctor Visit','cat':'Medical','commission':15},
-    {'id':'SVC011','icon':'🧪','name':'Lab Test Collection','cat':'Medical','commission':15},
-    {'id':'SVC012','icon':'💉','name':'Nurse Visit','cat':'Medical','commission':15},
-    {'id':'SVC013','icon':'✂️','name':'Haircut (Men)','cat':'Beauty & Grooming','commission':10},
-    {'id':'SVC014','icon':'💇','name':'Haircut (Women)','cat':'Beauty & Grooming','commission':12},
-    {'id':'SVC015','icon':'💆','name':'Full Body Massage','cat':'Beauty & Grooming','commission':12},
-    {'id':'SVC016','icon':'🧒','name':'Day Care Helper','cat':'Care Services','commission':10},
-    {'id':'SVC017','icon':'👴','name':'Elder Care Attendant','cat':'Care Services','commission':15},
-    {'id':'SVC018','icon':'🍱','name':'Cooking Person (Per Meal)','cat':'Cooking','commission':10},
-    {'id':'SVC019','icon':'👨‍🍳','name':'Full-Day Cook','cat':'Cooking','commission':12},
-    {'id':'SVC020','icon':'⚡','name':'Electrician Visit','cat':'Repairs','commission':23},
-    {'id':'SVC021','icon':'🔧','name':'Plumber Visit','cat':'Repairs','commission':23},
-    {'id':'SVC022','icon':'🪚','name':'Carpenter Visit','cat':'Repairs','commission':12},
-    {'id':'SVC023','icon':'🐛','name':'Cockroach Control','cat':'Pest Control','commission':12},
-    {'id':'SVC024','icon':'🔍','name':'Termite Inspection','cat':'Pest Control','commission':12},
-    {'id':'SVC025','icon':'🎨','name':'Room Painting','cat':'Painting','commission':12},
-  ];
 }
