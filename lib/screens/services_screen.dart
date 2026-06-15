@@ -56,7 +56,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Error: \$e'), backgroundColor: AppColors.red));
+        content: Text('Error: $e'), backgroundColor: AppColors.red));
     }
     if (mounted) setState(() => _saving = false);
   }
