@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'services/service_price_service.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'utils/theme.dart';
 import 'screens/splash_screen.dart';
@@ -40,8 +39,7 @@ void main() async {
     );
 
     // Load service prices from Firebase (admin-controlled)
-    ServicePriceService().loadPrices();
-    // Save FCM token to Firebase so server can send push notifications
+        // Save FCM token to Firebase so server can send push notifications
     final token = await FirebaseMessaging.instance.getToken();
     if (token != null) {
       print('FCM Token: $token');
