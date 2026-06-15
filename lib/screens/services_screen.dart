@@ -56,7 +56,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Error: $e'), backgroundColor: AppColors.red));
+        content: Text('Error: \$e'), backgroundColor: AppColors.red));
     }
     if (mounted) setState(() => _saving = false);
   }
@@ -72,67 +72,98 @@ class _ServicesScreenState extends State<ServicesScreen> {
       body: Center(child: CircularProgressIndicator(color: AppColors.teal)));
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        title: const Text('My Services'),
-        backgroundColor: AppColors.teal,
-        foregroundColor: Colors.white,
-        actions: [
-          TextButton(
-            onPressed: _saving ? null : _save,
-            child: _saving
-              ? const SizedBox(width: 20, height: 20,
-                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-              : const Text('SAVE', style: TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14))),
-        ]),
       body: Column(children: [
-        // Counter bar
-        Container(color: Colors.white, padding: const EdgeInsets.fromLTRB(16,10,16,0),
-          child: Row(children: [
-            Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(100)),
-              child: Text('${_selected.length} selected',
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.teal))),
-            const SizedBox(width: 10),
-            const Expanded(child: Text('Tap to toggle services you can provide',
-              style: TextStyle(fontSize: 12, color: AppColors.muted))),
-            TextButton(
-              onPressed: () => setState(() {
-                if (_selected.length == HSCatalog.services.length) {
-                  _selected.clear();
-                } else {
-                  _selected = HSCatalog.services.map((s) => s.id).toSet();
-                }
-              }),
-              child: Text(
-                _selected.length == HSCatalog.services.length ? 'Deselect All' : 'Select All',
-                style: const TextStyle(fontSize: 12, color: AppColors.teal, fontWeight: FontWeight.w700))),
+        // Hero — same gradient as HTML
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Color(0xFF071e25), Color(0xFF0d3541), AppColors.teal],
+              begin: Alignment.topLeft, end: Alignment.bottomRight)),
+          padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + 12, 16, 20),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  width: 36, height: 36,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(10)),
+                  child: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 20))),
+              const SizedBox(width: 12),
+              const Expanded(child: Text('My Services', style: TextStyle(
+                fontFamily: 'Sora', fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white))),
+              TextButton(
+                onPressed: _saving ? null : _save,
+                child: _saving
+                  ? const SizedBox(width: 20, height: 20,
+                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                  : const Text('SAVE', style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14))),
+            ]),
+            const SizedBox(height: 12),
+            // Counter + select all
+            Row(children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(color: Colors.white.withOpacity(0.2))),
+                child: Text('${_selected.length} selected',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white))),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('Tap to select services you can provide',
+                style: TextStyle(fontSize: 11, color: Colors.white60))),
+              GestureDetector(
+                onTap: () => setState(() {
+                  if (_selected.length == HSCatalog.services.length) {
+                    _selected.clear();
+                  } else {
+                    _selected = HSCatalog.services.map((s) => s.id).toSet();
+                  }
+                }),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(100),
+                    border: Border.all(color: Colors.white.withOpacity(0.2))),
+                  child: Text(
+                    _selected.length == HSCatalog.services.length ? 'Deselect All' : 'Select All',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.white)))),
+            ]),
           ])),
         // Category filter
-        Container(color: Colors.white, padding: const EdgeInsets.symmetric(vertical: 8),
-          child: SingleChildScrollView(scrollDirection: Axis.horizontal,
+        Container(
+          color: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(children: _cats.map((c) {
               final sel = _filterCat == c;
               return GestureDetector(
                 onTap: () => setState(() => _filterCat = c),
-                child: Container(margin: const EdgeInsets.only(right: 8),
+                child: Container(
+                  margin: const EdgeInsets.only(right: 8),
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: sel ? AppColors.teal : AppColors.bg,
                     borderRadius: BorderRadius.circular(100),
                     border: Border.all(color: sel ? AppColors.teal : AppColors.line)),
-                  child: Text(c, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                  child: Text(c, style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w700,
                     color: sel ? Colors.white : AppColors.muted))));
             }).toList()))),
-        // Service list
+        // Service cards
         Expanded(child: ListView.builder(
-          padding: const EdgeInsets.fromLTRB(12,12,12,100),
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
           itemCount: _filtered.length,
           itemBuilder: (_, i) => _buildCard(_filtered[i]))),
       ]),
       bottomNavigationBar: Container(
-        padding: const EdgeInsets.fromLTRB(16,12,16,28),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
         color: Colors.white,
         child: ElevatedButton(
           onPressed: _saving ? null : _save,
@@ -143,7 +174,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
           child: _saving
             ? const SizedBox(width: 22, height: 22,
                 child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-            : Text('Save ${_selected.length} Services',
+            : Text('Save \${_selected.length} Services',
                 style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)))));
   }
 
@@ -160,42 +191,50 @@ class _ServicesScreenState extends State<ServicesScreen> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: isSelected ? AppColors.tealSoft : Colors.white,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isSelected ? AppColors.teal : AppColors.line,
             width: isSelected ? 2 : 1.5),
           boxShadow: isSelected
             ? [BoxShadow(color: AppColors.teal.withOpacity(0.15), blurRadius: 10)]
             : [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)]),
-        child: Row(children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: 48, height: 48,
-            decoration: BoxDecoration(
-              color: isSelected ? AppColors.teal.withOpacity(0.15) : AppColors.bg,
-              borderRadius: BorderRadius.circular(14)),
-            child: Center(child: Text(svc.icon, style: const TextStyle(fontSize: 26)))),
-          const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(svc.name, style: TextStyle(
-              fontSize: 14, fontWeight: FontWeight.w700,
-              color: isSelected ? AppColors.teal : AppColors.ink)),
-            Text(svc.cat, style: const TextStyle(fontSize: 11, color: AppColors.muted)),
-          ])),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: 26, height: 26,
-            decoration: BoxDecoration(
-              color: isSelected ? AppColors.teal : Colors.transparent,
-              border: Border.all(
-                color: isSelected ? AppColors.teal : AppColors.line, width: 2),
-              shape: BoxShape.circle),
-            child: isSelected
-              ? const Icon(Icons.check_rounded, color: Colors.white, size: 15)
-              : null),
-        ])));
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(children: [
+            // Icon box — same rounded style
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 54, height: 54,
+              decoration: BoxDecoration(
+                color: isSelected ? AppColors.teal.withOpacity(0.15) : AppColors.bg,
+                borderRadius: BorderRadius.circular(16)),
+              child: Center(child: Text(svc.icon,
+                style: const TextStyle(fontSize: 28)))),
+            const SizedBox(width: 14),
+            // Name + category
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(svc.name, style: TextStyle(
+                fontSize: 14, fontWeight: FontWeight.w800,
+                color: isSelected ? AppColors.teal : AppColors.ink)),
+              const SizedBox(height: 3),
+              Text(svc.cat, style: const TextStyle(
+                fontSize: 11, color: AppColors.muted)),
+            ])),
+            // Check circle — same as HTML selector
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 26, height: 26,
+              decoration: BoxDecoration(
+                color: isSelected ? AppColors.teal : Colors.transparent,
+                border: Border.all(
+                  color: isSelected ? AppColors.teal : AppColors.line,
+                  width: 2),
+                shape: BoxShape.circle),
+              child: isSelected
+                ? const Icon(Icons.check_rounded, color: Colors.white, size: 15)
+                : null),
+          ]))));
   }
 }
