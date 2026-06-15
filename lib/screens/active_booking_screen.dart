@@ -179,10 +179,15 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         builder: (_) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: const Text('OTP Verified! ✅', style: TextStyle(fontWeight: FontWeight.w800)),
-          content: const Text('Service verified! Waiting for customer to complete payment. The job will appear under Active until payment is done.'),
+          content: const Text('Service verified! Waiting for customer to complete payment.'),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () {
+                // Close dialog
+                Navigator.pop(context);
+                // Close OTP screen and go back to dashboard
+                if (mounted) Navigator.pop(context);
+              },
               child: const Text('OK', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
           ],
