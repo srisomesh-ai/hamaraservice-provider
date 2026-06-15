@@ -17,7 +17,6 @@ import 'active_booking_screen.dart';
 import 'services_screen.dart';
 import 'support_screen.dart';
 import 'earnings_screen.dart';
-import 'provider_services_screen.dart';
 import 'ratings_screen.dart';
 import 'open_jobs_screen.dart';
 import 'profile_edit_screen.dart';
@@ -893,7 +892,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     // MY SERVICES BUTTON
                     GestureDetector(
                       onTap: () => Navigator.push(context, MaterialPageRoute(
-                        builder: (_) => ProviderServicesScreen(providerId: _pid))),
+                        builder: (_) => ServicesScreen(providerId: _pid))),
                       child: Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(14),
@@ -1100,33 +1099,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                               _bookingCard(b, compact: true)),
                     ],
 
-                    // Online status
-                    if (_available && isApproved) ...[
-                      const SizedBox(height: 14),
-                      Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                            color: AppColors.greenSoft,
-                            borderRadius:
-                                BorderRadius.circular(14),
-                            border: Border.all(
-                                color: AppColors.green
-                                    .withOpacity(0.3))),
-                        child: const Row(children: [
-                          Icon(Icons.radar_rounded,
-                              color: AppColors.green),
-                          SizedBox(width: 10),
-                          Expanded(
-                              child: Text(
-                                  'You are online. Booking alerts will appear automatically.',
-                                  style: TextStyle(
-                                      fontSize: 13,
-                                      color: AppColors.green,
-                                      fontWeight:
-                                          FontWeight.w600))),
-                        ]),
-                      ),
-                    ],
+
 
                     const SizedBox(height: 20),
                   ]),
