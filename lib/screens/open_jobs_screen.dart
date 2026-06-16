@@ -30,9 +30,14 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
       if (!snap.exists) { setState(() => _loading = false); return; }
 
       final all = Map<String, dynamic>.from(snap.value as Map);
-      final providerServices = (widget.providerData?['services'] as List?)
-          ?.map((s) => (s is Map ? s['name'] ?? '' : s.toString()).toLowerCase())
-          .toList() ?? [];
+      // Handle services as Map {SVC001:true} or List format
+    final rawSvcs = widget.providerData?['services'];
+    final providerServiceIds = <String>{};
+    if (rawSvcs is Map) {
+      rawSvcs.forEach((k,v){ if(v==true) providerServiceIds.add(k.toString()); });
+    } else if (rawSvcs is List) {
+      for (final s in rawSvcs) { providerServiceIds.add(s.toString()); }
+    }
 
       List<Map<String, dynamic>> open = [];
       List<Map<String, dynamic>> accepted = [];
@@ -44,7 +49,7 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
         // Check service match
         if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) continue;
 
-        if (b['status'] == 'pending' && b['acceptedBy'] == null) {
+        if ((b['status'] == 'searching' || b['status'] == 'pending') && b['acceptedBy'] == null) {
           open.add({...b, 'id': entry.key});
         } else if (b['status'] == 'accepted' && b['acceptedBy'] != null) {
           // Recently accepted jobs
@@ -74,7 +79,7 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
     }
 
     final current = Map<String, dynamic>.from(snap.value as Map);
-    if (current['acceptedBy'] != null || current['status'] != 'pending') {
+    if (current['acceptedBy'] != null || (current['status'] != 'searching' && current['status'] != 'pending')) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('This job was accepted by another provider.'), backgroundColor: AppColors.red));
       _loadJobs();
