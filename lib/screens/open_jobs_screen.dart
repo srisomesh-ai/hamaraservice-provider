@@ -44,10 +44,14 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
 
       for (final entry in all.entries) {
         final b = Map<String, dynamic>.from(entry.value as Map);
-        final svcName = (b['service'] ?? '').toString().toLowerCase();
-
-        // Check service match
-        if (providerServices.isNotEmpty && !providerServices.any((s) => s == svcName)) continue;
+        // Check service match by svcId or name
+        if (providerServiceIds.isNotEmpty) {
+          final bSvcId = b['svcId']?.toString() ?? '';
+          final bName = (b['service'] ?? '').toString().toLowerCase();
+          final match = providerServiceIds.contains(bSvcId) ||
+              providerServiceIds.any((id) => id.toLowerCase() == bName);
+          if (!match) continue;
+        }
 
         if ((b['status'] == 'searching' || b['status'] == 'pending') && b['acceptedBy'] == null) {
           open.add({...b, 'id': entry.key});
