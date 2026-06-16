@@ -40,16 +40,29 @@ void main() async {
 
     // Load service prices from Firebase (admin-controlled)
         // Save FCM token to Firebase so server can send push notifications
+    // Save FCM token immediately for logged-in provider
+    Future<void> saveFcmToken(String token) async {
+      try {
+        final uid = FirebaseAuth.instance.currentUser?.uid;
+        if (uid != null && token.isNotEmpty) {
+          await FirebaseDatabase.instance.ref('providers/$uid/fcmToken').set(token);
+          print('FCM Token saved for provider: $uid');
+        }
+      } catch (e) {
+        print('FCM save error: $e');
+      }
+    }
+
     final token = await FirebaseMessaging.instance.getToken();
     if (token != null) {
       print('FCM Token: $token');
-      // Token will be saved per-provider in dashboard after login
+      saveFcmToken(token);
     }
 
     // Refresh token listener
     FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
       print('FCM token refreshed: $newToken');
-      // Dashboard will save updated token on next load
+      saveFcmToken(newToken);
     });
 
     // Handle notification tap when app is in background/terminated
