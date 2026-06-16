@@ -182,7 +182,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (!event.snapshot.exists || !mounted) return;
       final all =
           Map<String, dynamic>.from(event.snapshot.value as Map);
-      final providerServices = (_providerData?['services'] as List?)
+      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
               ?.map((s) => (s is Map
                       ? s['name'] ?? ''
                       : s.toString())
@@ -287,7 +287,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         if (_dismissedBookingKeys.contains(event.snapshot.key)) return;
         final svcName = (bk['service'] ?? '').toString().toLowerCase();
         final providerServices =
-            (_providerData?['services'] as List?)
+            (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
                     ?.map((s) => (s is Map
                             ? s['name'] ?? ''
                             : s.toString())
@@ -316,7 +316,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           await FirebaseDatabase.instance.ref('active_bookings').get();
       if (!snap.exists) return;
       final all = Map<String, dynamic>.from(snap.value as Map);
-      final providerServices = (_providerData?['services'] as List?)
+      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
               ?.map((s) => (s is Map
                       ? s['name'] ?? ''
                       : s.toString())
