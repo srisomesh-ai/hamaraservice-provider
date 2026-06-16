@@ -587,6 +587,34 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+
+  // Get provider's offered service IDs from either Map or List format
+  Set<String> get _myServiceIds {
+    final raw = _providerData?['services'];
+    if (raw == null) return {};
+    if (raw is Map) {
+      return raw.entries
+          .where((e) => e.value == true)
+          .map((e) => e.key.toString())
+          .toSet();
+    }
+    if (raw is List) {
+      return raw.map((s) => s.toString()).toSet();
+    }
+    return {};
+  }
+
+  // Check if provider offers a service by svcId OR service name
+  bool _offersService(Map<String, dynamic> booking) {
+    final ids = _myServiceIds;
+    if (ids.isEmpty) return true; // no filter = accept all
+    final svcId = booking['svcId']?.toString() ?? '';
+    if (svcId.isNotEmpty && ids.contains(svcId)) return true;
+    // Fallback: match by name
+    final name = (booking['service'] ?? '').toString().toLowerCase();
+    return ids.any((id) => id.toLowerCase() == name);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
