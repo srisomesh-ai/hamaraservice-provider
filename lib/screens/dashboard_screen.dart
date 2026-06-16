@@ -192,7 +192,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       int count = 0;
       for (final entry in all.entries) {
         final b = Map<String, dynamic>.from(entry.value as Map);
-        if (b['status'] != 'pending' || b['acceptedBy'] != null) {
+        if (b['status'] != 'searching' || b['acceptedBy'] != null) {
           continue;
         }
         final svcName = (b['service'] ?? '').toString().toLowerCase();
@@ -285,17 +285,8 @@ class _DashboardScreenState extends State<DashboardScreen>
         if (bk['status'] == 'cancelled') return;
         // Skip if already declined or standbyed this session
         if (_dismissedBookingKeys.contains(event.snapshot.key)) return;
-        final svcName = (bk['service'] ?? '').toString().toLowerCase();
-        final providerServices =
-            (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
-                    ?.map((s) => (s is Map
-                            ? s['name'] ?? ''
-                            : s.toString())
-                        .toLowerCase())
-                    .toList() ??
-                [];
-        if (providerServices.isNotEmpty &&
-            !providerServices.any((s) => s == svcName)) return;
+        // Check provider offers this service (by svcId or name)
+        if (!_offersService(bk)) return;
         setState(() {
           _incomingBooking = bk;
           _incomingBookingKey = event.snapshot.key;
