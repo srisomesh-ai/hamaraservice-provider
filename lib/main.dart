@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'utils/theme.dart';
 import 'screens/splash_screen.dart';
 import 'firebase_options.dart';
+
+// Global FLNP instance — must be global to use inside async listeners
+final FlutterLocalNotificationsPlugin flnp = FlutterLocalNotificationsPlugin();
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -19,14 +22,12 @@ void main() async {
   try {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  // Initialize flutter_local_notifications for foreground display
-  final flnp = FlutterLocalNotificationsPlugin();
-  await flnp.initialize(
-    const InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-    ),
-  );
-
+    // Initialize local notifications
+    await flnp.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      ),
+    );
 
     // Background message handler
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
@@ -49,9 +50,32 @@ void main() async {
       sound: true,
     );
 
-    // Load service prices from Firebase (admin-controlled)
-        // Save FCM token to Firebase so server can send push notifications
-    // Save FCM token immediately for logged-in provider
+    // Handle foreground messages — show heads-up banner even when app is open
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+      final n = message.notification;
+      if (n == null) return;
+      try {
+        await flnp.show(
+          message.hashCode,
+          n.title ?? 'HamaraService',
+          n.body ?? '',
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'hamaraservice_high_priority',
+              'HamaraService Alerts',
+              channelDescription: 'New job alerts and payment notifications',
+              importance: Importance.max,
+              priority: Priority.high,
+              playSound: true,
+              enableVibration: true,
+              visibility: NotificationVisibility.public,
+            ),
+          ),
+        );
+      } catch (_) {}
+    });
+
+    // Save FCM token to Firebase so server can send push notifications
     Future<void> saveFcmToken(String token) async {
       try {
         final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -87,34 +111,8 @@ void main() async {
       print('App opened from notification: ${initialMessage.data}');
     }
 
-    // Handle foreground messages — show heads-up banner even when app is open
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-      final n = message.notification;
-      if (n == null) return;
-      try {
-        final flnp = FlutterLocalNotificationsPlugin();
-        await flnp.show(
-          message.hashCode,
-          n.title ?? 'HamaraService',
-          n.body ?? '',
-          const NotificationDetails(
-            android: AndroidNotificationDetails(
-              'hamaraservice_high_priority',
-              'HamaraService Alerts',
-              channelDescription: 'New job alerts and payment notifications',
-              importance: Importance.max,
-              priority: Priority.high,
-              playSound: true,
-              enableVibration: true,
-              visibility: NotificationVisibility.public,
-            ),
-          ),
-        );
-      } catch (_) {}
-    });
-
   } catch (e) {
-    print('Firebase init error: \$e');
+    print('Firebase init error: $e');
   }
 
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
