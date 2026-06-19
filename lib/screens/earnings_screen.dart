@@ -33,12 +33,21 @@ const Map<String, double> _commissionRates = {
 };
 
 double _getCommission(String service) {
-  for (final key in _commissionRates.keys) {
-    if (service.toLowerCase().contains(key.toLowerCase()) ||
-        key.toLowerCase().contains(service.toLowerCase())) {
-      return _commissionRates[key]!;
-    }
+  final s = service.toLowerCase().trim();
+  // Exact name match first (most reliable)
+  for (final entry in _commissionRates.entries) {
+    if (s == entry.key.toLowerCase()) return entry.value;
   }
+  // Partial match fallback
+  for (final entry in _commissionRates.entries) {
+    if (s.contains(entry.key.toLowerCase())) return entry.value;
+  }
+  // Keyword fallback for unknown services
+  if (s.contains('electrician') || s.contains('plumber')) return 20;
+  if (s.contains('appliance') || s.contains('repair')) return 18;
+  if (s.contains('doctor') || s.contains('nurse') || s.contains('lab')) return 15;
+  if (s.contains('fitness') || s.contains('massage') || s.contains('beauty')) return 15;
+  if (s.contains('mechanic') || s.contains('driver') || s.contains('cctv')) return 15;
   return 10; // default 10%
 }
 
