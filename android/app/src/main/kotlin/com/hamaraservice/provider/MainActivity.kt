@@ -6,8 +6,8 @@ import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 
 class MainActivity: FlutterActivity() {
-    override fun onStart() {
-        super.onStart()
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
         createNotificationChannels()
     }
 
@@ -15,7 +15,7 @@ class MainActivity: FlutterActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
 
-            // High priority channel — matches AndroidManifest + FCM config
+            // Primary high-priority channel — new jobs, OTP, payments
             val channel = NotificationChannel(
                 "hamaraservice_high_priority",
                 "HamaraService Alerts",
@@ -27,11 +27,11 @@ class MainActivity: FlutterActivity() {
                 enableLights(true)
                 setShowBadge(true)
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-                setBypassDnd(false)
+                setBypassDnd(true)  // Show even in Do Not Disturb
             }
             manager.createNotificationChannel(channel)
 
-            // Also create old channel ID for backward compatibility
+            // Backward-compat channel
             val oldChannel = NotificationChannel(
                 "booking_alerts",
                 "Booking Alerts",
@@ -41,6 +41,7 @@ class MainActivity: FlutterActivity() {
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 500, 200, 500)
                 enableLights(true)
+                setBypassDnd(true)
             }
             manager.createNotificationChannel(oldChannel)
         }
