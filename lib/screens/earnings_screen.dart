@@ -4,35 +4,25 @@ import '../utils/theme.dart';
 
 // Commission rates per service (matching web admin)
 const Map<String, double> _commissionRates = {
-  'House Maid': 10,
-  'Deep Cleaning': 12,
-  'Bathroom Cleaning': 10,
-  'Kitchen Cleaning': 12,
-  'Sofa / Carpet Cleaning': 12,
-  'Laundry / Ironing': 10,
-  'Pest Control': 10,
-  'Gardener': 10,
-  'AC Service': 12,
-  'AC Cleaning': 12,
-  'AC Repair': 18,
-  'Appliance Repair': 18,
-  'Home Appliance Repair': 18,
-  'Electrician': 20,
-  'Plumber': 20,
-  'Carpenter': 12,
-  'Painter': 12,
-  'Solar Panel': 12,
-  'Water Purifier': 15,
-  'CCTV': 15,
-  'Car / Bike Wash': 10,
-  'Car Wash': 10,
-  'Bike Wash': 10,
-  'Car Mechanic': 15,
-  'Driver': 15,
-  'Doctor Visit': 15,
-  'Nurse Visit': 15,
-  'Lab Test': 15,
-  'Fitness Trainer': 15,
+  // Exact service names matching catalog — unified with customer payment_screen
+  'House Maid': 10, 'Deep Cleaning': 12, 'Bathroom Cleaning': 10,
+  'Kitchen Cleaning': 12, 'Sofa / Carpet Cleaning': 12, 'Laundry / Ironing': 10,
+  'Pest Control': 10, 'Gardener': 10, 'AC Cleaning & Repair': 15,
+  'Home Appliance Repair': 18, 'Water Purifier Service': 15,
+  'Plumber': 20, 'Electrician': 20, 'Carpenter': 12, 'Painter': 12,
+  'CCTV Installation': 15, 'Solar Panel Cleaning': 12,
+  'Car / Bike Wash': 10, 'Car & Bike Mechanic': 15,
+  'Cook / Cooking Person': 10, "Men's Haircut at Home": 12,
+  "Women's Haircut & Beauty": 12, 'Full Body Massage': 15,
+  'Gym / Fitness Trainer': 15, 'Doctor Visit at Home': 15,
+  'Nurse Visit at Home': 15, 'Lab Test Collection': 15,
+  'Babysitter / Nanny': 10, 'Elderly Care': 10,
+  'Driver': 15, 'Security Guard & Bouncers': 10,
+  // Legacy names for backward compat
+  'AC Service': 12, 'AC Cleaning': 12, 'AC Repair': 18,
+  'Appliance Repair': 18, 'Car Wash': 10, 'Bike Wash': 10,
+  'Car Mechanic': 15, 'Doctor Visit': 15, 'Nurse Visit': 15,
+  'Lab Test': 15, 'Fitness Trainer': 15, 'CCTV': 15, 'Solar Panel': 12,
   'Massage': 15,
   'Women Beauty': 15,
   'Men Haircut': 10,
@@ -95,19 +85,25 @@ class _EarningsScreenState extends State<EarningsScreen> {
       List<Map<String, dynamic>> jobs = [];
       List<Map<String, dynamic>> withdrawals = [];
 
-      // Load completed bookings
-      final bookSnap = await FirebaseDatabase.instance.ref('bookings').get();
+      // Load completed bookings — filtered by providerId server-side
+      final bookSnap = await FirebaseDatabase.instance
+          .ref('bookings')
+          .orderByChild('providerId')
+          .equalTo(widget.providerId)
+          .get();
       if (bookSnap.exists) {
         final all = Map<String, dynamic>.from(bookSnap.value as Map);
         for (final entry in all.entries) {
           final b = Map<String, dynamic>.from(entry.value as Map);
-          if ((b['providerId'] == widget.providerId ||
-                  (b['acceptedBy'] is Map && b['acceptedBy']['id'] == widget.providerId)) &&
-              b['status'] == 'completed' &&
-              b['paymentStatus'] == 'paid') {
+          if (b['status'] == 'completed' && b['paymentStatus'] == 'paid') {
             final paid = ((b['amountPaid'] ?? b['priceVal'] ?? b['price'] ?? 0) as num).toDouble();
             final serviceName = b['service'] as String? ?? '';
-            final commRate = _getCommission(serviceName);
+            // Use stored commissionRate if available (written by payment_screen)
+            // Falls back to _getCommission for older bookings
+            final storedRate = b['commissionRate'];
+            final commRate = storedRate != null
+                ? (storedRate as num).toDouble()
+                : _getCommission(serviceName);
             final commAmt = (paid * commRate / 100).roundToDouble();
             final netEarned = paid - commAmt;
 
@@ -175,9 +171,9 @@ class _EarningsScreenState extends State<EarningsScreen> {
 
   Future<void> _requestWithdrawal() async {
     final amount = double.tryParse(_amountCtrl.text.trim()) ?? 0;
-    if (amount <= 0) {
+    if (amount < 100) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Enter a valid amount'), backgroundColor: AppColors.red));
+          const SnackBar(content: Text('Minimum withdrawal amount is ₹100'), backgroundColor: AppColors.red));
       return;
     }
     if (amount > _availableBalance) {
@@ -185,9 +181,15 @@ class _EarningsScreenState extends State<EarningsScreen> {
           const SnackBar(content: Text('Amount exceeds available balance'), backgroundColor: AppColors.red));
       return;
     }
-    if (_bankCtrl.text.trim().isEmpty) {
+    final bankDetail = _bankCtrl.text.trim();
+    if (bankDetail.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Enter bank account or UPI ID'), backgroundColor: AppColors.red));
+      return;
+    }
+    if (bankDetail.length < 5) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please enter a valid bank account number or UPI ID'), backgroundColor: AppColors.red));
       return;
     }
 
