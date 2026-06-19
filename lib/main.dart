@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'utils/theme.dart';
 import 'screens/splash_screen.dart';
@@ -76,9 +77,30 @@ void main() async {
       print('App opened from notification: ${initialMessage.data}');
     }
 
-    // Handle foreground messages — show in-app banner
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      print('Foreground FCM: ${message.notification?.title} — ${message.notification?.body}');
+    // Handle foreground messages — show heads-up banner even when app is open
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+      final n = message.notification;
+      if (n == null) return;
+      try {
+        final flnp = FlutterLocalNotificationsPlugin();
+        await flnp.show(
+          message.hashCode,
+          n.title ?? 'HamaraService',
+          n.body ?? '',
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'hamaraservice_high_priority',
+              'HamaraService Alerts',
+              channelDescription: 'New job alerts and payment notifications',
+              importance: Importance.max,
+              priority: Priority.high,
+              playSound: true,
+              enableVibration: true,
+              visibility: NotificationVisibility.public,
+            ),
+          ),
+        );
+      } catch (_) {}
     });
 
   } catch (e) {
