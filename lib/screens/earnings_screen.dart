@@ -4,7 +4,7 @@ import '../utils/theme.dart';
 
 // Commission rates per service (matching web admin)
 const Map<String, double> _commissionRates = {
-  // Exact service names matching catalog — unified with customer payment_screen
+  // Current catalog names
   'House Maid': 10, 'Deep Cleaning': 12, 'Bathroom Cleaning': 10,
   'Kitchen Cleaning': 12, 'Sofa / Carpet Cleaning': 12, 'Laundry / Ironing': 10,
   'Pest Control': 10, 'Gardener': 10, 'AC Cleaning & Repair': 15,
@@ -18,18 +18,11 @@ const Map<String, double> _commissionRates = {
   'Nurse Visit at Home': 15, 'Lab Test Collection': 15,
   'Babysitter / Nanny': 10, 'Elderly Care': 10,
   'Driver': 15, 'Security Guard & Bouncers': 10,
-  // Legacy names for backward compat
+  // Legacy names for backward compatibility
   'AC Service': 12, 'AC Cleaning': 12, 'AC Repair': 18,
   'Appliance Repair': 18, 'Car Wash': 10, 'Bike Wash': 10,
   'Car Mechanic': 15, 'Doctor Visit': 15, 'Nurse Visit': 15,
   'Lab Test': 15, 'Fitness Trainer': 15, 'CCTV': 15, 'Solar Panel': 12,
-  'Massage': 15,
-  'Women Beauty': 15,
-  'Men Haircut': 10,
-  'Babysitter': 10,
-  'Elderly Care': 10,
-  'Security Guard': 10,
-  'Civil / Mason': 12,
 };
 
 double _getCommission(String service) {
