@@ -556,7 +556,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       // Notify customer — provider quoted a price
       try {
         final customerSnap = await FirebaseDatabase.instance
-            .ref('customers/\${booking['customerId']}/fcmToken').get();
+            .ref('customers/${booking['customerId']}/fcmToken').get();
         final customerToken = customerSnap.value?.toString() ?? '';
         await _sendPushNotification(
           fcmToken: customerToken,
@@ -580,7 +580,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Error: \$e'), backgroundColor: AppColors.red));
+          content: Text('Error: $e'), backgroundColor: AppColors.red));
       }
     }
   }
