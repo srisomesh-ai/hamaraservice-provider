@@ -20,7 +20,7 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
   final _audio = AudioPlayer();
 
   void _log(String msg) {
-    setState(() => _logs.insert(0, '\${DateTime.now().toString().substring(11,19)} — \$msg'));
+    setState(() => _logs.insert(0, '${DateTime.now().toString().substring(11,19)} — $msg'));
   }
 
   // ── Test 1: Vibration ──
@@ -28,14 +28,14 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
     _log('Testing vibration...');
     try {
       final hasVib = await Vibration.hasVibrator() ?? false;
-      _log('Has vibrator: \$hasVib');
+      _log('Has vibrator: $hasVib');
       if (hasVib) {
         Vibration.vibrate(pattern: [0, 500, 200, 500, 200, 500]);
         _log('✅ Vibration triggered!');
       } else {
         _log('❌ No vibrator found');
       }
-    } catch (e) { _log('❌ Error: \$e'); }
+    } catch (e) { _log('❌ Error: $e'); }
   }
 
   // ── Test 2: Alert Sound ──
@@ -45,7 +45,7 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
       await _audio.play(AssetSource('sounds/alert.mp3'));
       _log('✅ Sound played!');
     } catch (e) {
-      _log('❌ Sound error: \$e (check assets/sounds/alert.mp3 exists)');
+      _log('❌ Sound error: $e (check assets/sounds/alert.mp3 exists)');
       // Fallback
       SystemSound.play(SystemSoundType.alert);
       _log('  → Fallback system sound played');
@@ -91,14 +91,14 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
     try {
       final token = await FirebaseMessaging.instance.getToken();
       if (token != null) {
-        _log('✅ FCM: \${token.substring(0, 20)}...');
+        _log('✅ FCM: ${token.substring(0, 20)}...');
         await FirebaseDatabase.instance
-            .ref('providers/\${widget.providerId}/fcmToken').set(token);
+            .ref('providers/${widget.providerId}/fcmToken').set(token);
         _log('✅ Token saved to Firebase');
       } else {
         _log('❌ No FCM token — check google-services.json');
       }
-    } catch (e) { _log('❌ FCM error: \$e'); }
+    } catch (e) { _log('❌ FCM error: $e'); }
   }
 
   // ── Test 5: Push to self ──
@@ -123,8 +123,8 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
       final result = jsonDecode(res.body);
       _log(result['sent'] == true
           ? '✅ Push sent! Lock screen and check notification'
-          : '❌ Push failed: \${res.body.substring(0, 80)}');
-    } catch (e) { _log('❌ Push error: \$e'); }
+          : '❌ Push failed: ${res.body.substring(0, 80)}');
+    } catch (e) { _log('❌ Push error: $e'); }
   }
 
   // ── Test 6: Payment received notification ──
@@ -150,17 +150,17 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
     _log('Testing Firebase...');
     try {
       await FirebaseDatabase.instance
-          .ref('test_ping/\${widget.providerId}').set({
+          .ref('test_ping/${widget.providerId}').set({
         'ts': DateTime.now().toIso8601String(), 'app': 'provider'
       });
       final snap = await FirebaseDatabase.instance
-          .ref('test_ping/\${widget.providerId}').get();
+          .ref('test_ping/${widget.providerId}').get();
       if (snap.exists) {
         _log('✅ Firebase OK');
         await FirebaseDatabase.instance
-            .ref('test_ping/\${widget.providerId}').remove();
+            .ref('test_ping/${widget.providerId}').remove();
       }
-    } catch (e) { _log('❌ Firebase error: \$e'); }
+    } catch (e) { _log('❌ Firebase error: $e'); }
   }
 
   @override
