@@ -203,7 +203,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: \$e'), backgroundColor: AppColors.red));
+        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
     }
   }
 
@@ -232,7 +232,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: \$e'), backgroundColor: AppColors.red));
+        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
     }
   }
 
@@ -260,7 +260,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: \$e'), backgroundColor: AppColors.red));
+        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
     }
   }
 
@@ -274,7 +274,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     try {
       final custId = (_liveBooking['customerId'] ?? widget.booking['customerId'])?.toString() ?? '';
       if (custId.isEmpty) return;
-      final snap = await FirebaseDatabase.instance.ref('customers/\$custId/fcmToken').get();
+      final snap = await FirebaseDatabase.instance.ref('customers/$custId/fcmToken').get();
       final token = snap.value?.toString() ?? '';
       if (token.isEmpty) return;
       await http.post(
