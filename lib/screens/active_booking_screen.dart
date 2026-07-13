@@ -27,6 +27,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   String _status = 'accepted';
   bool _loading = false;
   bool _showOtpEntry = false;
+  Map<String,dynamic> _liveBooking = {};
+  bool _negotiationHandled = false;
   final List<TextEditingController> _otpCtrls = List.generate(4, (_) => TextEditingController());
   final List<FocusNode> _otpFocus = List.generate(4, (_) => FocusNode());
   String _otpError = '';
