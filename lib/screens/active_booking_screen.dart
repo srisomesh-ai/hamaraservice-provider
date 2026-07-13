@@ -55,7 +55,18 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       if (!event.snapshot.exists || !mounted) return;
       final data = Map<String, dynamic>.from(event.snapshot.value as Map);
       final status = data['status']?.toString() ?? '';
-      if (status.isNotEmpty) setState(() => _status = status);
+      if (status.isNotEmpty) setState(() { _status = status; _liveBooking = data; });
+
+      // Customer negotiating — show negotiation dialog to provider
+      if (status == 'negotiating' && !_negotiationHandled) {
+        _negotiationHandled = true;
+        final counter = (data['counterPrice'] as num?)?.toInt();
+        final custName = data['customerName']?.toString() ?? 'Customer';
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _showNegotiationDialog(counter, custName, data);
+        });
+      }
+
       // Customer paid — show success snackbar
       if (status == 'completed') {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -64,6 +75,216 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
           duration: Duration(seconds: 4)));
       }
     });
+  }
+
+  // ── Negotiation dialog shown to provider when customer counters ──────────
+  void _showNegotiationDialog(int? counterPrice, String custName, Map<String,dynamic> bk) {
+    final finalCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Row(children: [
+            Icon(Icons.handshake_rounded, color: AppColors.brand, size: 24),
+            SizedBox(width: 8),
+            Text('Price Negotiation', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+          ]),
+          const SizedBox(height: 4),
+          Text(custName, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Show customer's counter if they sent one
+          if (counterPrice != null && counterPrice > 0) ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.brand.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.brand.withOpacity(0.3))),
+              child: Column(children: [
+                const Text('CUSTOMER COUNTER OFFER',
+                  style: TextStyle(fontSize:10, fontWeight:FontWeight.w800,
+                    color:AppColors.muted, letterSpacing:.5)),
+                const SizedBox(height:6),
+                Text('₹$counterPrice',
+                  style: const TextStyle(fontSize:32, fontWeight:FontWeight.w900, color:AppColors.brand)),
+              ])),
+            const SizedBox(height:14),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.yellow.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12)),
+              child: const Row(children: [
+                Icon(Icons.info_outline_rounded, color: AppColors.yellow, size: 18),
+                SizedBox(width: 8),
+                Expanded(child: Text('Customer wants to negotiate the price.',
+                  style: TextStyle(fontSize:12, color:AppColors.ink))),
+              ])),
+            const SizedBox(height:14),
+          ],
+          // Final offer input
+          TextField(
+            controller: finalCtrl,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: 'Your final offer (₹)',
+              prefixText: '₹ ',
+              hintText: counterPrice != null ? 'e.g. ${counterPrice + 10}' : 'Enter final price',
+              helperText: 'This is your ONE final offer — choose wisely',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.teal, width: 2))),
+          ),
+        ]),
+        actions: [
+          // Decline — release job, customer searches another
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _declineNegotiation();
+            },
+            child: const Text('Decline', style: TextStyle(color: AppColors.red))),
+          // Accept customer's counter price
+          if (counterPrice != null && counterPrice > 0)
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                await _acceptCounterPrice(counterPrice);
+              },
+              child: Text('Accept ₹$counterPrice',
+                style: const TextStyle(color: AppColors.green, fontWeight: FontWeight.w700))),
+          // Send final offer
+          ElevatedButton(
+            onPressed: () async {
+              final fp = int.tryParse(finalCtrl.text.trim()) ?? 0;
+              if (fp <= 0) return;
+              Navigator.pop(ctx);
+              await _sendFinalOffer(fp);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.teal),
+            child: const Text('Send Final Offer',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700))),
+        ],
+      ),
+    );
+  }
+
+  // Provider accepts customer's counter price
+  Future<void> _acceptCounterPrice(int price) async {
+    try {
+      final updates = {
+        'status':            'price_quoted',
+        'negotiationStatus': 'confirmed',
+        'confirmedPrice':    price,
+        'finalPrice':        price,
+        'confirmedAt':       DateTime.now().toIso8601String(),
+      };
+      await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update(updates);
+      await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update(updates);
+      // Notify customer
+      await _notifyCustomer(
+        event: 'price_confirmed',
+        title: 'Price Accepted! ✅',
+        body:  'Provider accepted ₹$price. Booking confirmed!',
+        extra: {'confirmedPrice': price.toString()},
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Accepted ₹$price — booking confirmed!'),
+          backgroundColor: AppColors.green));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: \$e'), backgroundColor: AppColors.red));
+    }
+  }
+
+  // Provider sends final offer (one time only)
+  Future<void> _sendFinalOffer(int finalPrice) async {
+    try {
+      final updates = {
+        'status':            'negotiation_final',
+        'negotiationStatus': 'provider_final',
+        'finalPrice':        finalPrice,
+        'finalOfferedAt':    DateTime.now().toIso8601String(),
+      };
+      await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update(updates);
+      await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update(updates);
+      // Notify customer
+      await _notifyCustomer(
+        event: 'negotiation_final',
+        title: 'Provider's Final Offer 💰',
+        body:  'Provider's final price: ₹$finalPrice. Accept or search another provider.',
+        extra: {'finalPrice': finalPrice.toString()},
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Final offer ₹$finalPrice sent to customer'),
+          backgroundColor: AppColors.teal));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: \$e'), backgroundColor: AppColors.red));
+    }
+  }
+
+  // Provider declines negotiation — release job for another provider
+  Future<void> _declineNegotiation() async {
+    try {
+      await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
+        'status':            'active',
+        'acceptedBy':        null,
+        'negotiationStatus': null,
+        'quotedPrice':       null,
+        'counterPrice':      null,
+        'negotiatedAt':      null,
+      });
+      await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
+        'status': 'active', 'acceptedBy': null,
+      });
+      // Notify customer to search another
+      await _notifyCustomer(
+        event: 'provider_declined',
+        title: 'Provider Declined',
+        body:  'The provider declined negotiation. Searching for another provider...',
+        extra: {},
+      );
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: \$e'), backgroundColor: AppColors.red));
+    }
+  }
+
+  // Helper — notify customer via FCM
+  Future<void> _notifyCustomer({
+    required String event,
+    required String title,
+    required String body,
+    required Map<String,String> extra,
+  }) async {
+    try {
+      final custId = (_liveBooking['customerId'] ?? widget.booking['customerId'])?.toString() ?? '';
+      if (custId.isEmpty) return;
+      final snap = await FirebaseDatabase.instance.ref('customers/\$custId/fcmToken').get();
+      final token = snap.value?.toString() ?? '';
+      if (token.isEmpty) return;
+      await http.post(
+        Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'event':    event,
+          'fcmToken': token,
+          'data':     {'title': title, 'body': body, ...extra},
+        }),
+      );
+    } catch (_) {}
   }
 
   Future<void> _updateStatus(String newStatus) async {
@@ -342,6 +563,68 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
           const SizedBox(height: 16),
 
           // Action buttons
+          // Price quoted — waiting for customer response
+          if (_status == 'price_quoted') ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.tealSoft,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.teal.withOpacity(0.3))),
+              child: const Row(children: [
+                Icon(Icons.hourglass_top_rounded, color: AppColors.teal, size: 20),
+                SizedBox(width: 10),
+                Expanded(child: Text('Waiting for customer to accept your price...',
+                  style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w600))),
+              ])),
+          ],
+
+          // Negotiating — waiting for dialog or watching
+          if (_status == 'negotiating') ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.brand.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.brand.withOpacity(0.3))),
+              child: Row(children: [
+                const Icon(Icons.handshake_rounded, color: AppColors.brand, size: 20),
+                const SizedBox(width: 10),
+                const Expanded(child: Text('Customer is negotiating the price...',
+                  style: TextStyle(fontSize: 13, color: AppColors.brand, fontWeight: FontWeight.w600))),
+                TextButton(
+                  onPressed: () {
+                    final counter = (_liveBooking['counterPrice'] as num?)?.toInt();
+                    final custName = _liveBooking['customerName']?.toString() ?? 'Customer';
+                    _showNegotiationDialog(counter, custName, _liveBooking);
+                  },
+                  child: const Text('Respond', style: TextStyle(fontWeight: FontWeight.w800))),
+              ])),
+          ],
+
+          // Final offer sent — waiting for customer
+          if (_status == 'negotiation_final') ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.yellow.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.yellow.withOpacity(0.4))),
+              child: Row(children: [
+                const Icon(Icons.price_check_rounded, color: AppColors.yellow, size: 20),
+                const SizedBox(width: 10),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('Final offer sent',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                  Text('₹${(_liveBooking['finalPrice'] as num?)?.toInt() ?? 0} — waiting for customer to accept',
+                    style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+                ])),
+              ])),
+          ],
+
           if (_status == 'accepted')
             SizedBox(
               width: double.infinity,
