@@ -81,11 +81,14 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     setState(() => _loading = true);
     final otp = (1000 + Random().nextInt(9000)).toString();
 
+    // customerId MUST be written — customer listener filters by this field
+    final custId = widget.booking['customerId']?.toString() ?? '';
     await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').set({
       'otp': otp,
       'bookingId': widget.bookingKey,
+      'customerId': custId,
       'service': widget.booking['service'] ?? '',
-      'customer': widget.booking['customer'] ?? '',
+      'customer': widget.booking['customer'] ?? widget.booking['customerName'] ?? '',
       'providerName': widget.booking['providerName'] ?? '',
       'generatedAt': DateTime.now().millisecondsSinceEpoch,
       'status': 'waiting',
@@ -474,6 +477,32 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                               valueColor: AlwaysStoppedAnimation(Colors.white)))
                         : const Text('Verify OTP & Complete',
                             style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Resend OTP button — in case customer didn't receive
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton.icon(
+                    onPressed: _loading ? null : () async {
+                      // Clear existing OTP fields
+                      for (final c in _otpCtrls) c.clear();
+                      setState(() { _otpError = ''; });
+                      // Regenerate OTP
+                      await _initiateOTP();
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('New OTP sent to customer ✅'),
+                            backgroundColor: AppColors.green,
+                            duration: Duration(seconds: 3),
+                          ),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.refresh_rounded, color: AppColors.teal, size: 18),
+                    label: const Text('Resend OTP to Customer',
+                      style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w700)),
                   ),
                 ),
               ]),
