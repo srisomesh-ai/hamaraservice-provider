@@ -436,28 +436,99 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Future<void> _acceptBooking() async {
     if (_incomingBooking == null || _incomingBookingKey == null) return;
+    final bookingKey = _incomingBookingKey!;
+    final booking = Map<String, dynamic>.from(_incomingBooking!);
+    final svcId = booking['serviceId']?.toString() ?? '';
+
+    // Get provider's min/max for this service
+    int minPrice = 0; int maxPrice = 0;
+    try {
+      final svcSnap = await FirebaseDatabase.instance
+          .ref('providers/$_pid/services/$svcId').get();
+      if (svcSnap.exists && svcSnap.value is Map) {
+        final sd = Map<String,dynamic>.from(svcSnap.value as Map);
+        minPrice = (sd['min'] as num?)?.toInt() ?? 0;
+        maxPrice = (sd['max'] as num?)?.toInt() ?? 0;
+      }
+    } catch (_) {}
+
+    // Show quote entry dialog
+    final quoteCtrl = TextEditingController(
+      text: minPrice > 0 ? '$minPrice' : '');
+    final quoted = await showDialog<int>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Enter Your Quote', style: TextStyle(fontSize:18, fontWeight:FontWeight.w800)),
+          Text(booking['service']?.toString() ?? '',
+            style: const TextStyle(fontSize:13, color:AppColors.muted, fontWeight:FontWeight.w500)),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (minPrice > 0 && maxPrice > 0)
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
+              child: Row(children: [
+                const Icon(Icons.info_outline_rounded, color:AppColors.teal, size:16),
+                const SizedBox(width:8),
+                Text('Your range: ₹$minPrice – ₹$maxPrice',
+                  style: const TextStyle(fontSize:12, color:AppColors.teal, fontWeight:FontWeight.w700)),
+              ])),
+          const SizedBox(height:14),
+          TextField(
+            controller: quoteCtrl,
+            keyboardType: TextInputType.number,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Your quoted price (₹)',
+              prefixText: '₹ ',
+              hintText: minPrice > 0 ? '$minPrice' : 'Enter price',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
+          ),
+          const SizedBox(height:8),
+          const Text('Customer will see this price and can accept or negotiate.',
+            style: TextStyle(fontSize:11, color:AppColors.muted)),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Cancel', style: TextStyle(color:AppColors.muted))),
+          ElevatedButton(
+            onPressed: () {
+              final v = int.tryParse(quoteCtrl.text.trim()) ?? 0;
+              if (v <= 0) return;
+              Navigator.pop(ctx, v);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor:AppColors.teal),
+            child: const Text('Send Quote', style: TextStyle(color:Colors.white))),
+        ],
+      ),
+    );
+
+    if (quoted == null || quoted <= 0) return; // Provider cancelled
+
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
     _stopAlert();
-    final bookingKey = _incomingBookingKey!;
-    final booking = Map<String, dynamic>.from(_incomingBooking!);
     setState(() {
       _incomingBooking = null;
       _incomingBookingKey = null;
     });
+
     try {
       final snap = await FirebaseDatabase.instance
-          .ref('active_bookings/$bookingKey')
-          .get();
+          .ref('active_bookings/$bookingKey').get();
       if (!snap.exists) return;
       final current = Map<String, dynamic>.from(snap.value as Map);
       if (current['acceptedBy'] != null &&
           current['acceptedBy'].toString() != 'null') {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content:
-                  Text('Booking already accepted by another provider.'),
-              backgroundColor: AppColors.red));
+            content: Text('Booking already accepted by another provider.'),
+            backgroundColor: AppColors.red));
         }
         return;
       }
@@ -467,53 +538,49 @@ class _DashboardScreenState extends State<DashboardScreen>
         'phone': _providerData?['phone'] ?? '',
         'photo': _providerData?['photo'] ?? '',
       };
-      await FirebaseDatabase.instance
-          .ref('active_bookings/$bookingKey')
-          .update({
+      // Write accepted + quotedPrice + negotiation status
+      final update = {
         'acceptedBy': providerInfo,
-        'status': 'accepted',
+        'status': 'price_quoted',
         'providerId': _pid,
         'providerName': _providerData?['name'] ?? '',
         'acceptedAt': DateTime.now().toIso8601String(),
-      });
+        'quotedPrice': quoted,
+        'negotiationStatus': 'quoted',
+      };
       await FirebaseDatabase.instance
-          .ref('bookings/$bookingKey')
-          .update({
-        'acceptedBy': providerInfo,
-        'status': 'accepted',
-        'providerId': _pid,
-        'providerName': _providerData?['name'] ?? '',
-        'acceptedAt': DateTime.now().toIso8601String(),
-      });
-      // Send push notification to customer
+          .ref('active_bookings/$bookingKey').update(update);
+      await FirebaseDatabase.instance
+          .ref('bookings/$bookingKey').update(update);
+
+      // Notify customer — provider quoted a price
       try {
         final customerSnap = await FirebaseDatabase.instance
-            .ref('customers/${booking['customerId']}/fcmToken').get();
+            .ref('customers/\${booking['customerId']}/fcmToken').get();
         final customerToken = customerSnap.value?.toString() ?? '';
         await _sendPushNotification(
           fcmToken: customerToken,
-          event: 'booking_accepted',
+          event: 'price_quoted',
           data: {
             'providerName': _providerData?['name']?.toString() ?? '',
             'service': booking['service']?.toString() ?? '',
+            'quotedPrice': quoted.toString(),
             'bookingId': bookingKey,
           },
         );
       } catch (_) {}
+
       if (mounted) {
-        Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (_) => ActiveBookingScreen(
-                    bookingKey: bookingKey,
-                    booking: booking,
-                    providerId: _pid)));
+        Navigator.push(context, MaterialPageRoute(
+            builder: (_) => ActiveBookingScreen(
+                bookingKey: bookingKey,
+                booking: {...booking, 'quotedPrice': quoted},
+                providerId: _pid)));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: AppColors.red));
+          content: Text('Error: \$e'), backgroundColor: AppColors.red));
       }
     }
   }
