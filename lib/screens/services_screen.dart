@@ -4,8 +4,6 @@ import 'package:firebase_database/firebase_database.dart';
 import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
 
-// Simple provider services selection screen
-// Provider just toggles which services they offer — nothing else
 class ServicesScreen extends StatefulWidget {
   final String providerId;
   const ServicesScreen({super.key, required this.providerId});
@@ -14,8 +12,9 @@ class ServicesScreen extends StatefulWidget {
 }
 
 class _State extends State<ServicesScreen> {
-  Set<String> _on = {};
-  Map<String, String> _prices = {}; // svcId → price label e.g. "from ₹499"
+  // svcId → {enabled, min, max}
+  Map<String, Map<String,dynamic>> _serviceData = {};
+  Map<String, String> _refPrices = {}; // hs_service_prices reference labels
   bool _loading = true;
   bool _saving  = false;
   String _cat   = 'All';
@@ -30,79 +29,102 @@ class _State extends State<ServicesScreen> {
   void initState() { super.initState(); _load(); }
 
   Future<void> _load() async {
+    // Load existing provider service data
     try {
-      // Load provider's selected services
       final snap = await FirebaseDatabase.instance
-          .ref('providers/${widget.providerId}/services').get();
-      if (snap.exists) {
+          .ref('providers/\${widget.providerId}/services').get();
+      if (snap.exists && snap.value is Map) {
         final d = Map<String,dynamic>.from(snap.value as Map);
-        _on = d.entries.where((e)=>e.value==true).map((e)=>e.key).toSet();
+        d.forEach((svcId, val) {
+          if (val is bool) {
+            // Old format — just enabled/disabled
+            _serviceData[svcId] = {'enabled': val, 'min': 0, 'max': 0};
+          } else if (val is Map) {
+            // New format — {enabled, min, max}
+            final m = Map<String,dynamic>.from(val);
+            _serviceData[svcId] = {
+              'enabled': m['enabled'] == true,
+              'min':     (m['min'] as num?)?.toInt() ?? 0,
+              'max':     (m['max'] as num?)?.toInt() ?? 0,
+            };
+          }
+        });
       }
     } catch (_) {}
 
-    // Load prices from hs_service_prices
+    // Load reference prices from hs_service_prices
     try {
       final priceSnap = await FirebaseDatabase.instance
           .ref('hs_service_prices').get();
       if (priceSnap.exists && priceSnap.value is Map) {
         final allPrices = Map<String,dynamic>.from(priceSnap.value as Map);
-        final Map<String,String> labels = {};
         allPrices.forEach((svcId, svcData) {
           if (svcData is! Map) return;
           final data = Map<String,dynamic>.from(svcData);
-          // Collect all numeric prices from all groups
-          final List<int> allVals = [];
-          // base price
-          if (data['base'] is int || data['base'] is double) {
-            allVals.add((data['base'] as num).toInt());
-          }
-          data.forEach((groupKey, groupVal) {
-            if (groupVal is Map) {
-              Map<String,dynamic>.from(groupVal).forEach((_, v) {
-                if ((v is int || v is double) && (v as num).toInt() > 0) {
-                  allVals.add((v as num).toInt());
-                }
+          final List<int> vals = [];
+          if (data['base'] is num) vals.add((data['base'] as num).toInt());
+          data.forEach((_, gv) {
+            if (gv is Map) {
+              Map<String,dynamic>.from(gv).forEach((_, v) {
+                if (v is num && v.toInt() > 0) vals.add(v.toInt());
               });
             }
           });
-          if (allVals.isNotEmpty) {
-            allVals.sort();
-            final min = allVals.first;
-            final max = allVals.last;
-            labels[svcId] = min == max ? '₹$min' : 'from ₹$min';
+          if (vals.isNotEmpty) {
+            vals.sort();
+            _refPrices[svcId] = 'Ref: ₹\${vals.first}–₹\${vals.last}';
           }
         });
-        _prices = labels;
       }
     } catch (_) {}
 
-    if (mounted) setState(()=>_loading=false);
+    if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _save() async {
-    setState(()=>_saving=true);
+    setState(() => _saving = true);
     HapticFeedback.mediumImpact();
     try {
-      final Map<String,dynamic> u={};
-      for (final s in HSCatalog.services) u[s.id]=_on.contains(s.id);
+      final Map<String,dynamic> u = {};
+      for (final s in HSCatalog.services) {
+        final d = _serviceData[s.id];
+        u[s.id] = {
+          'enabled': d?['enabled'] == true,
+          'min':     (d?['min'] as num?)?.toInt() ?? 0,
+          'max':     (d?['max'] as num?)?.toInt() ?? 0,
+        };
+      }
       await FirebaseDatabase.instance
-          .ref('providers/${widget.providerId}/services').update(u);
+          .ref('providers/\${widget.providerId}/services').set(u);
+      final enabledCount = _serviceData.values.where((d) => d['enabled'] == true).length;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Saved — ${_on.length} services'),
+          content: Text('Saved — \$enabledCount services enabled'),
           backgroundColor: AppColors.green));
         Navigator.pop(context, true);
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Error: $e'), backgroundColor: AppColors.red));
+        content: Text('Error: \$e'), backgroundColor: AppColors.red));
     }
-    if (mounted) setState(()=>_saving=false);
+    if (mounted) setState(() => _saving = false);
   }
 
-  List<HSService> get _list => _cat=='All'
+  List<HSService> get _list => _cat == 'All'
       ? HSCatalog.services
-      : HSCatalog.services.where((s)=>s.cat==_cat).toList();
+      : HSCatalog.services.where((s) => s.cat == _cat).toList();
+
+  bool _isEnabled(String id) => _serviceData[id]?['enabled'] == true;
+
+  void _toggle(String id) {
+    setState(() {
+      final current = _serviceData[id] ?? {'enabled': false, 'min': 0, 'max': 0};
+      _serviceData[id] = {
+        ...current,
+        'enabled': !(current['enabled'] == true),
+      };
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -117,20 +139,19 @@ class _State extends State<ServicesScreen> {
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('My Services',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-          Text('${_on.length} selected',
+          Text('\${_serviceData.values.where((d) => d['enabled']==true).length} selected',
             style: const TextStyle(fontSize: 11, color: Colors.white70)),
         ]),
         actions: [
           if (_saving)
             const Padding(padding: EdgeInsets.all(16),
-              child: SizedBox(width:20,height:20,
-                child: CircularProgressIndicator(color:Colors.white,strokeWidth:2)))
+              child: SizedBox(width:20, height:20,
+                child: CircularProgressIndicator(color:Colors.white, strokeWidth:2)))
           else
             TextButton(
               onPressed: _save,
               child: const Text('SAVE',
-                style: TextStyle(color:Colors.white,
-                  fontWeight:FontWeight.w800,fontSize:14))),
+                style: TextStyle(color:Colors.white, fontWeight:FontWeight.w800, fontSize:14))),
         ]),
       body: Column(children: [
         // Category filter
@@ -139,18 +160,17 @@ class _State extends State<ServicesScreen> {
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal:12),
-            child: Row(children: _cats.map((c){
-              final sel = _cat==c;
+            child: Row(children: _cats.map((c) {
+              final sel = _cat == c;
               return GestureDetector(
-                onTap: ()=>setState(()=>_cat=c),
+                onTap: () => setState(() => _cat = c),
                 child: Container(
                   margin: const EdgeInsets.only(right:8),
-                  padding: const EdgeInsets.symmetric(horizontal:12,vertical:6),
+                  padding: const EdgeInsets.symmetric(horizontal:12, vertical:6),
                   decoration: BoxDecoration(
                     color: sel ? AppColors.teal : AppColors.bg,
                     borderRadius: BorderRadius.circular(100),
-                    border: Border.all(
-                      color: sel ? AppColors.teal : AppColors.line)),
+                    border: Border.all(color: sel ? AppColors.teal : AppColors.line)),
                   child: Text(c, style: TextStyle(fontSize:11,
                     fontWeight:FontWeight.w700,
                     color: sel ? Colors.white : AppColors.muted))));
@@ -160,23 +180,36 @@ class _State extends State<ServicesScreen> {
           padding: const EdgeInsets.fromLTRB(12,0,12,8),
           child: Row(children: [
             TextButton(
-              onPressed: ()=>setState((){
-                _on=HSCatalog.services.map((s)=>s.id).toSet();}),
+              onPressed: () => setState(() {
+                for (final s in HSCatalog.services) {
+                  _serviceData[s.id] = {
+                    ..._serviceData[s.id] ?? {},
+                    'enabled': true,
+                    'min': _serviceData[s.id]?['min'] ?? 0,
+                    'max': _serviceData[s.id]?['max'] ?? 0,
+                  };
+                }
+              }),
               child: const Text('Select All',
-                style: TextStyle(fontSize:12,color:AppColors.teal,
-                  fontWeight:FontWeight.w700))),
-            const Text('·',style:TextStyle(color:AppColors.muted)),
+                style: TextStyle(fontSize:12, color:AppColors.teal, fontWeight:FontWeight.w700))),
+            const Text('·', style: TextStyle(color:AppColors.muted)),
             TextButton(
-              onPressed: ()=>setState(()=>_on.clear()),
+              onPressed: () => setState(() {
+                for (final id in _serviceData.keys) {
+                  _serviceData[id] = {..._serviceData[id]!, 'enabled': false};
+                }
+              }),
               child: const Text('Clear All',
-                style: TextStyle(fontSize:12,color:AppColors.red,
-                  fontWeight:FontWeight.w700))),
+                style: TextStyle(fontSize:12, color:AppColors.red, fontWeight:FontWeight.w700))),
+            const Spacer(),
+            const Text('Set your price range per service',
+              style: TextStyle(fontSize:10, color:AppColors.muted)),
           ])),
         // List
         Expanded(child: ListView.builder(
           padding: const EdgeInsets.fromLTRB(12,8,12,100),
           itemCount: _list.length,
-          itemBuilder: (_,i)=>_card(_list[i]))),
+          itemBuilder: (_, i) => _card(_list[i]))),
       ]),
       bottomNavigationBar: Container(
         padding: const EdgeInsets.fromLTRB(16,10,16,28),
@@ -185,72 +218,147 @@ class _State extends State<ServicesScreen> {
           onPressed: _saving ? null : _save,
           style: ElevatedButton.styleFrom(
             backgroundColor: AppColors.teal,
-            minimumSize: const Size(double.infinity,50),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12))),
-          child: Text('Save ${_on.length} Services',
-            style: const TextStyle(fontSize:14,
-              fontWeight:FontWeight.w700,color:Colors.white)))));
+            minimumSize: const Size(double.infinity, 50),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+          child: Text(
+            'Save \${_serviceData.values.where((d) => d['enabled']==true).length} Services',
+            style: const TextStyle(fontSize:14, fontWeight:FontWeight.w700, color:Colors.white)))));
   }
 
   Widget _card(HSService svc) {
-    final on = _on.contains(svc.id);
-    return GestureDetector(
-      onTap: (){
-        HapticFeedback.selectionClick();
-        setState((){
-          if(on) _on.remove(svc.id); else _on.add(svc.id);
-        });
-      },
-      child: Container(
-        margin: const EdgeInsets.only(bottom:8),
-        padding: const EdgeInsets.symmetric(horizontal:14,vertical:12),
-        decoration: BoxDecoration(
-          color: on ? AppColors.tealSoft : Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: on ? AppColors.teal : AppColors.line,
-            width: on ? 2 : 1),
-          boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.04), blurRadius:6)]),
-        child: Row(children: [
-          // Icon
-          Container(width:46,height:46,
-            decoration: BoxDecoration(
-              color: on ? AppColors.teal.withOpacity(0.12) : AppColors.bg,
-              borderRadius: BorderRadius.circular(12)),
-            child: Center(child: Text(svc.icon,
-              style: const TextStyle(fontSize:24)))),
-          const SizedBox(width:12),
-          // Name + category + price
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(svc.name, style: TextStyle(fontSize:14,
-              fontWeight:FontWeight.w700,
-              color: on ? AppColors.teal : AppColors.ink)),
-            const SizedBox(height:2),
-            Row(children: [
-              Text(svc.cat, style: const TextStyle(
-                fontSize:11,color:AppColors.muted)),
-              if (_prices.containsKey(svc.id)) ...[ 
-                const Text('  ·  ', style: TextStyle(fontSize:11,color:AppColors.muted)),
-                Text(_prices[svc.id]!,
-                  style: const TextStyle(fontSize:12,
-                    fontWeight:FontWeight.w800,color:AppColors.brand)),
-              ],
-            ]),
+    final on = _isEnabled(svc.id);
+    final data = _serviceData[svc.id] ?? {'enabled': false, 'min': 0, 'max': 0};
+    final minCtrl = TextEditingController(
+      text: (data['min'] as int? ?? 0) > 0 ? '${data['min']}' : '');
+    final maxCtrl = TextEditingController(
+      text: (data['max'] as int? ?? 0) > 0 ? '${data['max']}' : '');
+    final ref = _refPrices[svc.id] ?? '';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom:10),
+      decoration: BoxDecoration(
+        color: on ? AppColors.tealSoft : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: on ? AppColors.teal : AppColors.line, width: on ? 2 : 1),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius:6)]),
+      child: Column(children: [
+        // Top row — icon, name, toggle
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14,12,14,8),
+          child: Row(children: [
+            Container(width:46, height:46,
+              decoration: BoxDecoration(
+                color: on ? AppColors.teal.withOpacity(0.12) : AppColors.bg,
+                borderRadius: BorderRadius.circular(12)),
+              child: Center(child: Text(svc.icon, style: const TextStyle(fontSize:24)))),
+            const SizedBox(width:12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(svc.name,
+                style: TextStyle(fontSize:14, fontWeight:FontWeight.w700,
+                  color: on ? AppColors.teal : AppColors.ink)),
+              const SizedBox(height:2),
+              Row(children: [
+                Text(svc.cat, style: const TextStyle(fontSize:11, color:AppColors.muted)),
+                if (ref.isNotEmpty) ...[
+                  const Text('  ·  ', style: TextStyle(fontSize:11, color:AppColors.muted)),
+                  Text(ref, style: const TextStyle(fontSize:11,
+                    fontWeight:FontWeight.w600, color:AppColors.brand)),
+                ],
+              ]),
+            ])),
+            Switch(
+              value: on,
+              onChanged: (_) { HapticFeedback.selectionClick(); _toggle(svc.id); },
+              activeColor: AppColors.teal,
+              activeTrackColor: AppColors.tealSoft),
           ])),
-          // Toggle
-          Switch(
-            value: on,
-            onChanged: (v){
-              HapticFeedback.selectionClick();
-              setState((){
-                if(v) _on.add(svc.id); else _on.remove(svc.id);
-              });
-            },
-            activeColor: AppColors.teal,
-            activeTrackColor: AppColors.tealSoft),
-        ])));
+
+        // Price range inputs — only show when enabled
+        if (on) ...[
+          Divider(height:1, color: AppColors.teal.withOpacity(0.2)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14,10,14,14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                const Icon(Icons.currency_rupee_rounded, size:14, color:AppColors.teal),
+                const SizedBox(width:4),
+                const Text('Your Price Range for this Service',
+                  style: TextStyle(fontSize:12, fontWeight:FontWeight.w700, color:AppColors.teal)),
+              ]),
+              const SizedBox(height:4),
+              if (ref.isNotEmpty)
+                Text('Market guide: $ref',
+                  style: const TextStyle(fontSize:11, color:AppColors.muted)),
+              const SizedBox(height:8),
+              Row(children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('MIN PRICE (₹)',
+                    style: TextStyle(fontSize:10, fontWeight:FontWeight.w800,
+                      color:AppColors.muted, letterSpacing:.5)),
+                  const SizedBox(height:4),
+                  TextField(
+                    controller: minCtrl,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    onChanged: (v) {
+                      final val = int.tryParse(v) ?? 0;
+                      setState(() {
+                        _serviceData[svc.id] = {
+                          ..._serviceData[svc.id] ?? {},
+                          'enabled': true,
+                          'min': val,
+                          'max': _serviceData[svc.id]?['max'] ?? 0,
+                        };
+                      });
+                    },
+                    decoration: InputDecoration(
+                      hintText: '0',
+                      prefixText: '₹ ',
+                      contentPadding: const EdgeInsets.symmetric(horizontal:12, vertical:10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color:AppColors.teal, width:2))),
+                  ),
+                ])),
+                const SizedBox(width:12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('MAX PRICE (₹)',
+                    style: TextStyle(fontSize:10, fontWeight:FontWeight.w800,
+                      color:AppColors.muted, letterSpacing:.5)),
+                  const SizedBox(height:4),
+                  TextField(
+                    controller: maxCtrl,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    onChanged: (v) {
+                      final val = int.tryParse(v) ?? 0;
+                      setState(() {
+                        _serviceData[svc.id] = {
+                          ..._serviceData[svc.id] ?? {},
+                          'enabled': true,
+                          'min': _serviceData[svc.id]?['min'] ?? 0,
+                          'max': val,
+                        };
+                      });
+                    },
+                    decoration: InputDecoration(
+                      hintText: '0',
+                      prefixText: '₹ ',
+                      contentPadding: const EdgeInsets.symmetric(horizontal:12, vertical:10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color:AppColors.teal, width:2))),
+                  ),
+                ])),
+              ]),
+              const SizedBox(height:6),
+              Text('You will enter your exact quote when accepting a job',
+                style: TextStyle(fontSize:11, color:AppColors.muted.withOpacity(.8),
+                  fontStyle: FontStyle.italic)),
+            ])),
+        ],
+      ]));
   }
 }
