@@ -15,6 +15,7 @@ class ServicesScreen extends StatefulWidget {
 
 class _State extends State<ServicesScreen> {
   Set<String> _on = {};
+  Map<String, String> _prices = {}; // svcId → price label e.g. "from ₹499"
   bool _loading = true;
   bool _saving  = false;
   String _cat   = 'All';
@@ -30,6 +31,7 @@ class _State extends State<ServicesScreen> {
 
   Future<void> _load() async {
     try {
+      // Load provider's selected services
       final snap = await FirebaseDatabase.instance
           .ref('providers/${widget.providerId}/services').get();
       if (snap.exists) {
@@ -37,6 +39,43 @@ class _State extends State<ServicesScreen> {
         _on = d.entries.where((e)=>e.value==true).map((e)=>e.key).toSet();
       }
     } catch (_) {}
+
+    // Load prices from hs_service_prices
+    try {
+      final priceSnap = await FirebaseDatabase.instance
+          .ref('hs_service_prices').get();
+      if (priceSnap.exists && priceSnap.value is Map) {
+        final allPrices = Map<String,dynamic>.from(priceSnap.value as Map);
+        final Map<String,String> labels = {};
+        allPrices.forEach((svcId, svcData) {
+          if (svcData is! Map) return;
+          final data = Map<String,dynamic>.from(svcData);
+          // Collect all numeric prices from all groups
+          final List<int> allVals = [];
+          // base price
+          if (data['base'] is int || data['base'] is double) {
+            allVals.add((data['base'] as num).toInt());
+          }
+          data.forEach((groupKey, groupVal) {
+            if (groupVal is Map) {
+              Map<String,dynamic>.from(groupVal).forEach((_, v) {
+                if ((v is int || v is double) && (v as num).toInt() > 0) {
+                  allVals.add((v as num).toInt());
+                }
+              });
+            }
+          });
+          if (allVals.isNotEmpty) {
+            allVals.sort();
+            final min = allVals.first;
+            final max = allVals.last;
+            labels[svcId] = min == max ? '₹$min' : 'from ₹$min';
+          }
+        });
+        _prices = labels;
+      }
+    } catch (_) {}
+
     if (mounted) setState(()=>_loading=false);
   }
 
@@ -183,14 +222,23 @@ class _State extends State<ServicesScreen> {
             child: Center(child: Text(svc.icon,
               style: const TextStyle(fontSize:24)))),
           const SizedBox(width:12),
-          // Name + category
+          // Name + category + price
           Expanded(child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(svc.name, style: TextStyle(fontSize:14,
               fontWeight:FontWeight.w700,
               color: on ? AppColors.teal : AppColors.ink)),
-            Text(svc.cat, style: const TextStyle(
-              fontSize:11,color:AppColors.muted)),
+            const SizedBox(height:2),
+            Row(children: [
+              Text(svc.cat, style: const TextStyle(
+                fontSize:11,color:AppColors.muted)),
+              if (_prices.containsKey(svc.id)) ...[ 
+                const Text('  ·  ', style: TextStyle(fontSize:11,color:AppColors.muted)),
+                Text(_prices[svc.id]!,
+                  style: const TextStyle(fontSize:12,
+                    fontWeight:FontWeight.w800,color:AppColors.brand)),
+              ],
+            ]),
           ])),
           // Toggle
           Switch(
