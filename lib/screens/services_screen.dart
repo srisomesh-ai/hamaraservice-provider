@@ -32,7 +32,7 @@ class _State extends State<ServicesScreen> {
     // Load existing provider service data
     try {
       final snap = await FirebaseDatabase.instance
-          .ref('providers/\${widget.providerId}/services').get();
+          .ref('providers/${widget.providerId}/services').get();
       if (snap.exists && snap.value is Map) {
         final d = Map<String,dynamic>.from(snap.value as Map);
         d.forEach((svcId, val) {
@@ -72,7 +72,7 @@ class _State extends State<ServicesScreen> {
           });
           if (vals.isNotEmpty) {
             vals.sort();
-            _refPrices[svcId] = 'Ref: ₹\${vals.first}–₹\${vals.last}';
+            _refPrices[svcId] = 'Ref: ₹${vals.first}–₹${vals.last}';
           }
         });
       }
@@ -95,17 +95,17 @@ class _State extends State<ServicesScreen> {
         };
       }
       await FirebaseDatabase.instance
-          .ref('providers/\${widget.providerId}/services').set(u);
+          .ref('providers/${widget.providerId}/services').set(u);
       final enabledCount = _serviceData.values.where((d) => d['enabled'] == true).length;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Saved — \$enabledCount services enabled'),
+          content: Text('Saved — $enabledCount services enabled'),
           backgroundColor: AppColors.green));
         Navigator.pop(context, true);
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Error: \$e'), backgroundColor: AppColors.red));
+        content: Text('Error: $e'), backgroundColor: AppColors.red));
     }
     if (mounted) setState(() => _saving = false);
   }
@@ -139,7 +139,7 @@ class _State extends State<ServicesScreen> {
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('My Services',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-          Text('\${_serviceData.values.where((d) => d['enabled']==true).length} selected',
+          Text('${_serviceData.values.where((d) => d['enabled']==true).length} selected',
             style: const TextStyle(fontSize: 11, color: Colors.white70)),
         ]),
         actions: [
@@ -221,7 +221,7 @@ class _State extends State<ServicesScreen> {
             minimumSize: const Size(double.infinity, 50),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
           child: Text(
-            'Save \${_serviceData.values.where((d) => d['enabled']==true).length} Services',
+            'Save ${_serviceData.values.where((d) => d['enabled']==true).length} Services',
             style: const TextStyle(fontSize:14, fontWeight:FontWeight.w700, color:Colors.white)))));
   }
 
