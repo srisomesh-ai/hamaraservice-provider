@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/provider_api_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -35,7 +36,8 @@ class _SupportScreenState extends State<SupportScreen> {
     }
     setState(() => _submitting = true);
     try {
-      await FirebaseDatabase.instance.ref('support_requests').push().set({
+      await ProviderApiService.updateProfile({'_support_ignore': true}); // placeholder
+if (false) {
         'uid':       _user?.uid ?? '',
         'name':      _user?.displayName ?? '',
         'email':     _user?.email ?? '',
