@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
 
@@ -31,13 +32,11 @@ class _State extends State<ServicesScreen> {
   Future<void> _load() async {
     // Load existing provider service data
     try {
-      final snap = await FirebaseDatabase.instance
-          .ref('providers/${widget.providerId}/services').get();
-      if (snap.exists && snap.value is Map) {
-        final d = Map<String,dynamic>.from(snap.value as Map);
+      final svcs = await ProviderApiService.getMyServices(widget.providerId);
+      final d = <String,dynamic>{for (final s in svcs) s['svc_id']?.toString() ?? '': s};
+      if (d.isNotEmpty) {
         d.forEach((svcId, val) {
           if (val is bool) {
-            // Old format — just enabled/disabled
             _serviceData[svcId] = {'enabled': val, 'min': 0, 'max': 0};
           } else if (val is Map) {
             // New format — {enabled, min, max}
@@ -52,27 +51,23 @@ class _State extends State<ServicesScreen> {
       }
     } catch (_) {}
 
-    // Load reference prices from hs_service_prices
+    // Load reference prices from MySQL
     try {
-      final priceSnap = await FirebaseDatabase.instance
-          .ref('hs_service_prices').get();
-      if (priceSnap.exists && priceSnap.value is Map) {
-        final allPrices = Map<String,dynamic>.from(priceSnap.value as Map);
-        allPrices.forEach((svcId, svcData) {
-          if (svcData is! Map) return;
-          final data = Map<String,dynamic>.from(svcData);
+      final res = await ProviderApiService.getServicePrices('all');
+      if (res.isNotEmpty) {
+        res.forEach((svcId, grouped) {
+          if (grouped is! Map) return;
           final List<int> vals = [];
-          if (data['base'] is num) vals.add((data['base'] as num).toInt());
-          data.forEach((_, gv) {
+          (grouped as Map).forEach((_, gv) {
             if (gv is Map) {
-              Map<String,dynamic>.from(gv).forEach((_, v) {
+              (gv as Map).forEach((_, v) {
                 if (v is num && v.toInt() > 0) vals.add(v.toInt());
               });
             }
           });
           if (vals.isNotEmpty) {
             vals.sort();
-            _refPrices[svcId] = 'Ref: ₹${vals.first}–₹${vals.last}';
+            _refPrices[svcId] = 'Ref: ₹\${vals.first}–₹\${vals.last}';
           }
         });
       }
@@ -94,8 +89,13 @@ class _State extends State<ServicesScreen> {
           'max':     (d?['max'] as num?)?.toInt() ?? 0,
         };
       }
-      await FirebaseDatabase.instance
-          .ref('providers/${widget.providerId}/services').set(u);
+      final svcsList = u.entries.map((e) => {
+        'svc_id':   e.key,
+        'enabled':  e.value['enabled'] == true ? 1 : 0,
+        'min_price': e.value['min'] ?? 0,
+        'max_price': e.value['max'] ?? 0,
+      }).toList();
+      await ProviderApiService.saveMyServices(svcsList);
       final enabledCount = _serviceData.values.where((d) => d['enabled'] == true).length;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
