@@ -54,12 +54,30 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       final status = found['status'] ?? 'pending';
+
+      // ONLY approved providers can access the dashboard
       if (status == 'suspended') {
-        setState(() { _loading = false; _error = 'Account suspended. Contact support.'; });
+        setState(() { _loading = false; _error = 'Your account has been suspended. Please contact support.'; });
+        return;
+      }
+      if (status == 'rejected') {
+        setState(() { _loading = false; _error = 'Your application was rejected. Please contact support.'; });
+        return;
+      }
+      if (status != 'approved') {
+        // pending or any other status — show waiting screen
+        setState(() { _loading = false; });
+        if (mounted) {
+          Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => _PendingApprovalScreen(
+              name:  found!['name']?.toString() ?? 'Provider',
+              email: email,
+            )));
+        }
         return;
       }
 
-      // Save provider session
+      // Approved — save session and go to dashboard
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('provider_id', foundKey!);
       await prefs.setString('provider_email', email);
@@ -206,5 +224,101 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
     );
+  }
+}
+
+// ── Pending Approval Screen ───────────────────────────────────────────────
+class _PendingApprovalScreen extends StatelessWidget {
+  final String name;
+  final String email;
+  const _PendingApprovalScreen({required this.name, required this.email});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter, end: Alignment.bottomCenter,
+            colors: [Color(0xFF0D3D47), AppColors.bg],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 90, height: 90,
+                  decoration: BoxDecoration(
+                    color: AppColors.yellow.withOpacity(0.15),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: AppColors.yellow, width: 2)),
+                  child: const Icon(Icons.hourglass_top_rounded,
+                    color: AppColors.yellow, size: 44),
+                ),
+                const SizedBox(height: 28),
+                const Text('Application Under Review',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Colors.white)),
+                const SizedBox(height: 12),
+                Text('Hi $name! Your provider application is being reviewed by our team.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 14, color: Colors.white70, height: 1.5)),
+                const SizedBox(height: 32),
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20)),
+                  child: Column(children: [
+                    _infoRow(Icons.check_circle_outline_rounded, AppColors.green,
+                      'Application received', 'We have your details'),
+                    const SizedBox(height: 14),
+                    _infoRow(Icons.manage_search_rounded, AppColors.yellow,
+                      'Under review', 'Usually takes 24–48 hours'),
+                    const SizedBox(height: 14),
+                    _infoRow(Icons.notifications_active_rounded, AppColors.muted,
+                      'Approval notification', 'You will get notified when approved'),
+                  ]),
+                ),
+                const SizedBox(height: 28),
+                Text('Registered email: $email',
+                  style: const TextStyle(fontSize: 13, color: Colors.white60)),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pushReplacement(context,
+                      MaterialPageRoute(builder: (_) => const LoginScreen())),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white54),
+                      minimumSize: const Size(double.infinity, 48),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                    child: const Text('Back to Login',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _infoRow(IconData icon, Color color, String title, String sub) {
+    return Row(children: [
+      Container(
+        width: 40, height: 40,
+        decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
+        child: Icon(icon, color: color, size: 20)),
+      const SizedBox(width: 14),
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink)),
+        Text(sub, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+      ]),
+    ]);
   }
 }
