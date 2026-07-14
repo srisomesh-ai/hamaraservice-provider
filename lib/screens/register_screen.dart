@@ -40,6 +40,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   double? _lng;
   String _address = '';
   bool _detectingLocation = false;
+  int _radius = 5; // default 5km radius
 
   bool _submitting = false;
   String _error = '';
@@ -172,7 +173,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         return;
       }
 
-      // Map selected IDs to full service data from catalog
+      // Map selected IDs to full service data — NO hardcoded price
       final services = _selectedServices.map((svcId) {
         final matches = HSCatalog.services.where((sv) => sv.id == svcId).toList();
         final sName = matches.isNotEmpty ? matches.first.name : svcId;
@@ -183,6 +184,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
           'name': sName,
           'icon': sIcon,
           'cat':  sCat,
+          // price is set by provider AFTER approval in My Services screen
+          // min/max stored separately in services/{svcId}
         };
       }).toList();
 
@@ -208,6 +211,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'lat':          _lat ?? 0.0,
         'lng':          _lng ?? 0.0,
         'address':      _address,
+        'city':         _address.contains(',') ? _address.split(',').last.trim() : _address,
+        'radius':       _radius,
         'status':       'pending',
         'available':    false,
         'rating':       0,
@@ -519,6 +524,36 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const Text('Your Location', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
         const Text('Help customers find you nearby', style: TextStyle(fontSize: 13, color: AppColors.muted)),
         const SizedBox(height: 24),
+
+        // Radius picker
+        const Text('Service Radius', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.line)),
+          child: Column(children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text('How far will you travel?',
+                style: const TextStyle(fontSize: 13, color: AppColors.muted)),
+              Text('$_radius km',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.teal)),
+            ]),
+            Slider(
+              value: _radius.toDouble(),
+              min: 1, max: 30,
+              divisions: 29,
+              activeColor: AppColors.teal,
+              onChanged: (v) => setState(() => _radius = v.toInt()),
+            ),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              const Text('1 km', style: TextStyle(fontSize: 11, color: AppColors.muted)),
+              const Text('30 km', style: TextStyle(fontSize: 11, color: AppColors.muted)),
+            ]),
+          ])),
+        const SizedBox(height: 20),
 
         // Detect GPS
         GestureDetector(
