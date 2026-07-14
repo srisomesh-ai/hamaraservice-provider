@@ -193,14 +193,11 @@ class _DashboardScreenState extends State<DashboardScreen>
                     '';
               }
             } catch (e) {}
-            await FirebaseDatabase.instance
-                .ref('providers/$_pid')
-                .update({
-              'available': true,
+            await ProviderApiService.updateProfile({
+              'available': 1,
               'lat': pos.latitude,
               'lng': pos.longitude,
               if (city.isNotEmpty) 'city': city,
-              'updatedAt': DateTime.now().toIso8601String(),
             });
             if (city.isNotEmpty && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -476,9 +473,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         final customerSnap = await FirebaseDatabase.instance
             .ref('customers/${booking['customerId']}/fcmToken').get();
         final customerToken = customerSnap.value?.toString() ?? '';
-        await _sendPushNotification(
-          fcmToken: customerToken,
-          event: 'price_quoted',
+        final customerToken = ''; // FCM sent by MySQL API
           data: {
             'providerName': _providerData?['name']?.toString() ?? '',
             'service': booking['service']?.toString() ?? '',
@@ -522,13 +517,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         .set({
       ...booking,
       'id': bookingKey,
-      'standbyAt': DateTime.now().toIso8601String(),
-    });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'Job saved to standby. You can accept it from Open Jobs later.'),
-          backgroundColor: AppColors.teal,
+    // Standby saved locally — no Firebase needed
           duration: Duration(seconds: 3)));
     }
   }
