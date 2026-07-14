@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
 
 class RatingsScreen extends StatefulWidget {
