@@ -470,9 +470,6 @@ class _DashboardScreenState extends State<DashboardScreen>
 
       // Notify customer — provider quoted a price
       try {
-        final customerSnap = await FirebaseDatabase.instance
-            .ref('customers/${booking['customerId']}/fcmToken').get();
-        final customerToken = customerSnap.value?.toString() ?? '';
         final customerToken = ''; // FCM sent by MySQL API
           data: {
             'providerName': _providerData?['name']?.toString() ?? '',
@@ -511,8 +508,6 @@ class _DashboardScreenState extends State<DashboardScreen>
       _incomingBooking = null;
       _incomingBookingKey = null;
     });
-    // Save to standby list locally in Firebase under provider
-    await FirebaseDatabase.instance
         .ref('providers/$_pid/standbyJobs/$bookingKey')
         .set({
       ...booking,
