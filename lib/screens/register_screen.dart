@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/provider_api_service.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart';
@@ -167,11 +168,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final id = _generateId();
 
       // Check if already registered
-      final existing = await FirebaseDatabase.instance.ref('providers/$id').get();
-      if (existing.exists) {
-        setState(() { _submitting = false; _error = 'Already registered with this name/phone. Please login.'; });
-        return;
-      }
+      // Duplicate check handled by MySQL API (unique email constraint)
 
       // Map selected IDs to full service data — NO hardcoded price
       final services = _selectedServices.map((svcId) {
@@ -225,9 +222,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'appliedAt':    DateTime.now().toIso8601String(),
       };
 
-      await FirebaseDatabase.instance.ref('providers/$id').set(provider);
-      // Also save services in the format services_screen expects
-      await FirebaseDatabase.instance.ref('providers/$id/services').set(servicesMap);
+      // Register via MySQL API
+      provider['servicesMap'] = servicesMap;
+      final success = await ProviderApiService.register(provider);
+      if (!success) {
+        setState(() { _submitting = false; _error = 'Registration failed. Please try again.'; });
+        return;
+      }
 
       setState(() { _submitting = false; _generatedId = id; });
     } catch (e) {
