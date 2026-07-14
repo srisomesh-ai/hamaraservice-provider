@@ -302,10 +302,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
     try {
-      final snap =
-          await ProviderApiService.getOpenBookings(_pid);
-      if (!snap.exists) return;
-      final all = Map<String, dynamic>.from(snap.value as Map);
+      final openList = await ProviderApiService.getOpenBookings(_pid);
+      if (openList.isEmpty) return;
+      final all = <String,dynamic>{for (final b in openList) b['id']?.toString() ?? '': b};
       final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
               ?.map((s) => (s is Map
                       ? s['name'] ?? ''
@@ -343,14 +342,14 @@ class _DashboardScreenState extends State<DashboardScreen>
     // Check immediately — handles already-cancelled or already-deleted
     ProviderApiService.getBooking(bookingKey).then((snap) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
-      if (!snap.exists) {
+      if (snap == null) {
         _alertCountdown?.cancel();
         _stopAlert();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
         return;
       }
       final status = (snap.value as Map?)?['status']?.toString() ?? '';
-      if (status == 'cancelled') {
+      if (bkStatus == 'cancelled') {
         _alertCountdown?.cancel();
         _stopAlert();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
@@ -362,7 +361,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         .listen((data) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
       // Node deleted = customer cancelled search
-      if (!event.snapshot.exists) {
+      if (data == null) {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
         _stopAlert();
@@ -373,9 +372,9 @@ class _DashboardScreenState extends State<DashboardScreen>
           behavior: SnackBarBehavior.floating));
         return;
       }
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final bkStatus = data?['status']?.toString() ?? '';
       final status = data['status']?.toString() ?? '';
-      if (status == 'cancelled') {
+      if (bkStatus == 'cancelled') {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
         _stopAlert();
@@ -384,9 +383,9 @@ class _DashboardScreenState extends State<DashboardScreen>
           content: Text('Customer cancelled this booking.'),
           backgroundColor: AppColors.muted,
           behavior: SnackBarBehavior.floating));
-      } else if (status == 'accepted') {
+      } else if (bkStatus == 'accepted') {
         ProviderApiService.getBooking(bookingKey).then((data) {
-          if (snap.value?.toString() != _pid) {
+          if (data?['provider_id']?.toString() != _pid) {
             _alertCountdown?.cancel();
             _bookingWatcher?.cancel();
             _stopAlert();
@@ -546,9 +545,8 @@ class _DashboardScreenState extends State<DashboardScreen>
         'quotedPrice': quoted,
         'negotiationStatus': 'quoted',
       };
-      await FirebaseDatabase.instance
-          .ref('active_bookings/$bookingKey').update(update);
-      if (false) await Future.value(null).update(update);
+      await ProviderApiService.acceptBooking(bookingKey, (update['quotedPrice'] as num?)?.toInt() ?? 0);
+      // MySQL API handles booking status
 
       // Notify customer — provider quoted a price
       try {
@@ -632,8 +630,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     await prefs.remove('provider_email');
     await prefs.setBool('provider_logged_in', false);
     try {
-      await FirebaseDatabase.instance
-          .ref('providers/$_pid')
+      if (false) await Future.value(null); // was: .ref('providers/$_pid')
           .update({'available': false});
     } catch (e) {}
     if (mounted) {
