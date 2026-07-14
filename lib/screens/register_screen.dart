@@ -141,10 +141,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
         return;
       }
 
-      final services = _selectedServices.map((name) => {
-        'name': name, 'icon': '🔧', 'price': 499,
-        'cat': 'Service', 'subcategory': 'Service',
+      // Map selected IDs to full service data from catalog
+      final services = _selectedServices.map((svcId) {
+        final s = HSCatalog.services.firstWhere(
+          (sv) => sv.id == svcId,
+          orElse: () => HSService(id: svcId, name: svcId, icon: '🔧',
+            cat: 'Service', basePrice: 0, groups: []));
+        return {
+          'id':   s.id,
+          'name': s.name,
+          'icon': s.icon,
+          'cat':  s.cat,
+        };
       }).toList();
+
+      // Also save services as a Map for the services_screen to read
+      final servicesMap = <String, dynamic>{};
+      for (final svcId in _selectedServices) {
+        servicesMap[svcId] = {'enabled': true, 'min': 0, 'max': 0};
+      }
 
       final provider = {
         'id':           id,
@@ -175,6 +190,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       };
 
       await FirebaseDatabase.instance.ref('providers/$id').set(provider);
+      // Also save services in the format services_screen expects
+      await FirebaseDatabase.instance.ref('providers/$id/services').set(servicesMap);
 
       setState(() { _submitting = false; _generatedId = id; });
     } catch (e) {
@@ -365,7 +382,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
-              child: Text('${_selectedServices.length} service${_selectedServices.length == 1 ? '' : 's'} selected',
+              child: Text('${_selectedServices.length} of ${HSCatalog.services.length} services selected',
                 style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.teal)),
             ),
           ]),
@@ -373,38 +390,89 @@ class _RegisterScreenState extends State<RegisterScreen> {
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 20),
-            itemCount: _servicesList.length,
+            itemCount: HSCatalog.services.length,
             itemBuilder: (_, i) {
-              final svc = _servicesList[i];
-              final sel = _selectedServices.contains(svc);
-              return GestureDetector(
-                onTap: () => setState(() {
-                  if (sel) _selectedServices.remove(svc);
-                  else _selectedServices.add(svc);
-                }),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: sel ? AppColors.tealSoft : Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: sel ? AppColors.teal : AppColors.line, width: sel ? 2 : 1),
-                  ),
-                  child: Row(children: [
-                    Expanded(child: Text(svc,
-                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600,
-                        color: sel ? AppColors.teal : AppColors.ink))),
+              // Group by category — show category header
+              final svcs = HSCatalog.services;
+              final svc = svcs[i];
+              final sel = _selectedServices.contains(svc.id);
+              final showHeader = i == 0 || svcs[i-1].cat != svc.cat;
+              final ref = _refPrices[svc.id];
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Category header
+                  if (showHeader) ...[
+                    if (i > 0) const SizedBox(height: 8),
                     Container(
-                      width: 22, height: 22,
+                      margin: const EdgeInsets.only(bottom: 8, top: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                       decoration: BoxDecoration(
-                        color: sel ? AppColors.teal : Colors.transparent,
-                        border: Border.all(color: sel ? AppColors.teal : AppColors.line, width: 2),
-                        borderRadius: BorderRadius.circular(6),
+                        color: AppColors.teal.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8)),
+                      child: Text(svc.cat,
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800,
+                          color: AppColors.teal, letterSpacing: 0.5))),
+                  ],
+                  // Service card
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      if (sel) _selectedServices.remove(svc.id);
+                      else _selectedServices.add(svc.id);
+                    }),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: sel ? AppColors.tealSoft : Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: sel ? AppColors.teal : AppColors.line,
+                          width: sel ? 2 : 1),
                       ),
-                      child: sel ? const Icon(Icons.check, color: Colors.white, size: 13) : null,
+                      child: Row(children: [
+                        // Icon
+                        Container(
+                          width: 40, height: 40,
+                          decoration: BoxDecoration(
+                            color: sel ? AppColors.teal.withOpacity(0.12) : AppColors.bg,
+                            borderRadius: BorderRadius.circular(10)),
+                          child: Center(child: Text(svc.icon,
+                            style: const TextStyle(fontSize: 20)))),
+                        const SizedBox(width: 12),
+                        // Name + price
+                        Expanded(child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(svc.name,
+                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
+                                color: sel ? AppColors.teal : AppColors.ink)),
+                            if (ref != null && ref > 0) ...[
+                              const SizedBox(height: 2),
+                              Text('Reference: from ₹$ref',
+                                style: const TextStyle(fontSize: 11,
+                                  color: AppColors.brand, fontWeight: FontWeight.w600)),
+                            ] else if (_loadingPrices) ...[
+                              const SizedBox(height: 2),
+                              const Text('Loading price...',
+                                style: TextStyle(fontSize: 11, color: AppColors.muted)),
+                            ],
+                          ])),
+                        // Checkbox
+                        Container(
+                          width: 24, height: 24,
+                          decoration: BoxDecoration(
+                            color: sel ? AppColors.teal : Colors.transparent,
+                            border: Border.all(
+                              color: sel ? AppColors.teal : AppColors.line,
+                              width: 2),
+                            borderRadius: BorderRadius.circular(6)),
+                          child: sel ? const Icon(Icons.check,
+                            color: Colors.white, size: 14) : null),
+                      ]),
                     ),
-                  ]),
-                ),
+                  ),
+                ],
               );
             },
           ),
@@ -472,7 +540,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             _summaryRow('Name', _nameCtrl.text),
             _summaryRow('Phone', _phoneCtrl.text),
             _summaryRow('Email', _emailCtrl.text),
-            _summaryRow('Services', '${_selectedServices.length} selected'),
+            _summaryRow('Services', '${_selectedServices.length} of ${HSCatalog.services.length} selected'),
             _summaryRow('Your ID will be', _generateId()),
           ]),
         ),
