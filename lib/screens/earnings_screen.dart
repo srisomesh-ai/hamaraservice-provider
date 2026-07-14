@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
 
 // Commission rates per service (matching web admin)
@@ -87,74 +88,45 @@ class _EarningsScreenState extends State<EarningsScreen> {
       List<Map<String, dynamic>> jobs = [];
       List<Map<String, dynamic>> withdrawals = [];
 
-      // Load completed bookings — filtered by providerId server-side
-      final bookSnap = await FirebaseDatabase.instance
-          .ref('bookings')
-          .orderByChild('providerId')
-          .equalTo(widget.providerId)
-          .get();
-      if (bookSnap.exists) {
-        final all = Map<String, dynamic>.from(bookSnap.value as Map);
-        for (final entry in all.entries) {
-          final b = Map<String, dynamic>.from(entry.value as Map);
-          if (b['status'] == 'completed' && b['paymentStatus'] == 'paid') {
-            final paid = ((b['amountPaid'] ?? b['priceVal'] ?? b['price'] ?? 0) as num).toDouble();
-            final serviceName = b['service'] as String? ?? '';
-            // Use stored commissionRate if available (written by payment_screen)
-            // Falls back to _getCommission for older bookings
-            final storedRate = b['commissionRate'];
-            final commRate = storedRate != null
-                ? (storedRate as num).toDouble()
-                : _getCommission(serviceName);
-            final commAmt = (paid * commRate / 100).roundToDouble();
-            final netEarned = paid - commAmt;
+      // Load from MySQL — balance and history
+      final balance = await ProviderApiService.getBalance(widget.providerId);
+      totalNet  = ((balance['total_earned']   ?? 0) as num).toDouble();
+      withdrawn = ((balance['withdrawn']       ?? 0) as num).toDouble();
 
-            totalPaid += paid;
-            totalComm += commAmt;
-            totalNet += netEarned;
-
-            jobs.add({
-              'id': entry.key,
-              'service': serviceName,
-              'customer': b['customer'] ?? '',
-              'date': b['date'] ?? '',
-              'paid': paid,
-              'commRate': commRate,
-              'commAmt': commAmt,
-              'netEarned': netEarned,
-              'completedAt': b['completedAt'] ?? b['paidAt'] ?? '',
-              'paymentMethod': b['paymentMethod'] ?? 'cash',
-            });
-          }
+      // Load booking history
+      final bookings = await ProviderApiService.getBookingHistory(widget.providerId);
+      for (final b in bookings) {
+        if (b['status'] == 'completed') {
+          final paid     = ((b['amount'] ?? b['confirmed_price'] ?? 0) as num).toDouble();
+          final netEarned= ((b['provider_earns'] ?? 0) as num).toDouble();
+          final commAmt  = paid - netEarned;
+          final commRate = paid > 0 ? (commAmt / paid * 100) : 15.0;
+          totalPaid += paid; totalComm += commAmt;
+          jobs.add({
+            'id':            b['id'] ?? '',
+            'service':       b['svc_name'] ?? '',
+            'customer':      b['other_party'] ?? '',
+            'date':          b['slot_date'] ?? '',
+            'paid':          paid,
+            'commRate':      commRate,
+            'commAmt':       commAmt,
+            'netEarned':     netEarned,
+            'completedAt':   b['completed_at'] ?? '',
+            'paymentMethod': b['payment_method'] ?? 'cash',
+          });
         }
-        jobs.sort((a, b) =>
-            (b['completedAt'] as String).compareTo(a['completedAt'] as String));
       }
+      jobs.sort((a,b) => (b['completedAt'] as String).compareTo(a['completedAt'] as String));
 
-      // Load withdrawal requests
-      final payoutSnap = await FirebaseDatabase.instance.ref('payout_requests').get();
-      if (payoutSnap.exists) {
-        final all = Map<String, dynamic>.from(payoutSnap.value as Map);
-        for (final entry in all.entries) {
-          final p = Map<String, dynamic>.from(entry.value as Map);
-          if (p['providerId'] == widget.providerId) {
-            final amt = ((p['amount'] ?? 0) as num).toDouble();
-            // Deduct both pending AND approved from available balance
-            if (p['status'] == 'approved' || p['status'] == 'pending') withdrawn += amt;
-            withdrawals.add({...p, 'id': entry.key});
-          }
-        }
-        withdrawals.sort((a, b) =>
-            (b['requestedAt'] ?? '').compareTo(a['requestedAt'] ?? ''));
+      // Load payout history
+      final payouts = await ProviderApiService.getPayoutHistory(widget.providerId);
+      for (final p in payouts) {
+        final amt = ((p['amount'] ?? 0) as num).toDouble();
+        withdrawals.add(p);
+        if (p['status'] == 'pending') withdrawn += amt;
       }
 
       final available = totalNet - withdrawn;
-
-      // Sync totalEarned to provider profile
-      await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
-        'totalEarned': available > 0 ? available : 0,
-        'totalGrossEarned': totalNet,
-      });
 
       setState(() {
         _totalCustomerPaid = totalPaid;
@@ -197,21 +169,11 @@ class _EarningsScreenState extends State<EarningsScreen> {
 
     setState(() => _requesting = true);
     try {
-      // Load provider name first
-      final provSnap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}').get();
-      final provData = provSnap.exists ? Map<String, dynamic>.from(provSnap.value as Map) : <String, dynamic>{};
-      final provName = provData['name']?.toString() ?? '';
-      final provPhone = provData['phone']?.toString() ?? '';
-
-      await FirebaseDatabase.instance.ref('payout_requests').push().set({
-        'providerId': widget.providerId,
-        'providerName': provName,
-        'providerPhone': provPhone,
-        'amount': amount,
-        'bankDetails': _bankCtrl.text.trim(),
-        'status': 'pending',
-        'requestedAt': DateTime.now().toIso8601String(),
-        'availableBalance': _availableBalance,
+      await ProviderApiService.requestPayout({
+        'amount':       amount.toInt(),
+        'account_type': _bankCtrl.text.contains('@') ? 'upi' : 'bank',
+        'upi_id':       _bankCtrl.text.contains('@') ? _bankCtrl.text.trim() : '',
+        'account_no':   _bankCtrl.text.contains('@') ? '' : _bankCtrl.text.trim(),
       });
 
       _amountCtrl.clear();
