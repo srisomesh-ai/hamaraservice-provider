@@ -112,14 +112,38 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _listenBookings() {
-    // Poll MySQL for active booking updates
-    _bookingsListener = Stream.periodic(const Duration(seconds: 5))
-        .asyncMap((_) => ProviderApiService.getActiveBooking(_pid))
-        .listen((booking) {
+    // Real-time bookings listener — updates immediately when status changes
+    _bookingsListener = FirebaseDatabase.instance
+        .ref('bookings')
+        .onValue
+        .listen((event) {
       if (!mounted) return;
-      if (booking != null) {
-        setState(() => _currentBooking = booking);
+      if (!event.snapshot.exists) {
+        setState(() => _bookings = []);
+        return;
       }
+      final all = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final mine = all.entries
+          .where((e) {
+            final b = e.value as Map;
+            return b['providerId'] == _pid ||
+                (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid);
+          })
+          .map((e) => Map<String, dynamic>.from({...e.value as Map, 'id': e.key}))
+          .toList()
+        ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
+
+      // Check for new review/rating
+      for (final b in mine) {
+        if ((b['rating'] != null) && !(b['reviewNotified'] == true)) {
+          _notifyNewReview(b);
+          // Mark as notified
+          FirebaseDatabase.instance
+              .ref('bookings/${b['id']}/reviewNotified').set(true);
+        }
+      }
+
+      if (mounted) setState(() => _bookings = mine);
     });
   }
 
@@ -150,7 +174,33 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _watchOpenJobs() {
-    // Open jobs polled by _checkForBookings
+    FirebaseDatabase.instance
+        .ref('active_bookings')
+        .onValue
+        .listen((event) {
+      if (!event.snapshot.exists || !mounted) return;
+      final all =
+          Map<String, dynamic>.from(event.snapshot.value as Map);
+      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
+              ?.map((s) => (s is Map
+                      ? s['name'] ?? ''
+                      : s.toString())
+                  .toLowerCase())
+              .toList() ??
+          [];
+      int count = 0;
+      for (final entry in all.entries) {
+        final b = Map<String, dynamic>.from(entry.value as Map);
+        if (b['status'] != 'searching' || b['acceptedBy'] != null) {
+          continue;
+        }
+        final svcName = (b['service'] ?? '').toString().toLowerCase();
+        if (providerServices.isNotEmpty &&
+            !providerServices.any((s) => s == svcName)) continue;
+        count++;
+      }
+      if (mounted) setState(() => _openJobsCount = count);
+    });
   }
 
   Future<void> _toggleAvailability(bool val) async {
@@ -217,15 +267,41 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _startPolling() {
-    // Polling handled by _checkForBookings via timer
+    _newBookingListener = Stream.periodic(const Duration(seconds: 4))
+        .asyncMap((_) => ProviderApiService.getOpenBookings(_pid))
+        .listen((bookings) {
+      if (!mounted || !_available || _incomingBooking != null) return;
+      try {
+        final bk =
+            Map<String, dynamic>.from(event.snapshot.value as Map);
+        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
+          return;
+        }
+        if (bk['status'] == 'cancelled') return;
+        // Skip if already declined or standbyed this session
+        if (_dismissedBookingKeys.contains(event.snapshot.key)) return;
+        // Check provider offers this service (by svcId or name)
+        if (!_offersService(bk)) return;
+        setState(() {
+          _incomingBooking = bk;
+          _incomingBookingKey = event.snapshot.key;
+          _countdownSeconds = 30;
+        });
+        _startCountdown();
+        _watchBookingStatus(event.snapshot.key!);
+      } catch (e) {}
+    });
+    _pollTimer = Timer.periodic(
+        const Duration(seconds: 5), (_) => _checkForBookings());
   }
 
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
     try {
-      final openList = await ProviderApiService.getOpenBookings(_pid);
-      if (openList.isEmpty) return;
-      final all = <String,dynamic>{for (final b in openList) b['id']?.toString() ?? '': b};
+      final snap =
+          await FirebaseDatabase.instance.ref('active_bookings').get();
+      if (!snap.exists) return;
+      final all = Map<String, dynamic>.from(snap.value as Map);
       final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
               ?.map((s) => (s is Map
                       ? s['name'] ?? ''
@@ -261,16 +337,16 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _watchBookingStatus(String bookingKey) {
     _bookingWatcher?.cancel();
     // Check immediately — handles already-cancelled or already-deleted
-    ProviderApiService.getBooking(bookingKey).then((snap) {
+    FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get().then((snap) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
-      if (snap == null) {
+      if (!snap.exists) {
         _alertCountdown?.cancel();
         _stopAlert();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
         return;
       }
       final status = (snap.value as Map?)?['status']?.toString() ?? '';
-      if (bkStatus == 'cancelled') {
+      if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _stopAlert();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
@@ -282,7 +358,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         .listen((data) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
       // Node deleted = customer cancelled search
-      if (data == null) {
+      if (!event.snapshot.exists) {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
         _stopAlert();
@@ -293,9 +369,9 @@ class _DashboardScreenState extends State<DashboardScreen>
           behavior: SnackBarBehavior.floating));
         return;
       }
-      final bkStatus = data?['status']?.toString() ?? '';
+      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
       final status = data['status']?.toString() ?? '';
-      if (bkStatus == 'cancelled') {
+      if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
         _stopAlert();
@@ -304,9 +380,9 @@ class _DashboardScreenState extends State<DashboardScreen>
           content: Text('Customer cancelled this booking.'),
           backgroundColor: AppColors.muted,
           behavior: SnackBarBehavior.floating));
-      } else if (bkStatus == 'accepted') {
-        ProviderApiService.getBooking(bookingKey).then((data) {
-          if (data?['provider_id']?.toString() != _pid) {
+      } else if (status == 'accepted') {
+        ProviderApiService.getBooking(bookingKey).then((snap) {
+          if (snap.value?.toString() != _pid) {
             _alertCountdown?.cancel();
             _bookingWatcher?.cancel();
             _stopAlert();
@@ -366,7 +442,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (svcMatch.isNotEmpty) {
         final sd = svcMatch.first;
         minPrice = (sd['min_price'] as num?)?.toInt() ?? 0;
-        maxPrice = (sd['max'] as num?)?.toInt() ?? 0;
+        maxPrice = (sd['max_price'] as num?)?.toInt() ?? 0;
       }
     } catch (_) {}
 
@@ -437,10 +513,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     try {
-      final snapData = await ProviderApiService.getBooking(bookingKey);
-      if (snapData == null) return;
-      final current = snapData;
-      if (current['provider_id'] != null &&
+      final snap = await FirebaseDatabase.instance
+          .ref('active_bookings/$bookingKey').get();
+      if (!snap.exists) return;
+      final current = Map<String, dynamic>.from(snap.value as Map);
+      if (current['acceptedBy'] != null &&
           current['acceptedBy'].toString() != 'null') {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -466,11 +543,17 @@ class _DashboardScreenState extends State<DashboardScreen>
         'negotiationStatus': 'quoted',
       };
       await ProviderApiService.acceptBooking(bookingKey, (update['quotedPrice'] as num?)?.toInt() ?? 0);
-      // MySQL API handles booking status
+      await FirebaseDatabase.instance
+          .ref('bookings/$bookingKey').update(update);
 
       // Notify customer — provider quoted a price
       try {
-        final customerToken = ''; // FCM sent by MySQL API
+        final customerSnap = await FirebaseDatabase.instance
+            .ref('customers/\${booking['customerId']}/fcmToken').get();
+        final customerToken = customerSnap.value?.toString() ?? '';
+        await _sendPushNotification(
+          fcmToken: customerToken,
+          event: 'price_quoted',
           data: {
             'providerName': _providerData?['name']?.toString() ?? '',
             'service': booking['service']?.toString() ?? '',
@@ -490,7 +573,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Error: $e'), backgroundColor: AppColors.red));
+          content: Text('Error: \$e'), backgroundColor: AppColors.red));
       }
     }
   }
@@ -508,11 +591,19 @@ class _DashboardScreenState extends State<DashboardScreen>
       _incomingBooking = null;
       _incomingBookingKey = null;
     });
+    // Save to standby list locally in Firebase under provider
+    await FirebaseDatabase.instance
         .ref('providers/$_pid/standbyJobs/$bookingKey')
         .set({
       ...booking,
       'id': bookingKey,
-    // Standby saved locally — no Firebase needed
+      'standbyAt': DateTime.now().toIso8601String(),
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Job saved to standby. You can accept it from Open Jobs later.'),
+          backgroundColor: AppColors.teal,
           duration: Duration(seconds: 3)));
     }
   }
@@ -537,7 +628,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     await prefs.remove('provider_email');
     await prefs.setBool('provider_logged_in', false);
     try {
-      if (false) await Future.value(null); // was: .ref('providers/$_pid')
+      await FirebaseDatabase.instance
+          .ref('providers/$_pid')
           .update({'available': false});
     } catch (e) {}
     if (mounted) {
