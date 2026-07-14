@@ -117,11 +117,11 @@ class _DashboardScreenState extends State<DashboardScreen>
         .asyncMap((_) => ProviderApiService.getActiveBooking(_pid))
         .listen((booking) {
       if (!mounted) return;
-      if (!event.snapshot.exists) {
+      if (booking == null) {
         setState(() => _bookings = []);
         return;
       }
-      final all = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final all = <String,dynamic>{'active': booking};
       final mine = all.entries
           .where((e) {
             final b = e.value as Map;
@@ -176,7 +176,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (false) Stream.periodic(const Duration(seconds: 1)).listen((_) {
       if (!mounted) return;
       final all =
-          Map<String, dynamic>.from(event.snapshot.value as Map);
+          <String,dynamic>{};  // was: event.snapshot.value
       final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
               ?.map((s) => (s is Map
                       ? s['name'] ?? ''
@@ -269,22 +269,22 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (!mounted || !_available || _incomingBooking != null) return;
       try {
         final bk =
-            Map<String, dynamic>.from(event.snapshot.value as Map);
+            bookings.isEmpty ? <String,dynamic>{} : bookings.first;
         if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
           return;
         }
         if (bk['status'] == 'cancelled') return;
         // Skip if already declined or standbyed this session
-        if (_dismissedBookingKeys.contains(event.snapshot.key)) return;
+        if (_dismissedBookingKeys.contains(bk['id'])) return;
         // Check provider offers this service (by svcId or name)
         if (!_offersService(bk)) return;
         setState(() {
           _incomingBooking = bk;
-          _incomingBookingKey = event.snapshot.key;
+          _incomingBookingKey = bk['id']?.toString();
           _countdownSeconds = 30;
         });
         _startCountdown();
-        _watchBookingStatus(event.snapshot.key!);
+        _watchBookingStatus(bk['id']?.toString() ?? '');
       } catch (e) {}
     });
     _pollTimer = Timer.periodic(
@@ -340,7 +340,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
         return;
       }
-      final status = (snap.value as Map?)?['status']?.toString() ?? '';
+      final status = snap?['status']?.toString() ?? '';
       if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _stopAlert();
@@ -353,7 +353,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         .listen((data) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
       // Node deleted = customer cancelled search
-      if (!event.snapshot.exists) {
+      if (data == null) {
         _alertCountdown?.cancel();
         _bookingWatcher?.cancel();
         _stopAlert();
@@ -364,7 +364,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           behavior: SnackBarBehavior.floating));
         return;
       }
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+      final bkData = data ?? <String,dynamic>{};
       final status = data['status']?.toString() ?? '';
       if (status == 'cancelled') {
         _alertCountdown?.cancel();
@@ -377,7 +377,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           behavior: SnackBarBehavior.floating));
       } else if (status == 'accepted') {
         ProviderApiService.getBooking(bookingKey).then((snap) {
-          if (snap.value?.toString() != _pid) {
+          if (snap?['provider_id']?.toString() != _pid) {
             _alertCountdown?.cancel();
             _bookingWatcher?.cancel();
             _stopAlert();
