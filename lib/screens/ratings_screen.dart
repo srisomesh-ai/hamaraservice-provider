@@ -22,20 +22,11 @@ class _RatingsScreenState extends State<RatingsScreen> {
 
   Future<void> _loadReviews() async {
     try {
-      final snap = await FirebaseDatabase.instance.ref('provider_reviews').get();
-      if (!snap.exists) { setState(() => _loading = false); return; }
-      final all = Map<String, dynamic>.from(snap.value as Map);
-      final mine = all.values
-          .map((v) => Map<String, dynamic>.from(v as Map))
-          .where((r) => r['providerId'] == widget.providerId)
-          .toList()
-        ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
-
+      final reviews = await ProviderApiService.getReviews(widget.providerId);
       double total = 0;
-      for (final r in mine) total += ((r['rating'] ?? r['stars'] ?? 0) as num).toDouble();
-      final avg = mine.isEmpty ? 0.0 : total / mine.length;
-
-      setState(() { _reviews = mine; _avgRating = avg; _loading = false; });
+      for (final r in reviews) total += ((r['rating'] ?? 0) as num).toDouble();
+      final avg = reviews.isEmpty ? 0.0 : total / reviews.length;
+      setState(() { _reviews = reviews; _avgRating = avg; _loading = false; });
     } catch (e) {
       setState(() => _loading = false);
     }
