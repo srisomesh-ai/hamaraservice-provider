@@ -297,12 +297,12 @@ class HSCatalog {
       ]),
       HSGroup(key:'style', title:'Cooking Style Surcharge', style:'bhk', items:[
         HSOption(key:'regular',    name:'Regular Home Style', price:0),
-        HSOption(key:'restaurant', name:'Restaurant Style',   price:0),
+        HSOption(key:'restaurant', name:'Restaurant Style",   price:0),
       ]),
     ]),
 
     // ── SVC023 Men's Haircut ───────────────────────────────────────
-    HSService(id:'SVC023', name:"Men's Haircut at Home", icon:'✂️', cat:'Beauty & Wellness', basePrice:0, groups:[
+    HSService(id:"SVC023", name:"Men's Haircut at Home", icon:"✂️', cat:'Beauty & Wellness', basePrice:0, groups:[
       HSGroup(key:'svc', title:'Select Service', style:'task', items:[
         HSOption(key:'haircut',   ico:'✂️', name:'Haircut',            price:0),
         HSOption(key:'fade',      ico:'💈', name:'Fade / Taper Cut',   price:0),
@@ -317,12 +317,12 @@ class HSCatalog {
         HSOption(key:'highlights',ico:'✨', name:'Highlights',         price:0),
         HSOption(key:'massage',   ico:'💆', name:'Head Massage',       price:0),
         HSOption(key:'cleanup',   ico:'🧴', name:'Face Cleanup',       price:0),
-        HSOption(key:'combo',     ico:'⭐', name:'Grooming Combo',     price:0),
+        HSOption(key:'combo',     ico:'⭐', name:'Grooming Combo",     price:0),
       ]),
     ]),
 
     // ── SVC024 Women's Haircut & Beauty ───────────────────────────
-    HSService(id:'SVC024', name:"Women's Haircut & Beauty", icon:'💇', cat:'Beauty & Wellness', basePrice:0, groups:[
+    HSService(id:"SVC024", name:"Women's Haircut & Beauty", icon:"💇', cat:'Beauty & Wellness', basePrice:0, groups:[
       HSGroup(key:'cut', title:'Haircut', style:'task', items:[
         HSOption(key:'trim',     ico:'✂️', name:'Trim / Basic Cut', price:0),
         HSOption(key:'layer',    ico:'🌊', name:'Layer / Step Cut',  price:0),
