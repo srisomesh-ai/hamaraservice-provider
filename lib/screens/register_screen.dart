@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../utils/theme.dart';
+import '../services/hs_catalog.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -29,7 +31,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   bool _showPwd      = false;
 
   // Step 2 - Services
-  final Set<String> _selectedServices = {};
+  final Set<String> _selectedServices = {}; // stores svcId e.g. 'SVC001'
+  Map<String, int> _refPrices = {};          // svcId → lowest reference price
+  bool _loadingPrices = true;
 
   // Step 3 - Location
   double? _lat;
@@ -41,16 +45,43 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String _error = '';
   String _generatedId = '';
 
-  final List<String> _servicesList = [
-    'House Maid', 'Deep Cleaning', 'Bathroom Cleaning', 'Kitchen Cleaning',
-    'Sofa / Carpet Cleaning', 'Laundry / Ironing', 'Pest Control', 'Gardener',
-    'AC Service', 'Appliance Repair', 'Electrician', 'Plumber', 'Carpenter',
-    'Painter', 'Solar Panel', 'Water Purifier', 'CCTV',
-    'Car / Bike Wash', 'Car Mechanic', 'Driver',
-    'Doctor Visit', 'Nurse Visit', 'Lab Test', 'Fitness Trainer',
-    'Massage', 'Women Beauty', 'Men Haircut',
-    'Babysitter', 'Elderly Care', 'Security Guard', 'Civil / Mason',
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _loadRefPrices();
+  }
+
+  Future<void> _loadRefPrices() async {
+    try {
+      final snap = await FirebaseDatabase.instance
+          .ref('hs_service_prices').get();
+      if (snap.exists && snap.value is Map) {
+        final all = Map<String,dynamic>.from(snap.value as Map);
+        final Map<String,int> prices = {};
+        all.forEach((svcId, data) {
+          if (data is! Map) return;
+          final d = Map<String,dynamic>.from(data);
+          final List<int> vals = [];
+          d.forEach((_, gv) {
+            if (gv is Map) {
+              Map<String,dynamic>.from(gv).forEach((_, v) {
+                if (v is num && v.toInt() > 0) vals.add(v.toInt());
+              });
+            }
+          });
+          if (vals.isNotEmpty) {
+            vals.sort();
+            prices[svcId] = vals.first;
+          }
+        });
+        if (mounted) setState(() { _refPrices = prices; _loadingPrices = false; });
+      } else {
+        if (mounted) setState(() => _loadingPrices = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingPrices = false);
+    }
+  }
 
   @override
   void dispose() {
