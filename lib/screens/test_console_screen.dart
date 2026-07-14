@@ -155,7 +155,7 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
       } else {
         _log('❌ MySQL read failed');
       }
-    } catch (e) { _log('❌ MySQL error: \$e'); }
+    } catch (e) { _log('❌ MySQL error: ' + e.toString()); }
   }
 
   @override
