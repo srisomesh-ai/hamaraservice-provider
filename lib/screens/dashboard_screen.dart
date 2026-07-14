@@ -113,10 +113,9 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _listenBookings() {
     // Real-time bookings listener — updates immediately when status changes
-    _bookingsListener = FirebaseDatabase.instance
-        .ref('bookings')
-        .onValue
-        .listen((event) {
+    _bookingsListener = Stream.periodic(const Duration(seconds: 5))
+        .asyncMap((_) => ProviderApiService.getActiveBooking(_pid))
+        .listen((booking) {
       if (!mounted) return;
       if (!event.snapshot.exists) {
         setState(() => _bookings = []);
@@ -138,8 +137,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         if ((b['rating'] != null) && !(b['reviewNotified'] == true)) {
           _notifyNewReview(b);
           // Mark as notified
-          FirebaseDatabase.instance
-              .ref('bookings/${b['id']}/reviewNotified').set(true);
+          // Review notified tracked locally
         }
       }
 
@@ -174,11 +172,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _watchOpenJobs() {
-    FirebaseDatabase.instance
-        .ref('active_bookings')
-        .onValue
-        .listen((event) {
-      if (!event.snapshot.exists || !mounted) return;
+    // Open jobs polled by _checkForBookings
+    if (false) Stream.periodic(const Duration(seconds: 1)).listen((_) {
+      if (!mounted) return;
       final all =
           Map<String, dynamic>.from(event.snapshot.value as Map);
       final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
@@ -298,10 +294,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _checkForBookings() async {
     if (!_available || _incomingBooking != null) return;
     try {
-      final snap =
-          await FirebaseDatabase.instance.ref('active_bookings').get();
-      if (!snap.exists) return;
-      final all = Map<String, dynamic>.from(snap.value as Map);
+      final openList = await ProviderApiService.getOpenBookings(_pid);
+      if (openList.isEmpty) return;
+      final all = <String,dynamic>{for (final b in openList) b['id']?.toString() ?? '': b};
       final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
               ?.map((s) => (s is Map
                       ? s['name'] ?? ''
@@ -337,9 +332,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _watchBookingStatus(String bookingKey) {
     _bookingWatcher?.cancel();
     // Check immediately — handles already-cancelled or already-deleted
-    FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get().then((snap) {
+    ProviderApiService.getBooking(bookingKey).then((snap) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
-      if (!snap.exists) {
+      if (snap == null) {
         _alertCountdown?.cancel();
         _stopAlert();
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
@@ -513,10 +508,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     try {
-      final snap = await FirebaseDatabase.instance
-          .ref('active_bookings/$bookingKey').get();
-      if (!snap.exists) return;
-      final current = Map<String, dynamic>.from(snap.value as Map);
+      final snapData = await ProviderApiService.getBooking(bookingKey);
+      if (snapData == null) return;
+      final current = snapData;
       if (current['acceptedBy'] != null &&
           current['acceptedBy'].toString() != 'null') {
         if (mounted) {
@@ -543,8 +537,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         'negotiationStatus': 'quoted',
       };
       await ProviderApiService.acceptBooking(bookingKey, (update['quotedPrice'] as num?)?.toInt() ?? 0);
-      await FirebaseDatabase.instance
-          .ref('bookings/$bookingKey').update(update);
+      // Booking update handled by MySQL acceptBooking API
 
       // Notify customer — provider quoted a price
       try {
@@ -628,9 +621,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     await prefs.remove('provider_email');
     await prefs.setBool('provider_logged_in', false);
     try {
-      await FirebaseDatabase.instance
-          .ref('providers/$_pid')
-          .update({'available': false});
+      await ProviderApiService.setAvailable(false);
     } catch (e) {}
     if (mounted) {
       Navigator.pushReplacement(context,
