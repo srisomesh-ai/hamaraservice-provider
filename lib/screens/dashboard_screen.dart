@@ -112,38 +112,14 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _listenBookings() {
-    // Real-time bookings listener — updates immediately when status changes
-    _bookingsListener = FirebaseDatabase.instance
-        .ref('bookings')
-        .onValue
-        .listen((event) {
+    // Poll MySQL for active booking updates
+    _bookingsListener = Stream.periodic(const Duration(seconds: 5))
+        .asyncMap((_) => ProviderApiService.getActiveBooking(_pid))
+        .listen((booking) {
       if (!mounted) return;
-      if (!event.snapshot.exists) {
-        setState(() => _bookings = []);
-        return;
+      if (booking != null) {
+        setState(() => _currentBooking = booking);
       }
-      final all = Map<String, dynamic>.from(event.snapshot.value as Map);
-      final mine = all.entries
-          .where((e) {
-            final b = e.value as Map;
-            return b['providerId'] == _pid ||
-                (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid);
-          })
-          .map((e) => Map<String, dynamic>.from({...e.value as Map, 'id': e.key}))
-          .toList()
-        ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
-
-      // Check for new review/rating
-      for (final b in mine) {
-        if ((b['rating'] != null) && !(b['reviewNotified'] == true)) {
-          _notifyNewReview(b);
-          // Mark as notified
-          FirebaseDatabase.instance
-              .ref('bookings/${b['id']}/reviewNotified').set(true);
-        }
-      }
-
-      if (mounted) setState(() => _bookings = mine);
     });
   }
 
@@ -174,33 +150,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _watchOpenJobs() {
-    FirebaseDatabase.instance
-        .ref('active_bookings')
-        .onValue
-        .listen((event) {
-      if (!event.snapshot.exists || !mounted) return;
-      final all =
-          Map<String, dynamic>.from(event.snapshot.value as Map);
-      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
-              ?.map((s) => (s is Map
-                      ? s['name'] ?? ''
-                      : s.toString())
-                  .toLowerCase())
-              .toList() ??
-          [];
-      int count = 0;
-      for (final entry in all.entries) {
-        final b = Map<String, dynamic>.from(entry.value as Map);
-        if (b['status'] != 'searching' || b['acceptedBy'] != null) {
-          continue;
-        }
-        final svcName = (b['service'] ?? '').toString().toLowerCase();
-        if (providerServices.isNotEmpty &&
-            !providerServices.any((s) => s == svcName)) continue;
-        count++;
-      }
-      if (mounted) setState(() => _openJobsCount = count);
-    });
+    // Open jobs polled by _checkForBookings
   }
 
   Future<void> _toggleAvailability(bool val) async {
@@ -270,33 +220,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _startPolling() {
-    _newBookingListener = FirebaseDatabase.instance
-        .ref('active_bookings')
-        .onChildAdded
-        .listen((event) {
-      if (!mounted || !_available || _incomingBooking != null) return;
-      try {
-        final bk =
-            Map<String, dynamic>.from(event.snapshot.value as Map);
-        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
-          return;
-        }
-        if (bk['status'] == 'cancelled') return;
-        // Skip if already declined or standbyed this session
-        if (_dismissedBookingKeys.contains(event.snapshot.key)) return;
-        // Check provider offers this service (by svcId or name)
-        if (!_offersService(bk)) return;
-        setState(() {
-          _incomingBooking = bk;
-          _incomingBookingKey = event.snapshot.key;
-          _countdownSeconds = 30;
-        });
-        _startCountdown();
-        _watchBookingStatus(event.snapshot.key!);
-      } catch (e) {}
-    });
-    _pollTimer = Timer.periodic(
-        const Duration(seconds: 5), (_) => _checkForBookings());
+    // Polling handled by _checkForBookings via timer
   }
 
   Future<void> _checkForBookings() async {
@@ -440,11 +364,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     // Get provider's min/max for this service
     int minPrice = 0; int maxPrice = 0;
     try {
-      final svcSnap = await FirebaseDatabase.instance
-          .ref('providers/$_pid/services/$svcId').get();
-      if (svcSnap.exists && svcSnap.value is Map) {
-        final sd = Map<String,dynamic>.from(svcSnap.value as Map);
-        minPrice = (sd['min'] as num?)?.toInt() ?? 0;
+      final mysvcs = await ProviderApiService.getMyServices(_pid);
+      final svcMatch = mysvcs.where((s) => s['svc_id'] == svcId).toList();
+      if (svcMatch.isNotEmpty) {
+        final sd = svcMatch.first;
+        minPrice = (sd['min_price'] as num?)?.toInt() ?? 0;
         maxPrice = (sd['max'] as num?)?.toInt() ?? 0;
       }
     } catch (_) {}
@@ -516,11 +440,10 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     try {
-      final snap = await FirebaseDatabase.instance
-          .ref('active_bookings/$bookingKey').get();
-      if (!snap.exists) return;
-      final current = Map<String, dynamic>.from(snap.value as Map);
-      if (current['acceptedBy'] != null &&
+      final snapData = await ProviderApiService.getBooking(bookingKey);
+      if (snapData == null) return;
+      final current = snapData;
+      if (current['provider_id'] != null &&
           current['acceptedBy'].toString() != 'null') {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
