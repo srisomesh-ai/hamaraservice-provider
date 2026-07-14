@@ -81,7 +81,7 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
       return;
     }
 
-    final current = Map<String, dynamic>.from(snap.value as Map);
+    final current = bkCheck;
     if (current['acceptedBy'] != null || (current['status'] != 'searching' && current['status'] != 'pending')) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('This job was accepted by another provider.'), backgroundColor: AppColors.red));
@@ -96,7 +96,11 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
     };
 
     // Accept + quote price via MySQL API
-    await ProviderApiService.acceptBooking(bookingKey, quotedPrice);
+    // Get quoted price from booking data or ask provider
+    final price = (booking['quoted_price'] as num?)?.toInt()
+        ?? (booking['base_price'] as num?)?.toInt()
+        ?? 0;
+    await ProviderApiService.acceptBooking(bookingKey, price);
 
     if (mounted) Navigator.push(context, MaterialPageRoute(
       builder: (_) => ActiveBookingScreen(
