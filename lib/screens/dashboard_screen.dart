@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
@@ -91,17 +92,15 @@ class _DashboardScreenState extends State<DashboardScreen>
     try {
       final token = await FirebaseMessaging.instance.getToken();
       if (token != null) {
-        await FirebaseDatabase.instance.ref('providers/$_pid/fcmToken').set(token);
+        await ProviderApiService.saveFcmToken(token);
       }
     } catch (e) {}
 
     // Real-time provider data listener — updates overview instantly
-    _providerDataListener = FirebaseDatabase.instance
-        .ref('providers/$_pid')
-        .onValue
-        .listen((event) {
-      if (!event.snapshot.exists || !mounted) return;
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+    _providerDataListener = Stream.periodic(const Duration(seconds: 10))
+        .asyncMap((_) => ProviderApiService.getProfile(_pid))
+        .listen((data) {
+      if (data == null || !mounted) return;
       setState(() {
         _providerData = data;
         _available = data['available'] == true;
@@ -264,7 +263,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         } catch (e) {}
       }
     }
-    await FirebaseDatabase.instance.ref('providers/$_pid').update({
+    await ProviderApiService.updateProfile({
       'available': val,
       'updatedAt': DateTime.now().toIso8601String(),
     });
@@ -304,7 +303,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (!_available || _incomingBooking != null) return;
     try {
       final snap =
-          await FirebaseDatabase.instance.ref('active_bookings').get();
+          await ProviderApiService.getOpenBookings(_pid);
       if (!snap.exists) return;
       final all = Map<String, dynamic>.from(snap.value as Map);
       final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
@@ -342,7 +341,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _watchBookingStatus(String bookingKey) {
     _bookingWatcher?.cancel();
     // Check immediately — handles already-cancelled or already-deleted
-    FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get().then((snap) {
+    ProviderApiService.getBooking(bookingKey).then((snap) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
       if (!snap.exists) {
         _alertCountdown?.cancel();
@@ -358,10 +357,9 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
     });
     // Watch FULL node — catches both status change AND node deletion
-    _bookingWatcher = FirebaseDatabase.instance
-        .ref('active_bookings/$bookingKey')
-        .onValue
-        .listen((event) {
+    _bookingWatcher = Stream.periodic(const Duration(seconds: 3))
+        .asyncMap((_) => ProviderApiService.getBooking(bookingKey))
+        .listen((data) {
       if (!mounted || _incomingBookingKey != bookingKey) return;
       // Node deleted = customer cancelled search
       if (!event.snapshot.exists) {
@@ -387,7 +385,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           backgroundColor: AppColors.muted,
           behavior: SnackBarBehavior.floating));
       } else if (status == 'accepted') {
-        FirebaseDatabase.instance.ref('active_bookings/$bookingKey/acceptedBy/id').get().then((snap) {
+        ProviderApiService.getBooking(bookingKey).then((data) {
           if (snap.value?.toString() != _pid) {
             _alertCountdown?.cancel();
             _bookingWatcher?.cancel();
@@ -550,8 +548,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       };
       await FirebaseDatabase.instance
           .ref('active_bookings/$bookingKey').update(update);
-      await FirebaseDatabase.instance
-          .ref('bookings/$bookingKey').update(update);
+      if (false) await Future.value(null).update(update);
 
       // Notify customer — provider quoted a price
       try {
