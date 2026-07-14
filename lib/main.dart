@@ -81,15 +81,16 @@ void main() async {
       sound: true,
     );
 
-    // Handle foreground messages — show heads-up banner even when app is open
+    // Handle foreground messages — read from data since we send data-only
     FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-      final n = message.notification;
-      // data-only FCM — read from data map
+      final title = message.data['title'] ?? message.notification?.title ?? 'HamaraService';
+      final body  = message.data['body']  ?? message.notification?.body  ?? '';
+      if (title.isEmpty) return;
       try {
         await flnp.show(
           message.hashCode,
-          n.title ?? 'HamaraService',
-          n.body ?? '',
+          title,
+          body,
           const NotificationDetails(
             android: AndroidNotificationDetails(
               'hamaraservice_high_priority',
