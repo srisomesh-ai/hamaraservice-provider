@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
 import 'active_booking_screen.dart';
 
@@ -26,10 +27,8 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
 
   Future<void> _loadJobs() async {
     try {
-      final snap = await FirebaseDatabase.instance.ref('active_bookings').get();
-      if (!snap.exists) { setState(() => _loading = false); return; }
-
-      final all = Map<String, dynamic>.from(snap.value as Map);
+      final openJobs = await ProviderApiService.getOpenBookings(widget.providerId);
+      final all = <String, dynamic>{for (int i=0; i<openJobs.length; i++) openJobs[i]['id']?.toString() ?? '$i': openJobs[i]};
       // Handle services as Map {SVC001:true} or List format
     final rawSvcs = widget.providerData?['services'];
     final providerServiceIds = <String>{};
@@ -73,9 +72,9 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
   Future<void> _acceptJob(Map<String, dynamic> booking) async {
     final bookingKey = booking['id'] as String;
 
-    // Check if still available
-    final snap = await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').get();
-    if (!snap.exists) {
+    // Check booking still available via MySQL
+    final bkCheck = await ProviderApiService.getBooking(bookingKey);
+    if (bkCheck == null || bkCheck['status'] != 'active') {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('This booking is no longer available.'), backgroundColor: AppColors.red));
       _loadJobs();
@@ -96,21 +95,8 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
       'phone': widget.providerData?['phone'] ?? '',
     };
 
-    await FirebaseDatabase.instance.ref('active_bookings/$bookingKey').update({
-      'acceptedBy': providerInfo,
-      'status': 'accepted',
-      'providerId': widget.providerId,
-      'providerName': widget.providerData?['name'] ?? '',
-      'acceptedAt': DateTime.now().toIso8601String(),
-    });
-
-    await FirebaseDatabase.instance.ref('bookings/$bookingKey').update({
-      'acceptedBy': providerInfo,
-      'status': 'accepted',
-      'providerId': widget.providerId,
-      'providerName': widget.providerData?['name'] ?? '',
-      'acceptedAt': DateTime.now().toIso8601String(),
-    });
+    // Accept + quote price via MySQL API
+    await ProviderApiService.acceptBooking(bookingKey, quotedPrice);
 
     if (mounted) Navigator.push(context, MaterialPageRoute(
       builder: (_) => ActiveBookingScreen(
