@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'services/provider_api_service.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -112,7 +113,7 @@ void main() async {
       try {
         final uid = FirebaseAuth.instance.currentUser?.uid;
         if (uid != null && token.isNotEmpty) {
-          await FirebaseDatabase.instance.ref('providers/$uid/fcmToken').set(token);
+          await ProviderApiService.saveFcmToken(token);
           print('FCM Token saved for provider: $uid');
         }
       } catch (e) {
