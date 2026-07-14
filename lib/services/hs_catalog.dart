@@ -5,7 +5,6 @@
 // ║  admin updates Firebase; apps read from Firebase.                ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
-import 'package:firebase_database/firebase_database.dart';
 
 // ── Option types ──────────────────────────────────────────────────────
 // 'bhk'   = selectable size/type chip with price (single-select per group)
@@ -516,21 +515,8 @@ class HSCatalog {
 
   static int basePrice(String id) => getById(id)?.basePrice ?? 0;
 
-  // Seed all services to Firebase on first admin login
-  static Future<void> seedToFirebase() async {
-    try {
-      final snap = await FirebaseDatabase.instance
-          .ref('hs_service_prices/SVC001/basePrice')
-          .get();
-      if (snap.exists) return; // Already seeded
-
-      final Map<String, dynamic> updates = {};
-      for (final svc in services) {
-        updates['hs_service_prices/${svc.id}'] = _toFirebase(svc);
-      }
-      await FirebaseDatabase.instance.ref().update(updates);
-    } catch (_) {}
-  }
+  // Seed handled by MySQL setup.php — no-op here
+  static Future<void> seedToFirebase() async {}
 
   static Map<String, dynamic> _toFirebase(HSService svc) {
     return {
@@ -557,17 +543,13 @@ class HSCatalog {
   }
 
   // Load live prices from Firebase (overrides base prices if admin updated)
+  // Prices loaded from MySQL — return empty map here
   static Future<Map<String, int>> loadLivePrices() async {
     final Map<String, int> prices = {};
     try {
-      final snap = await FirebaseDatabase.instance.ref('hs_service_prices').get();
-      if (!snap.exists) return prices;
-      final data = Map<String, dynamic>.from(snap.value as Map);
-      for (final entry in data.entries) {
-        final svc = Map<String, dynamic>.from(entry.value as Map);
-        final bp = svc['basePrice'];
-        if (bp is int) prices[entry.key] = bp;
-      }
+      // Prices now fetched from MySQL API per service
+      return prices;
+      if (false) {
     } catch (_) {}
     return prices;
   }
