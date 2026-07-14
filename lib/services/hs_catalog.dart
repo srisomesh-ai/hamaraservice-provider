@@ -543,14 +543,8 @@ class HSCatalog {
   }
 
   // Load live prices from Firebase (overrides base prices if admin updated)
-  // Prices loaded from MySQL — return empty map here
+  // Prices loaded from MySQL API — no Firebase needed
   static Future<Map<String, int>> loadLivePrices() async {
-    final Map<String, int> prices = {};
-    try {
-      // Prices now fetched from MySQL API per service
-      return prices;
-      if (false) {
-    } catch (_) {}
-    return prices;
+    return {};
   }
 }
