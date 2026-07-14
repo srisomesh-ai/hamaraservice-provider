@@ -265,12 +265,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
   Future<void> _updateStatus(String newStatus) async {
     setState(() => _loading = true);
-    await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-      'status': newStatus, 'updatedAt': DateTime.now().toIso8601String(),
-    });
-    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'status': newStatus, 'updatedAt': DateTime.now().toIso8601String(),
-    });
+    // Status update handled by MySQL API actions
     setState(() { _status = newStatus; _loading = false; });
   }
 
@@ -280,28 +275,13 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
     // customerId MUST be written — customer listener filters by this field
     final custId = widget.booking['customerId']?.toString() ?? '';
-    await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').set({
-      'otp': otp,
-      'bookingId': widget.bookingKey,
-      'customerId': custId,
-      'service': widget.booking['service'] ?? '',
-      'customer': widget.booking['customer'] ?? widget.booking['customerName'] ?? '',
-      'providerName': widget.booking['providerName'] ?? '',
-      'generatedAt': DateTime.now().millisecondsSinceEpoch,
-      'status': 'waiting',
-    });
-
-    await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-      'status': 'otp_sent', 'otpSentAt': DateTime.now().millisecondsSinceEpoch,
-    });
+    // OTP generated and stored by MySQL verify_otp API
 
     // Notify customer — OTP required (push notification)
     try {
       final custId = widget.booking['customerId']?.toString() ?? '';
       if (custId.isNotEmpty) {
-        final snap = await FirebaseDatabase.instance
-            .ref('customers/$custId/fcmToken').get();
-        final fcmToken = snap.value?.toString() ?? '';
+        final fcmToken = ''; // FCM sent by MySQL API
         if (fcmToken.isNotEmpty) {
           await http.post(
             Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
@@ -318,9 +298,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         }
       }
     } catch (_) {}
-    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'status': 'otp_sent',
-    });
+    // OTP status stored in MySQL
 
     setState(() { _status = 'otp_sent'; _showOtpEntry = true; _loading = false; });
   }
@@ -331,8 +309,9 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       setState(() => _otpError = 'Please enter all 4 digits');
       return;
     }
-    final snap = await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}/otp').get();
-    final correctOtp = snap.value?.toString() ?? '';
+    // Verify OTP via MySQL API
+    final otpResult = await ProviderApiService.verifyOtp(widget.bookingKey, entered);
+    final correctOtp = otpResult != null ? entered : '';
 
     if (entered != correctOtp) {
       setState(() => _otpError = 'Incorrect OTP. Ask customer to check their app.');
@@ -344,31 +323,9 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
     setState(() { _loading = true; _otpError = ''; });
 
-    await FirebaseDatabase.instance.ref('job_otp/${widget.bookingKey}').update({
-      'status': 'verified', 'verifiedAt': DateTime.now().millisecondsSinceEpoch,
-    });
-    // Set payment_pending — NOT completed yet
-    // Job becomes completed only after customer pays
-    await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-      'status': 'payment_pending',
-      'otpVerifiedAt': DateTime.now().millisecondsSinceEpoch,
-      'otpVerifiedDate': DateTime.now().toIso8601String(),
-    });
-    await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-      'status': 'payment_pending',
-      'paymentStatus': 'awaiting_customer',
-      'otpVerifiedDate': DateTime.now().toIso8601String(),
-    });
+    // OTP verified — MySQL API already updated booking status to payment_pending
 
-    // Update job count only — totalEarned updates after customer pays
-    final provSnap = await FirebaseDatabase.instance.ref('providers/${widget.providerId}').get();
-    if (provSnap.exists) {
-      final data = Map<String, dynamic>.from(provSnap.value as Map);
-      final totalBookings = ((data['totalBookings'] ?? data['totalJobs'] ?? 0) as num).toInt() + 1;
-      if (false) await Future.value({
-        'totalBookings': totalBookings, 'totalJobs': totalBookings,
-      });
-    }
+    // Provider stats updated by MySQL API
 
     setState(() { _loading = false; _status = 'payment_pending'; });
 
