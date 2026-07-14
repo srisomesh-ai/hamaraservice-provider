@@ -15,6 +15,38 @@ final FlutterLocalNotificationsPlugin flnp = FlutterLocalNotificationsPlugin();
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // Data-only messages need to be shown manually
+  final title = message.data['title'] ?? message.notification?.title ?? 'HamaraService';
+  final body  = message.data['body']  ?? message.notification?.body  ?? 'You have a new update.';
+
+  // Init local notifications
+  final flnpBg = FlutterLocalNotificationsPlugin();
+  await flnpBg.initialize(
+    const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    ),
+  );
+
+  await flnpBg.show(
+    message.hashCode,
+    title,
+    body,
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'hamaraservice_high_priority',
+        'HamaraService Alerts',
+        channelDescription: 'Booking and payment notifications',
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        enableVibration: true,
+        visibility: NotificationVisibility.public,
+        icon: '@mipmap/ic_launcher',
+      ),
+    ),
+    payload: message.data.toString(),
+  );
 }
 
 void main() async {
