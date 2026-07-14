@@ -55,31 +55,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _loadRefPrices() async {
     try {
-      final snap = await FirebaseDatabase.instance
-          .ref('hs_service_prices').get();
-      if (snap.exists && snap.value is Map) {
-        final all = Map<String,dynamic>.from(snap.value as Map);
-        final Map<String,int> prices = {};
-        all.forEach((svcId, data) {
-          if (data is! Map) return;
-          final d = Map<String,dynamic>.from(data);
+      // Load price ranges from MySQL API
+      final res = await ProviderApiService.getServicePrices('');
+      final Map<String,int> prices = {};
+      if (res.isNotEmpty) {
+        res.forEach((svcId, grouped) {
+          if (grouped is! Map) return;
           final List<int> vals = [];
-          d.forEach((_, gv) {
+          (grouped as Map).forEach((_, gv) {
             if (gv is Map) {
-              Map<String,dynamic>.from(gv).forEach((_, v) {
+              (gv as Map).forEach((_, v) {
                 if (v is num && v.toInt() > 0) vals.add(v.toInt());
               });
             }
           });
-          if (vals.isNotEmpty) {
-            vals.sort();
-            prices[svcId] = vals.first;
-          }
+          if (vals.isNotEmpty) { vals.sort(); prices[svcId] = vals.first; }
         });
-        if (mounted) setState(() { _refPrices = prices; _loadingPrices = false; });
-      } else {
-        if (mounted) setState(() => _loadingPrices = false);
       }
+      if (mounted) setState(() { _refPrices = prices; _loadingPrices = false; });
     } catch (_) {
       if (mounted) setState(() => _loadingPrices = false);
     }
