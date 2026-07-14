@@ -221,8 +221,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       // Notify customer
       await _notifyCustomer(
         event: 'negotiation_final',
-        title: 'Provider's Final Offer 💰',
-        body:  'Provider's final price: ₹$finalPrice. Accept or search another provider.',
+        title: "Provider's Final Offer 💰",
+        body:  "Provider's final price: ₹$finalPrice. Accept or search another provider.",
         extra: {'finalPrice': finalPrice.toString()},
       );
       if (mounted) {
