@@ -1,4 +1,5 @@
 import 'dart:io';
+import '../services/provider_api_service.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:image_picker/image_picker.dart';
@@ -58,7 +59,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
         photoUrl = await ref.getDownloadURL();
       }
 
-      await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
+      await ProviderApiService.updateProfile({
         'name':      _nameCtrl.text.trim(),
         'phone':     _phoneCtrl.text.trim(),
         'bio':       _bioCtrl.text.trim(),
