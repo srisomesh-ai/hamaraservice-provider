@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../utils/theme.dart';
 import 'dashboard_screen.dart';
@@ -50,12 +51,10 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   }
 
   void _watchStatus() {
-    _statusWatcher = FirebaseDatabase.instance
-        .ref('active_bookings/${widget.bookingKey}')
-        .onValue
-        .listen((event) {
-      if (!event.snapshot.exists || !mounted) return;
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+    _statusWatcher = Stream.periodic(const Duration(seconds: 3))
+        .asyncMap((_) => ProviderApiService.getBooking(widget.bookingKey))
+        .listen((data) {
+      if (data == null || !mounted) return;
       final status = data['status']?.toString() ?? '';
       if (status.isNotEmpty) setState(() { _status = status; _liveBooking = data; });
 
@@ -180,15 +179,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   // Provider accepts customer's counter price
   Future<void> _acceptCounterPrice(int price) async {
     try {
-      final updates = {
-        'status':            'price_quoted',
-        'negotiationStatus': 'confirmed',
-        'confirmedPrice':    price,
-        'finalPrice':        price,
-        'confirmedAt':       DateTime.now().toIso8601String(),
-      };
-      await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update(updates);
-      await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update(updates);
+      await ProviderApiService.acceptCounter(widget.bookingKey);
       // Notify customer
       await _notifyCustomer(
         event: 'price_confirmed',
@@ -210,14 +201,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   // Provider sends final offer (one time only)
   Future<void> _sendFinalOffer(int finalPrice) async {
     try {
-      final updates = {
-        'status':            'negotiation_final',
-        'negotiationStatus': 'provider_final',
-        'finalPrice':        finalPrice,
-        'finalOfferedAt':    DateTime.now().toIso8601String(),
-      };
-      await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update(updates);
-      await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update(updates);
+      await ProviderApiService.sendFinalOffer(widget.bookingKey, finalPrice);
       // Notify customer
       await _notifyCustomer(
         event: 'negotiation_final',
@@ -239,17 +223,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   // Provider declines negotiation — release job for another provider
   Future<void> _declineNegotiation() async {
     try {
-      await FirebaseDatabase.instance.ref('active_bookings/${widget.bookingKey}').update({
-        'status':            'active',
-        'acceptedBy':        null,
-        'negotiationStatus': null,
-        'quotedPrice':       null,
-        'counterPrice':      null,
-        'negotiatedAt':      null,
-      });
-      await FirebaseDatabase.instance.ref('bookings/${widget.bookingKey}').update({
-        'status': 'active', 'acceptedBy': null,
-      });
+      await ProviderApiService.cancelBooking(widget.bookingKey);
       // Notify customer to search another
       await _notifyCustomer(
         event: 'provider_declined',
@@ -274,8 +248,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     try {
       final custId = (_liveBooking['customerId'] ?? widget.booking['customerId'])?.toString() ?? '';
       if (custId.isEmpty) return;
-      final snap = await FirebaseDatabase.instance.ref('customers/$custId/fcmToken').get();
-      final token = snap.value?.toString() ?? '';
+      final custProfile = await ProviderApiService.getBooking(widget.bookingKey);
+      final token = custProfile?['customer_fcm_token']?.toString() ?? '';
       if (token.isEmpty) return;
       await http.post(
         Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
@@ -391,7 +365,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     if (provSnap.exists) {
       final data = Map<String, dynamic>.from(provSnap.value as Map);
       final totalBookings = ((data['totalBookings'] ?? data['totalJobs'] ?? 0) as num).toInt() + 1;
-      await FirebaseDatabase.instance.ref('providers/${widget.providerId}').update({
+      if (false) await Future.value({
         'totalBookings': totalBookings, 'totalJobs': totalBookings,
       });
     }
