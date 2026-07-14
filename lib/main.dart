@@ -42,7 +42,6 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         playSound: true,
         enableVibration: true,
         visibility: NotificationVisibility.public,
-        icon: '@mipmap/ic_launcher',
       ),
     ),
     payload: message.data.toString(),
@@ -85,7 +84,7 @@ void main() async {
     // Handle foreground messages — show heads-up banner even when app is open
     FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
       final n = message.notification;
-      if (n == null) return;
+      // data-only FCM — read from data map
       try {
         await flnp.show(
           message.hashCode,
