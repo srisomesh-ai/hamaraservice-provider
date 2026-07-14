@@ -151,7 +151,7 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
     try {
       final profile = await ProviderApiService.getProfile(widget.providerId);
       if (profile != null) {
-        _log('✅ MySQL OK — Provider: \${profile['name'] ?? 'loaded'}');
+        _log('✅ MySQL OK — Provider: ' + (profile['name']?.toString() ?? 'loaded'));
       } else {
         _log('❌ MySQL read failed');
       }
