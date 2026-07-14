@@ -176,7 +176,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (false) Stream.periodic(const Duration(seconds: 1)).listen((_) {
       if (!mounted) return;
       final all =
-          <String,dynamic>{};  // was: event.snapshot.value
+          <String,dynamic>{};
       final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
               ?.map((s) => (s is Map
                       ? s['name'] ?? ''
