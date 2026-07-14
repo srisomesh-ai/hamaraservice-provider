@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:vibration/vibration.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -92,9 +93,8 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
       final token = await FirebaseMessaging.instance.getToken();
       if (token != null) {
         _log('✅ FCM: ${token.substring(0, 20)}...');
-        await FirebaseDatabase.instance
-            .ref('providers/${widget.providerId}/fcmToken').set(token);
-        _log('✅ Token saved to Firebase');
+        await ProviderApiService.saveFcmToken(token);
+        _log('✅ Token saved to MySQL');
       } else {
         _log('❌ No FCM token — check google-services.json');
       }
@@ -147,20 +147,15 @@ class _TestConsoleScreenState extends State<TestConsoleScreen> {
 
   // ── Test 7: Firebase write/read ──
   Future<void> _testFirebase() async {
-    _log('Testing Firebase...');
+    _log('Testing MySQL API...');
     try {
-      await FirebaseDatabase.instance
-          .ref('test_ping/${widget.providerId}').set({
-        'ts': DateTime.now().toIso8601String(), 'app': 'provider'
-      });
-      final snap = await FirebaseDatabase.instance
-          .ref('test_ping/${widget.providerId}').get();
-      if (snap.exists) {
-        _log('✅ Firebase OK');
-        await FirebaseDatabase.instance
-            .ref('test_ping/${widget.providerId}').remove();
+      final profile = await ProviderApiService.getProfile(widget.providerId);
+      if (profile != null) {
+        _log('✅ MySQL OK — Provider: \${profile['name'] ?? 'loaded'}');
+      } else {
+        _log('❌ MySQL read failed');
       }
-    } catch (e) { _log('❌ Firebase error: $e'); }
+    } catch (e) { _log('❌ MySQL error: \$e'); }
   }
 
   @override
