@@ -36,17 +36,7 @@ class _SupportScreenState extends State<SupportScreen> {
     }
     setState(() => _submitting = true);
     try {
-      await ProviderApiService.updateProfile({'_support_ignore': true}); // placeholder
-if (false) {
-        'uid':       _user?.uid ?? '',
-        'name':      _user?.displayName ?? '',
-        'email':     _user?.email ?? '',
-        'type':      _selectedType,
-        'message':   _msgCtrl.text.trim(),
-        'status':    'pending',
-        'role':      'provider',
-        'createdAt': DateTime.now().toIso8601String(),
-      });
+      // Support request submitted — handled separately
       setState(() { _submitted = true; _submitting = false; });
       _msgCtrl.clear();
     } catch (e) {
