@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../services/provider_api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
 import 'dashboard_screen.dart';
@@ -27,35 +28,17 @@ class _LoginScreenState extends State<LoginScreen> {
     }
     setState(() { _loading = true; _error = ''; });
     try {
-      // Search providers by email — exactly like web does
-      final snap = await FirebaseDatabase.instance.ref('providers').get();
-      if (!snap.exists) {
-        setState(() { _loading = false; _error = 'Connection error. Please try again.'; });
-        return;
-      }
-      final all = Map<String, dynamic>.from(snap.value as Map);
-      Map<String, dynamic>? found;
-      String? foundKey;
+      // Login via MySQL API — checks email+password+status
+      final result = await ProviderApiService.login(email, pwd);
 
-      for (final entry in all.entries) {
-        final p = Map<String, dynamic>.from(entry.value as Map);
-        final pEmail = (p['email'] ?? '').toString().toLowerCase();
-        final pPwd   = (p['password'] ?? '').toString();
-        if (pEmail == email && pPwd == pwd) {
-          found    = p;
-          foundKey = entry.key;
-          break;
-        }
-      }
-
-      if (found == null) {
+      if (result == null) {
         setState(() { _loading = false; _error = 'Email or password incorrect.'; });
         return;
       }
 
-      final status = found['status'] ?? 'pending';
+      final provider = result['provider'] as Map<String,dynamic>? ?? {};
+      final status   = provider['status']?.toString() ?? 'pending';
 
-      // ONLY approved providers can access the dashboard
       if (status == 'suspended') {
         setState(() { _loading = false; _error = 'Your account has been suspended. Please contact support.'; });
         return;
@@ -65,27 +48,21 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       if (status != 'approved') {
-        // pending or any other status — show waiting screen
         setState(() { _loading = false; });
         if (mounted) {
           Navigator.pushReplacement(context,
             MaterialPageRoute(builder: (_) => _PendingApprovalScreen(
-              name:  found!['name']?.toString() ?? 'Provider',
+              name:  provider['name']?.toString() ?? 'Provider',
               email: email,
             )));
         }
         return;
       }
 
-      // Approved — save session and go to dashboard
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('provider_id', foundKey!);
-      await prefs.setString('provider_email', email);
-      await prefs.setBool('provider_logged_in', true);
-
+      final providerId = provider['id']?.toString() ?? '';
       if (mounted) {
         Navigator.pushReplacement(context,
-          MaterialPageRoute(builder: (_) => DashboardScreen(providerId: foundKey!)));
+          MaterialPageRoute(builder: (_) => DashboardScreen(providerId: providerId)));
       }
     } catch (e) {
       setState(() { _loading = false; _error = 'Connection error. Please try again.'; });
