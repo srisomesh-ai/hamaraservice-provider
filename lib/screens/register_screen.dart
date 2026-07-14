@@ -174,15 +174,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       // Map selected IDs to full service data from catalog
       final services = _selectedServices.map((svcId) {
-        final s = HSCatalog.services.firstWhere(
-          (sv) => sv.id == svcId,
-          orElse: () => HSService(id: svcId, name: svcId, icon: '🔧',
-            cat: 'Service', basePrice: 0, groups: []));
+        final matches = HSCatalog.services.where((sv) => sv.id == svcId).toList();
+        final sName = matches.isNotEmpty ? matches.first.name : svcId;
+        final sIcon = matches.isNotEmpty ? matches.first.icon : '🔧';
+        final sCat  = matches.isNotEmpty ? matches.first.cat  : 'Service';
         return {
-          'id':   s.id,
-          'name': s.name,
-          'icon': s.icon,
-          'cat':  s.cat,
+          'id':   svcId,
+          'name': sName,
+          'icon': sIcon,
+          'cat':  sCat,
         };
       }).toList();
 
