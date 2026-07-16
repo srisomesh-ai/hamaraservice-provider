@@ -148,6 +148,24 @@ class ProviderApiService {
     return res['success'] == true;
   }
 
+  /// Save per-option prices for a service
+  /// prices: {groupKey_optionKey: price} e.g. {'sweep_studio': 300, 'sweep_1bhk': 400}
+  static Future<bool> saveServiceOptionPrices(
+      String svcId, Map<String,int> prices) async {
+    final res = await _post('providers.php',
+        {'svc_id': svcId, 'option_prices': prices},
+        params: {'action': 'save_option_prices'});
+    return res['success'] == true;
+  }
+
+  /// Get per-option prices for all services
+  static Future<Map<String,dynamic>> getServiceOptionPrices() async {
+    final res = await _get('providers.php',
+        params: {'action': 'get_option_prices'});
+    if (res['success'] == true) return res['data'] as Map<String,dynamic>;
+    return {};
+  }
+
   static Future<Map<String,dynamic>> getServicePrices(String svcId) async {
     final res = await _get('services.php',
         params: {'action': 'prices', 'id': svcId});
