@@ -111,10 +111,23 @@ class ProviderApiService {
   }
 
   static Future<bool> setAvailable(bool available) async {
-    final res = await _post('providers.php',
-        {'available': available},
-        params: {'action': 'available'});
-    return res['success'] == true;
+    try {
+      final res = await _post('providers.php',
+          {'available': available},
+          params: {'action': 'available'});
+      if (res['success'] == true) {
+        // Update cache
+        final prefs = await SharedPreferences.getInstance();
+        final cached = prefs.getString('provider_data');
+        if (cached != null) {
+          final data = jsonDecode(cached) as Map<String,dynamic>;
+          data['available'] = available ? 1 : 0;
+          await prefs.setString('provider_data', jsonEncode(data));
+        }
+        return true;
+      }
+      return false;
+    } catch (_) { return false; }
   }
 
   // ── SERVICES ─────────────────────────────────────────────
