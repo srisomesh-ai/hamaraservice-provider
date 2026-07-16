@@ -89,24 +89,46 @@ class _DashboardScreenState extends State<DashboardScreen>
   StreamSubscription? _bookingsListener;
 
   Future<void> _loadProfile() async {
+    // Load immediately from cache first for instant UI
+    final cached = await ProviderApiService.getCachedProvider();
+    if (cached != null && mounted) {
+      setState(() {
+        _providerData = cached;
+        _available    = cached['available'] == 1 || cached['available'] == true;
+        _loading      = false;
+      });
+    }
+
+    // Then fetch fresh from MySQL
+    try {
+      final fresh = await ProviderApiService.getProfile(_pid);
+      if (fresh != null && mounted) {
+        await ProviderApiService.cacheProvider(fresh);
+        setState(() {
+          _providerData = fresh;
+          _available    = fresh['available'] == 1 || fresh['available'] == true;
+          _loading      = false;
+        });
+      }
+    } catch (_) {}
+
+    // FCM token
     try {
       final token = await FirebaseMessaging.instance.getToken();
-      if (token != null) {
-        await ProviderApiService.saveFcmToken(token);
-      }
-    } catch (e) {}
+      if (token != null) await ProviderApiService.saveFcmToken(token);
+    } catch (_) {}
 
-    // Real-time provider data listener — updates overview instantly
-    _providerDataListener = Stream.periodic(const Duration(seconds: 10))
+    // Periodic refresh every 30 seconds
+    _providerDataListener = Stream.periodic(const Duration(seconds: 30))
         .asyncMap((_) => ProviderApiService.getProfile(_pid))
         .listen((data) {
       if (data == null || !mounted) return;
+      ProviderApiService.cacheProvider(data);
       setState(() {
         _providerData = data;
-        _available = data['available'] == true;
-        _loading = false;
+        _available    = data['available'] == 1 || data['available'] == true;
       });
-    }, onError: (_) => setState(() => _loading = false));
+    }, onError: (_) {});
 
     _listenBookings();
   }
@@ -201,6 +223,12 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Future<void> _toggleAvailability(bool val) async {
     setState(() => _available = val);
+    // Update cache immediately so refresh doesn't revert
+    final cached = await ProviderApiService.getCachedProvider();
+    if (cached != null) {
+      cached['available'] = val ? 1 : 0;
+      await ProviderApiService.cacheProvider(cached);
+    }
     if (val) {
       final choice = await showDialog<String>(
         context: context,
