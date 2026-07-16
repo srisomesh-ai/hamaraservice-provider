@@ -32,22 +32,21 @@ class _State extends State<ServicesScreen> {
   Future<void> _load() async {
     // Load existing provider service data
     try {
+      // API returns List of {svc_id, svc_name, enabled, min_price, max_price}
       final svcs = await ProviderApiService.getMyServices(widget.providerId);
-      final d = <String,dynamic>{for (final s in svcs) s['svc_id']?.toString() ?? '': s};
-      if (d.isNotEmpty) {
-        d.forEach((svcId, val) {
-          if (val is bool) {
-            _serviceData[svcId] = {'enabled': val, 'min': 0, 'max': 0};
-          } else if (val is Map) {
-            // New format — {enabled, min, max}
-            final m = Map<String,dynamic>.from(val);
-            _serviceData[svcId] = {
-              'enabled': m['enabled'] == true,
-              'min':     (m['min'] as num?)?.toInt() ?? 0,
-              'max':     (m['max'] as num?)?.toInt() ?? 0,
-            };
-          }
-        });
+      if (svcs.isNotEmpty) {
+        for (final s in svcs) {
+          final svcId  = s['svc_id']?.toString() ?? '';
+          if (svcId.isEmpty) continue;
+          final enabled  = s['enabled'] == 1 || s['enabled'] == true;
+          final minPrice = (s['min_price'] as num?)?.toInt() ?? 0;
+          final maxPrice = (s['max_price'] as num?)?.toInt() ?? 0;
+          _serviceData[svcId] = {
+            'enabled': enabled,
+            'min':     minPrice,
+            'max':     maxPrice,
+          };
+        }
       }
     } catch (_) {}
 
@@ -89,13 +88,27 @@ class _State extends State<ServicesScreen> {
           'max':     (d?['max'] as num?)?.toInt() ?? 0,
         };
       }
-      final svcsList = u.entries.map((e) => {
-        'svc_id':   e.key,
-        'enabled':  e.value['enabled'] == true ? 1 : 0,
-        'min_price': e.value['min'] ?? 0,
-        'max_price': e.value['max'] ?? 0,
+      // Only save enabled services or ones with prices set
+      final svcsList = u.entries.map((e) => <String,dynamic>{
+        'svc_id':    e.key,
+        'enabled':   e.value['enabled'] == true ? 1 : 0,
+        'min_price': (e.value['min'] as num?)?.toInt() ?? 0,
+        'max_price': (e.value['max'] as num?)?.toInt() ?? 0,
+        'svc_name':  HSCatalog.services
+            .firstWhere((s) => s.id == e.key,
+                orElse: () => HSCatalog.services.first)
+            .name,
+        'svc_icon':  HSCatalog.services
+            .firstWhere((s) => s.id == e.key,
+                orElse: () => HSCatalog.services.first)
+            .icon,
+        'svc_cat':   HSCatalog.services
+            .firstWhere((s) => s.id == e.key,
+                orElse: () => HSCatalog.services.first)
+            .cat,
       }).toList();
-      await ProviderApiService.saveMyServices(svcsList);
+      final ok = await ProviderApiService.saveMyServices(svcsList);
+      if (!ok) throw Exception('Server returned failure');
       final enabledCount = _serviceData.values.where((d) => d['enabled'] == true).length;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
