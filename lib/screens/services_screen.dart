@@ -455,61 +455,87 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
       initialChildSize: 0.85,
       maxChildSize: 0.95,
       minChildSize: 0.5,
-      builder: (_, ctrl) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-        child: Column(children: [
-          // Handle
-          Container(
-            margin: const EdgeInsets.only(top: 10, bottom: 4),
-            width: 40, height: 4,
-            decoration: BoxDecoration(
-              color: AppColors.line, borderRadius: BorderRadius.circular(2))),
-          // Header
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(children: [
-              Text(widget.svc.icon, style: const TextStyle(fontSize: 24)),
-              const SizedBox(width: 10),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(widget.svc.name,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-                const Text('Set your price for each option',
-                  style: TextStyle(fontSize: 12, color: AppColors.muted)),
-              ])),
-              ElevatedButton(
-                onPressed: _save,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.teal,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-                child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w800)),
-              ),
-            ])),
-          const Divider(height: 1),
-          // Options list
-          Expanded(
-            child: ListView(
-              controller: ctrl,
-              padding: const EdgeInsets.all(16),
-              children: [
-                for (final grp in priceable) ...[
-                  // Group title
-                  Padding(
-                    padding: const EdgeInsets.only(top: 16, bottom: 8),
-                    child: Text(grp.title,
-                      style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w800,
-                        color: AppColors.teal))),
-                  // Options
-                  for (final opt in grp.items) _optionRow(grp.key, opt),
-                ],
-                const SizedBox(height: 20),
-              ],
-            ),
-          ),
-        ]),
+      expand: false,
+      builder: (_, ctrl) => SafeArea(
+        top: false,
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+          child: Column(
+            mainAxisSize: MainAxisSize.max,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Handle bar
+              Center(
+                child: Container(
+                  margin: const EdgeInsets.only(top: 10, bottom: 6),
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.line,
+                    borderRadius: BorderRadius.circular(2)))),
+              // Header row — fixed height, no rotation
+              Container(
+                height: 60,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Text(widget.svc.icon,
+                      style: const TextStyle(fontSize: 24)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(widget.svc.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.ink)),
+                          const Text('Set your price per option',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppColors.muted)),
+                        ])),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: _save,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.teal,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10))),
+                      child: const Text('Save',
+                        style: TextStyle(fontWeight: FontWeight.w800))),
+                  ])),
+              const Divider(height: 1),
+              // Scrollable options
+              Expanded(
+                child: ListView(
+                  controller: ctrl,
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                  children: [
+                    for (final grp in priceable) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(top: 14, bottom: 8),
+                        child: Text(grp.title,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.teal))),
+                      for (final opt in grp.items) _optionRow(grp.key, opt),
+                    ],
+                    const SizedBox(height: 20),
+                  ],
+                )),
+            ]),
+        ),
       ),
     );
   }
