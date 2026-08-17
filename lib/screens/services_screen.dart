@@ -157,9 +157,43 @@ class _State extends State<ServicesScreen> {
           setState(() {
             _optionPrices[svc.id] = Map<String,int>.from(prices);
           });
+          // Auto-save to MySQL immediately — no need to tap top SAVE
+          _autoSaveService(svc, prices);
         },
       ),
     );
+  }
+
+  // Auto-save a single service prices immediately after editing
+  Future<void> _autoSaveService(HSService svc, Map<String,int> prices) async {
+    try {
+      // Save option prices
+      if (prices.isNotEmpty) {
+        await ProviderApiService.saveServiceOptionPrices(svc.id, prices);
+      }
+      // Calculate min/max and update service record
+      final vals = prices.values.where((v) => v > 0).toList();
+      final min = vals.isEmpty ? 0 : vals.reduce((a,b) => a<b?a:b);
+      final max = vals.isEmpty ? 0 : vals.reduce((a,b) => a>b?a:b);
+      await ProviderApiService.saveMyServices([{
+        'svc_id':    svc.id,
+        'enabled':   (_enabled[svc.id] == true) ? 1 : 0,
+        'svc_name':  svc.name,
+        'svc_icon':  svc.icon,
+        'svc_cat':   svc.cat,
+        'min_price': min,
+        'max_price': max,
+      }]);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('✅ ${svc.name} prices saved'),
+          backgroundColor: AppColors.green,
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (e) {
+      debugPrint('Auto-save error: $e');
+    }
   }
 
   void _openSimplePrice(HSService svc) {
@@ -233,10 +267,13 @@ class _State extends State<ServicesScreen> {
           onPressed: () {
             final min = int.tryParse(minCtrl.text) ?? 0;
             final max = int.tryParse(maxCtrl.text) ?? 0;
+            final prices = <String,int>{'base_min': min, 'base_max': max};
             setState(() {
-              _optionPrices[svc.id] = {'base_min': min, 'base_max': max};
+              _optionPrices[svc.id] = prices;
             });
             Navigator.pop(context);
+            // Auto-save immediately
+            _autoSaveService(svc, prices);
           },
           child: const Text('Save', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700))),
       ],
