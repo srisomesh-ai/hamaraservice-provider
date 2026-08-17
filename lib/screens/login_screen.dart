@@ -204,15 +204,41 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 16),
 
-                      // Register link
-                      Center(
-                        child: TextButton(
+                      // Divider
+                      const SizedBox(height: 8),
+                      Row(children: [
+                        const Expanded(child: Divider(color: Colors.white24)),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12),
+                          child: Text('OR', style: TextStyle(color: Colors.white54, fontSize: 13))),
+                        const Expanded(child: Divider(color: Colors.white24)),
+                      ]),
+                      const SizedBox(height: 12),
+                      // Big Register button
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          icon: const Icon(Icons.person_add_rounded, size: 22),
+                          label: const Text('REGISTER AS PROVIDER',
+                            style: TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w900,
+                              letterSpacing: 0.5)),
                           onPressed: () => Navigator.push(context,
-                            MaterialPageRoute(builder: (_) => const RegisterScreen())),
-                          child: const Text('New provider? Register here',
-                            style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w700)),
+                            MaterialPageRoute(
+                              builder: (_) => const RegisterScreen())),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.brand,
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size(double.infinity, 56),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14)),
+                            elevation: 3),
                         ),
                       ),
+                      const SizedBox(height: 8),
+                      const Text('New to HamaraService? Create your provider account',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white54, fontSize: 11)),
                     ],
                   ),
                 ),
