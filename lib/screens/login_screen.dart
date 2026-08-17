@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../services/provider_api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -261,9 +262,36 @@ class _PendingApprovalScreen extends StatelessWidget {
                   ]),
                 ),
                 const SizedBox(height: 28),
-                Text('Registered email: $email',
+                Text('Registered with: $email',
                   style: const TextStyle(fontSize: 13, color: Colors.white60)),
-                const SizedBox(height: 20),
+                const SizedBox(height: 8),
+                const Text('For support: info@hamaraservice.com',
+                  style: TextStyle(fontSize: 12, color: Colors.white54)),
+                const SizedBox(height: 24),
+                // Contact support button
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.support_agent_rounded, size: 18),
+                    label: const Text('Contact Support',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                    onPressed: () async {
+                      final uri = Uri.parse(
+                        'mailto:info@hamaraservice.com'
+                        '?subject=Provider%20Account%20Query%20--%20$email'
+                        '&body=Hi%20HamaraService%20Team%2C%0A%0AI%20registered%20as%20a%20provider%20with%20email%3A%20$email%0A%0APlease%20help%20me%20with%20my%20application.%0A%0AThank%20you.'
+                      );
+                      // ignore: deprecated_member_use
+                      if (await canLaunchUrl(uri)) await launchUrl(uri);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.brand,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(double.infinity, 48),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton(
