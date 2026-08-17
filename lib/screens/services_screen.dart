@@ -517,9 +517,26 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
 
   void _save() {
     final saved = <String,int>{};
+    bool hasError = false;
     for (final entry in _ctrls.entries) {
       final val = int.tryParse(entry.value.text.trim()) ?? 0;
-      if (val > 0) saved[entry.key] = val;
+      if (val <= 0) continue;
+      // Check min/max
+      final minVal = widget.refPrices['${entry.key}_min'] ?? 0;
+      final maxVal = widget.refPrices['${entry.key}_max'] ?? 0;
+      if (minVal > 0 && val < minVal) {
+        hasError = true; continue; // skip invalid
+      }
+      if (maxVal > 0 && val > maxVal) {
+        hasError = true; continue; // skip invalid
+      }
+      saved[entry.key] = val;
+    }
+    if (hasError && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('⚠️ Some prices outside allowed range — those were skipped'),
+        backgroundColor: Color(0xFFE8651A),
+        duration: Duration(seconds: 3)));
     }
     widget.onSave(saved);
     Navigator.pop(context);
@@ -617,72 +634,137 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
     final key  = '${groupKey}_${opt.key}';
     final ctrl = _ctrls[key];
     if (ctrl == null) return const SizedBox.shrink();
+
+    // Admin prices: ref = suggested, min/max enforced
     final ref = widget.refPrices[key] ?? 0;
+    final minKey = '${key}_min';
+    final maxKey = '${key}_max';
+    final adminMin = widget.refPrices[minKey] ?? (ref > 0 ? (ref * 0.5).round() : 0);
+    final adminMax = widget.refPrices[maxKey] ?? (ref > 0 ? (ref * 2.0).round() : 0);
+
+    // Validate current value
+    final curVal = int.tryParse(ctrl.text) ?? 0;
+    final isTooLow  = curVal > 0 && adminMin > 0 && curVal < adminMin;
+    final isTooHigh = curVal > 0 && adminMax > 0 && curVal > adminMax;
+    final isValid   = curVal > 0 && !isTooLow && !isTooHigh;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4F6F9),
+        color: isTooLow || isTooHigh
+            ? const Color(0xFFFFF5F5)
+            : isValid
+                ? const Color(0xFFF0FDF4)
+                : const Color(0xFFF4F6F9),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFE2E8F0))),
-      child: Row(children: [
-        // Option label + ref price
-        Expanded(child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(opt.name,
-              style: const TextStyle(
-                fontSize: 14, fontWeight: FontWeight.w700,
-                color: Color(0xFF1a1a2e))),
-            if (ref > 0)
-              Text('Suggested: ₹$ref',
+        border: Border.all(
+          color: isTooLow || isTooHigh
+              ? AppColors.red
+              : isValid
+                  ? AppColors.green
+                  : const Color(0xFFE2E8F0),
+          width: isValid || isTooLow || isTooHigh ? 1.5 : 1)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          // Option label
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(opt.name,
                 style: const TextStyle(
-                  fontSize: 11, color: AppColors.teal,
-                  fontWeight: FontWeight.w600)),
-          ])),
-        // Price input field
-        SizedBox(
-          width: 110,
-          child: TextField(
-            controller: ctrl,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 16, fontWeight: FontWeight.w800,
-              color: Color(0xFF1a1a2e)),
-            onChanged: (_) => setState((){}),
-            decoration: InputDecoration(
-              prefixText: '₹',
-              prefixStyle: const TextStyle(
-                fontSize: 15, fontWeight: FontWeight.w700,
-                color: AppColors.brand),
-              hintText: ref > 0 ? '$ref' : 'e.g. 300',
-              hintStyle: TextStyle(
-                color: Colors.grey.shade400, fontSize: 14),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 8, vertical: 10),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(
-                  color: Color(0xFFE2E8F0))),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide(
-                  color: ctrl.text.isNotEmpty
-                      ? AppColors.teal
-                      : const Color(0xFFE2E8F0),
-                  width: ctrl.text.isNotEmpty ? 2 : 1)),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(
-                  color: AppColors.teal, width: 2)),
-              filled: true,
-              fillColor: Colors.white,
+                  fontSize: 14, fontWeight: FontWeight.w700,
+                  color: Color(0xFF1a1a2e))),
+              // Show admin range
+              if (adminMin > 0 || adminMax > 0) ...[
+                const SizedBox(height: 2),
+                Row(children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.teal.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(4)),
+                    child: Text(
+                      adminMin > 0 && adminMax > 0
+                          ? 'Range: ₹$adminMin – ₹$adminMax'
+                          : ref > 0 ? 'Suggested: ₹$ref' : '',
+                      style: const TextStyle(
+                        fontSize: 10, color: AppColors.teal,
+                        fontWeight: FontWeight.w700))),
+                ]),
+              ] else if (ref > 0) ...[
+                const SizedBox(height: 2),
+                Text('Suggested: ₹$ref',
+                  style: const TextStyle(
+                    fontSize: 11, color: AppColors.teal,
+                    fontWeight: FontWeight.w600)),
+              ],
+            ])),
+          // Price input
+          SizedBox(
+            width: 110,
+            child: TextField(
+              controller: ctrl,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w800,
+                color: isTooLow || isTooHigh
+                    ? AppColors.red
+                    : isValid ? AppColors.green
+                    : const Color(0xFF1a1a2e)),
+              onChanged: (_) => setState((){}),
+              decoration: InputDecoration(
+                prefixText: '₹',
+                prefixStyle: TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w700,
+                  color: isTooLow || isTooHigh
+                      ? AppColors.red : AppColors.brand),
+                hintText: ref > 0 ? '$ref' : 'e.g. 300',
+                hintStyle: TextStyle(
+                  color: Colors.grey.shade400, fontSize: 14),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 8, vertical: 10),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(
+                    color: isTooLow || isTooHigh
+                        ? AppColors.red
+                        : isValid ? AppColors.green
+                        : ctrl.text.isNotEmpty
+                            ? AppColors.teal
+                            : const Color(0xFFE2E8F0),
+                    width: ctrl.text.isNotEmpty ? 2 : 1)),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(
+                    color: isTooLow || isTooHigh
+                        ? AppColors.red : AppColors.teal,
+                    width: 2)),
+                filled: true,
+                fillColor: Colors.white,
+              ),
             ),
           ),
-        ),
+        ]),
+        // Warning message
+        if (isTooLow) ...[
+          const SizedBox(height: 6),
+          Text('⚠️ Min allowed: ₹$adminMin',
+            style: const TextStyle(
+              fontSize: 11, color: AppColors.red,
+              fontWeight: FontWeight.w600)),
+        ] else if (isTooHigh) ...[
+          const SizedBox(height: 6),
+          Text('⚠️ Max allowed: ₹$adminMax',
+            style: const TextStyle(
+              fontSize: 11, color: AppColors.red,
+              fontWeight: FontWeight.w600)),
+        ],
       ]),
     );
   }
