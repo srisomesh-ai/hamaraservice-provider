@@ -12,16 +12,13 @@ class ServicesScreen extends StatefulWidget {
 }
 
 class _State extends State<ServicesScreen> {
-  // svcId → enabled (true/false)
-  Map<String, bool> _enabled = {};
-  // svcId → {groupKey_optKey: price}  e.g. {'sweep_studio': 300}
+  Map<String, bool>           _enabled      = {};
   Map<String, Map<String,int>> _optionPrices = {};
-  // ref prices from admin: svcId → {groupKey_optKey: refPrice}
-  Map<String, Map<String,int>> _refPrices = {};
+  Map<String, Map<String,int>> _refPrices    = {};
 
-  bool _loading = true;
-  bool _saving  = false;
-  String _cat   = 'All';
+  bool   _loading = true;
+  bool   _saving  = false;
+  String _cat     = 'All';
 
   static const _cats = [
     'All','Home Cleaning','Home Services','Vehicle Care',
@@ -33,7 +30,9 @@ class _State extends State<ServicesScreen> {
   void initState() { super.initState(); _load(); }
 
   Future<void> _load() async {
-    // Load enabled services
+    if (mounted) setState(() => _loading = true);
+
+    // 1. Load enabled services
     try {
       final svcs = await ProviderApiService.getMyServices(widget.providerId);
       for (final s in svcs) {
@@ -43,36 +42,50 @@ class _State extends State<ServicesScreen> {
       }
     } catch (_) {}
 
-    // Load per-option prices
+    // 2. Load per-option prices — API returns {svcId: {key: price}}
     try {
       final prices = await ProviderApiService.getServiceOptionPrices();
-      prices.forEach((svcId, opts) {
-        if (opts is Map) {
-          _optionPrices[svcId] = {};
-          (opts as Map).forEach((k, v) {
-            _optionPrices[svcId]![k.toString()] = (v as num?)?.toInt() ?? 0;
-          });
-        }
-      });
-    } catch (_) {}
-
-    // Load reference prices from admin
-    try {
-      final ref = await ProviderApiService.getServicePrices('');
-      ref.forEach((svcId, grouped) {
-        if (grouped is! Map) return;
-        _refPrices[svcId] = {};
-        (grouped as Map).forEach((groupKey, groupVal) {
-          if (groupVal is Map) {
-            (groupVal as Map).forEach((optKey, price) {
-              if (price is num && price > 0) {
-                _refPrices[svcId]!['${groupKey}_$optKey'] = price.toInt();
+      if (prices is Map) {
+        prices.forEach((svcId, opts) {
+          if (opts is Map) {
+            _optionPrices[svcId.toString()] = {};
+            opts.forEach((k, v) {
+              final price = (v is num) ? v.toInt() : int.tryParse('$v') ?? 0;
+              if (price > 0) {
+                _optionPrices[svcId.toString()]![k.toString()] = price;
               }
             });
           }
         });
-      });
-    } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('Option prices load error: $e');
+    }
+
+    // 3. Load reference prices from admin (hs-prices.html)
+    try {
+      final ref = await ProviderApiService.getServicePrices('');
+      if (ref is Map) {
+        ref.forEach((svcId, grouped) {
+          if (grouped is! Map) return;
+          _refPrices[svcId.toString()] = {};
+          grouped.forEach((groupKey, groupVal) {
+            if (groupVal is Map) {
+              groupVal.forEach((optKey, price) {
+                final p = (price is num) ? price.toInt() : int.tryParse('$price') ?? 0;
+                if (p > 0) {
+                  _refPrices[svcId.toString()]!['${groupKey}_$optKey'] = p;
+                }
+              });
+            } else if (groupKey == 'base' && groupVal is num) {
+              _refPrices[svcId.toString()]!['base_base'] = groupVal.toInt();
+            }
+          });
+        });
+      }
+    } catch (e) {
+      debugPrint('Ref prices load error: $e');
+    }
 
     if (mounted) setState(() => _loading = false);
   }
@@ -81,7 +94,7 @@ class _State extends State<ServicesScreen> {
     setState(() => _saving = true);
     HapticFeedback.mediumImpact();
     try {
-      // Save enabled/disabled status
+      // Save enabled/disabled + min/max
       final svcsList = HSCatalog.services.map((s) => <String,dynamic>{
         'svc_id':    s.id,
         'enabled':   (_enabled[s.id] == true) ? 1 : 0,
@@ -93,7 +106,7 @@ class _State extends State<ServicesScreen> {
       }).toList();
       await ProviderApiService.saveMyServices(svcsList);
 
-      // Save per-option prices for each enabled service
+      // Save per-option prices
       for (final svcId in _optionPrices.keys) {
         final prices = _optionPrices[svcId];
         if (prices != null && prices.isNotEmpty) {
@@ -105,7 +118,9 @@ class _State extends State<ServicesScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Saved — $count services enabled'),
-          backgroundColor: AppColors.green));
+          backgroundColor: AppColors.green,
+          duration: const Duration(seconds: 2),
+        ));
         Navigator.pop(context, true);
       }
     } catch (e) {
@@ -119,34 +134,16 @@ class _State extends State<ServicesScreen> {
     final opts = _optionPrices[svcId];
     if (opts == null || opts.isEmpty) return 0;
     final vals = opts.values.where((v) => v > 0).toList();
-    if (vals.isEmpty) return 0;
-    return vals.reduce((a, b) => a < b ? a : b);
+    return vals.isEmpty ? 0 : vals.reduce((a, b) => a < b ? a : b);
   }
 
   int _getMaxPrice(String svcId) {
     final opts = _optionPrices[svcId];
     if (opts == null || opts.isEmpty) return 0;
     final vals = opts.values.where((v) => v > 0).toList();
-    if (vals.isEmpty) return 0;
-    return vals.reduce((a, b) => a > b ? a : b);
+    return vals.isEmpty ? 0 : vals.reduce((a, b) => a > b ? a : b);
   }
 
-  void _setOptionPrice(String svcId, String groupKey, String optKey, int price) {
-    setState(() {
-      _optionPrices[svcId] ??= {};
-      _optionPrices[svcId]!['${groupKey}_$optKey'] = price;
-    });
-  }
-
-  int _getOptionPrice(String svcId, String groupKey, String optKey) {
-    return _optionPrices[svcId]?['${groupKey}_$optKey'] ?? 0;
-  }
-
-  int _getRefPrice(String svcId, String groupKey, String optKey) {
-    return _refPrices[svcId]?['${groupKey}_$optKey'] ?? 0;
-  }
-
-  // Open price editor for a service
   void _openPriceEditor(HSService svc) {
     showModalBottomSheet(
       context: context,
@@ -154,13 +151,96 @@ class _State extends State<ServicesScreen> {
       backgroundColor: Colors.transparent,
       builder: (_) => _PriceEditorSheet(
         svc: svc,
-        optionPrices: Map.from(_optionPrices[svc.id] ?? {}),
-        refPrices: _refPrices[svc.id] ?? {},
+        optionPrices: Map<String,int>.from(_optionPrices[svc.id] ?? {}),
+        refPrices: Map<String,int>.from(_refPrices[svc.id] ?? {}),
         onSave: (prices) {
-          setState(() => _optionPrices[svc.id] = prices);
+          setState(() {
+            _optionPrices[svc.id] = Map<String,int>.from(prices);
+          });
         },
       ),
     );
+  }
+
+  void _openSimplePrice(HSService svc) {
+    final cur = _optionPrices[svc.id];
+    final minCtrl = TextEditingController(
+      text: (cur?['base_min'] ?? 0) > 0 ? '${cur!['base_min']}' : '');
+    final maxCtrl = TextEditingController(
+      text: (cur?['base_max'] ?? 0) > 0 ? '${cur!['base_max']}' : '');
+    final ref = _refPrices[svc.id];
+    final refMin = ref?.values.where((v)=>v>0).fold<int>(0, (a,b)=>a==0?b:(b<a?b:a)) ?? 0;
+    final refMax = ref?.values.where((v)=>v>0).fold<int>(0, (a,b)=>b>a?b:a) ?? 0;
+
+    showDialog(context: context, builder: (_) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Row(children: [
+        Text(svc.icon, style: const TextStyle(fontSize: 22)),
+        const SizedBox(width: 8),
+        Expanded(child: Text(svc.name,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800))),
+      ]),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        if (refMin > 0)
+          Container(
+            padding: const EdgeInsets.all(10),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: AppColors.teal.withOpacity(0.07),
+              borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              const Icon(Icons.info_outline, size: 14, color: AppColors.teal),
+              const SizedBox(width: 6),
+              Text('Admin ref: ₹$refMin – ₹$refMax',
+                style: const TextStyle(fontSize: 12, color: AppColors.teal, fontWeight: FontWeight.w600)),
+            ]),
+          ),
+        TextField(
+          controller: minCtrl,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: InputDecoration(
+            labelText: 'Min Price (₹)',
+            prefixText: '₹',
+            hintText: refMin > 0 ? '$refMin' : 'e.g. 300',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: AppColors.teal, width: 2)),
+          )),
+        const SizedBox(height: 12),
+        TextField(
+          controller: maxCtrl,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: InputDecoration(
+            labelText: 'Max Price (₹)',
+            prefixText: '₹',
+            hintText: refMax > 0 ? '$refMax' : 'e.g. 500',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: AppColors.teal, width: 2)),
+          )),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel')),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.teal,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+          onPressed: () {
+            final min = int.tryParse(minCtrl.text) ?? 0;
+            final max = int.tryParse(maxCtrl.text) ?? 0;
+            setState(() {
+              _optionPrices[svc.id] = {'base_min': min, 'base_max': max};
+            });
+            Navigator.pop(context);
+          },
+          child: const Text('Save', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700))),
+      ],
+    ));
   }
 
   @override
@@ -184,15 +264,17 @@ class _State extends State<ServicesScreen> {
           TextButton(
             onPressed: _saving ? null : _save,
             child: _saving
-              ? const SizedBox(width:18,height:18,child:CircularProgressIndicator(color:Colors.white,strokeWidth:2))
-              : const Text('SAVE', style: TextStyle(color:Colors.white,fontWeight:FontWeight.w800,fontSize:15)),
+              ? const SizedBox(width:18,height:18,
+                  child:CircularProgressIndicator(color:Colors.white,strokeWidth:2))
+              : const Text('SAVE',
+                  style: TextStyle(color:Colors.white,fontWeight:FontWeight.w800,fontSize:15)),
           ),
         ],
       ),
       body: _loading
         ? const Center(child: CircularProgressIndicator(color: AppColors.teal))
         : Column(children: [
-            // Category filter
+            // Category filter chips
             Container(
               color: Colors.white,
               height: 44,
@@ -221,18 +303,22 @@ class _State extends State<ServicesScreen> {
                 },
               ),
             ),
-            // Select all / clear + header
+            // Header row
             Container(
               color: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(children: [
                 GestureDetector(
-                  onTap: () => setState(() { for (final s in filtered) _enabled[s.id] = true; }),
+                  onTap: () => setState(() {
+                    for (final s in filtered) _enabled[s.id] = true;
+                  }),
                   child: const Text('Select All',
                     style: TextStyle(fontSize: 12, color: AppColors.teal, fontWeight: FontWeight.w700))),
                 const Text(' · ', style: TextStyle(color: AppColors.muted)),
                 GestureDetector(
-                  onTap: () => setState(() { for (final s in filtered) _enabled[s.id] = false; }),
+                  onTap: () => setState(() {
+                    for (final s in filtered) _enabled[s.id] = false;
+                  }),
                   child: const Text('Clear All',
                     style: TextStyle(fontSize: 12, color: AppColors.muted, fontWeight: FontWeight.w600))),
                 const Spacer(),
@@ -270,14 +356,12 @@ class _State extends State<ServicesScreen> {
   }
 
   Widget _card(HSService svc) {
-    final isEnabled = _enabled[svc.id] == true;
-    final min = _getMinPrice(svc.id);
-    final max = _getMaxPrice(svc.id);
-    final hasPrices = min > 0 || max > 0;
-    // Count priceable options
-    final priceableGroups = svc.groups.where((g) =>
-      g.style == 'bhk' || g.style == 'task' || g.style == 'select').toList();
-    final hasSubPrices = priceableGroups.isNotEmpty;
+    final isEnabled  = _enabled[svc.id] == true;
+    final min        = _getMinPrice(svc.id);
+    final max        = _getMaxPrice(svc.id);
+    final hasPrices  = min > 0 || max > 0;
+    final hasSubGrps = svc.groups.any((g) =>
+        g.style != 'info' && g.items.isNotEmpty);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -288,123 +372,83 @@ class _State extends State<ServicesScreen> {
           color: isEnabled ? AppColors.teal : AppColors.line,
           width: isEnabled ? 2 : 1),
       ),
-      child: Column(children: [
-        // Main row
-        Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(children: [
-            // Icon
-            Container(
-              width: 44, height: 44,
-              decoration: BoxDecoration(
-                color: isEnabled ? AppColors.teal.withOpacity(0.1) : AppColors.bg,
-                borderRadius: BorderRadius.circular(12)),
-              child: Center(child: Text(svc.icon, style: const TextStyle(fontSize: 22)))),
-            const SizedBox(width: 12),
-            // Name + cat
-            Expanded(child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(svc.name,
-                  style: TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w700,
-                    color: isEnabled ? AppColors.teal : AppColors.ink)),
-                Text(svc.cat,
-                  style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-                if (isEnabled && hasPrices) ...[
-                  const SizedBox(height: 3),
-                  Text('₹$min – ₹$max',
-                    style: const TextStyle(
-                      fontSize: 12, color: AppColors.brand, fontWeight: FontWeight.w700)),
-                ],
-              ])),
-            // Price button (if has subcategories)
-            if (isEnabled && hasSubPrices)
-              GestureDetector(
-                onTap: () => _openPriceEditor(svc),
-                child: Container(
-                  margin: const EdgeInsets.only(right: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: hasPrices ? AppColors.teal : AppColors.brand,
-                    borderRadius: BorderRadius.circular(8)),
-                  child: Text(
-                    hasPrices ? '₹ Edit' : '₹ Set',
-                    style: const TextStyle(
-                      color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
-                ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(children: [
+          // Icon
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(
+              color: isEnabled ? AppColors.teal.withOpacity(0.1) : AppColors.bg,
+              borderRadius: BorderRadius.circular(12)),
+            child: Center(child: Text(svc.icon,
+              style: const TextStyle(fontSize: 22)))),
+          const SizedBox(width: 12),
+          // Name + category + price range
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(svc.name, style: TextStyle(
+                fontSize: 15, fontWeight: FontWeight.w700,
+                color: isEnabled ? AppColors.teal : AppColors.ink)),
+              Text(svc.cat,
+                style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+              if (isEnabled && hasPrices) ...[
+                const SizedBox(height: 3),
+                Text('₹$min – ₹$max',
+                  style: const TextStyle(
+                    fontSize: 12, color: AppColors.brand,
+                    fontWeight: FontWeight.w700)),
+              ] else if (isEnabled) ...[
+                const SizedBox(height: 3),
+                const Text('Tap ₹ Set to add prices',
+                  style: TextStyle(fontSize: 11, color: AppColors.muted)),
+              ],
+            ])),
+          // Price button
+          if (isEnabled) ...[
+            GestureDetector(
+              onTap: () => hasSubGrps
+                  ? _openPriceEditor(svc)
+                  : _openSimplePrice(svc),
+              child: Container(
+                margin: const EdgeInsets.only(right: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: hasPrices ? AppColors.teal : AppColors.brand,
+                  borderRadius: BorderRadius.circular(8)),
+                child: Text(
+                  hasPrices ? '₹ Edit' : '₹ Set',
+                  style: const TextStyle(
+                    color: Colors.white, fontSize: 12,
+                    fontWeight: FontWeight.w800)),
               ),
-            // Simple price for services without subcats
-            if (isEnabled && !hasSubPrices)
-              GestureDetector(
-                onTap: () => _openSimplePrice(svc),
-                child: Container(
-                  margin: const EdgeInsets.only(right: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: hasPrices ? AppColors.teal : AppColors.brand,
-                    borderRadius: BorderRadius.circular(8)),
-                  child: Text(
-                    hasPrices ? '₹ Edit' : '₹ Set',
-                    style: const TextStyle(
-                      color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
-                ),
-              ),
-            // Toggle
-            Switch(
-              value: isEnabled,
-              activeColor: AppColors.teal,
-              onChanged: (v) => setState(() => _enabled[svc.id] = v),
             ),
-          ]),
-        ),
-      ]),
+          ],
+          // Toggle
+          Switch(
+            value: isEnabled,
+            activeColor: AppColors.teal,
+            onChanged: (v) => setState(() => _enabled[svc.id] = v),
+          ),
+        ]),
+      ),
     );
-  }
-
-  // Simple price editor for services with no subcategories
-  void _openSimplePrice(HSService svc) {
-    final minCtrl = TextEditingController(
-      text: _getMinPrice(svc.id) > 0 ? _getMinPrice(svc.id).toString() : '');
-    final maxCtrl = TextEditingController(
-      text: _getMaxPrice(svc.id) > 0 ? _getMaxPrice(svc.id).toString() : '');
-    showDialog(context: context, builder: (_) => AlertDialog(
-      title: Text(svc.name),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [
-        TextField(controller: minCtrl, keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: 'Min Price (₹)', prefixText: '₹')),
-        const SizedBox(height: 12),
-        TextField(controller: maxCtrl, keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: 'Max Price (₹)', prefixText: '₹')),
-      ]),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel')),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(backgroundColor: AppColors.teal),
-          onPressed: () {
-            final min = int.tryParse(minCtrl.text) ?? 0;
-            final max = int.tryParse(maxCtrl.text) ?? 0;
-            setState(() {
-              _optionPrices[svc.id] = {'base_min': min, 'base_max': max};
-            });
-            Navigator.pop(context);
-          },
-          child: const Text('Save', style: TextStyle(color: Colors.white))),
-      ],
-    ));
   }
 }
 
-// ── Price Editor Bottom Sheet ─────────────────────────────
+// ── Price Editor Bottom Sheet ──────────────────────────────────────────
 class _PriceEditorSheet extends StatefulWidget {
   final HSService svc;
   final Map<String,int> optionPrices;
   final Map<String,int> refPrices;
   final void Function(Map<String,int>) onSave;
   const _PriceEditorSheet({
-    required this.svc, required this.optionPrices,
-    required this.refPrices, required this.onSave});
+    required this.svc,
+    required this.optionPrices,
+    required this.refPrices,
+    required this.onSave,
+  });
   @override
   State<_PriceEditorSheet> createState() => _PriceEditorSheetState();
 }
@@ -416,12 +460,11 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
   @override
   void initState() {
     super.initState();
-    _prices = Map.from(widget.optionPrices);
-    // Create controllers for all priceable options
+    _prices = Map<String,int>.from(widget.optionPrices);
     for (final grp in widget.svc.groups) {
       if (grp.style == 'info') continue;
       for (final opt in grp.items) {
-        final key = '${grp.key}_${opt.key}';
+        final key      = '${grp.key}_${opt.key}';
         final existing = _prices[key] ?? 0;
         _ctrls[key] = TextEditingController(
           text: existing > 0 ? existing.toString() : '');
@@ -436,12 +479,12 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
   }
 
   void _save() {
+    final saved = <String,int>{};
     for (final entry in _ctrls.entries) {
-      final val = int.tryParse(entry.value.text) ?? 0;
-      if (val > 0) _prices[entry.key] = val;
-      else _prices.remove(entry.key);
+      final val = int.tryParse(entry.value.text.trim()) ?? 0;
+      if (val > 0) saved[entry.key] = val;
     }
-    widget.onSave(_prices);
+    widget.onSave(saved);
     Navigator.pop(context);
   }
 
@@ -466,15 +509,14 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
             mainAxisSize: MainAxisSize.max,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Handle bar
-              Center(
-                child: Container(
-                  margin: const EdgeInsets.only(top: 10, bottom: 6),
-                  width: 40, height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.line,
-                    borderRadius: BorderRadius.circular(2)))),
-              // Header row — fixed height, no rotation
+              // Handle
+              Center(child: Container(
+                margin: const EdgeInsets.only(top: 10, bottom: 6),
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE2E8F0),
+                  borderRadius: BorderRadius.circular(2)))),
+              // Header
               Container(
                 height: 60,
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -484,38 +526,33 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
                     Text(widget.svc.icon,
                       style: const TextStyle(fontSize: 24)),
                     const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(widget.svc.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.ink)),
-                          const Text('Set your price per option',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: AppColors.muted)),
-                        ])),
+                    Expanded(child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(widget.svc.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w800,
+                            color: Color(0xFF1a1a2e))),
+                        const Text('Set your price per option',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF718096))),
+                      ])),
                     const SizedBox(width: 8),
                     ElevatedButton(
                       onPressed: _save,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.teal,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10))),
                       child: const Text('Save',
                         style: TextStyle(fontWeight: FontWeight.w800))),
                   ])),
               const Divider(height: 1),
-              // Scrollable options
+              // Options list
               Expanded(
                 child: ListView(
                   controller: ctrl,
@@ -526,8 +563,7 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
                         padding: const EdgeInsets.only(top: 14, bottom: 8),
                         child: Text(grp.title,
                           style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w800,
+                            fontSize: 13, fontWeight: FontWeight.w800,
                             color: AppColors.teal))),
                       for (final opt in grp.items) _optionRow(grp.key, opt),
                     ],
@@ -541,7 +577,7 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
   }
 
   Widget _optionRow(String groupKey, HSOption opt) {
-    final key = '${groupKey}_${opt.key}';
+    final key  = '${groupKey}_${opt.key}';
     final ctrl = _ctrls[key];
     if (ctrl == null) return const SizedBox.shrink();
     final ref = widget.refPrices[key] ?? 0;
@@ -550,38 +586,63 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: AppColors.bg,
+        color: const Color(0xFFF4F6F9),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.line)),
+        border: Border.all(color: const Color(0xFFE2E8F0))),
       child: Row(children: [
-        // Option name
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(opt.name,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
-          if (ref > 0)
-            Text('Admin ref: ₹$ref',
-              style: const TextStyle(fontSize: 11, color: AppColors.muted)),
-        ])),
-        // Price input
+        // Option label + ref price
+        Expanded(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(opt.name,
+              style: const TextStyle(
+                fontSize: 14, fontWeight: FontWeight.w700,
+                color: Color(0xFF1a1a2e))),
+            if (ref > 0)
+              Text('Suggested: ₹$ref',
+                style: const TextStyle(
+                  fontSize: 11, color: AppColors.teal,
+                  fontWeight: FontWeight.w600)),
+          ])),
+        // Price input field
         SizedBox(
-          width: 100,
+          width: 110,
           child: TextField(
             controller: ctrl,
             keyboardType: TextInputType.number,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 16, fontWeight: FontWeight.w800,
+              color: Color(0xFF1a1a2e)),
+            onChanged: (_) => setState((){}),
             decoration: InputDecoration(
               prefixText: '₹',
-              hintText: ref > 0 ? '$ref' : '0',
-              hintStyle: const TextStyle(color: AppColors.line),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              prefixStyle: const TextStyle(
+                fontSize: 15, fontWeight: FontWeight.w700,
+                color: AppColors.brand),
+              hintText: ref > 0 ? '$ref' : 'e.g. 300',
+              hintStyle: TextStyle(
+                color: Colors.grey.shade400, fontSize: 14),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 8, vertical: 10),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: AppColors.line)),
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                  color: Color(0xFFE2E8F0))),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(
+                  color: ctrl.text.isNotEmpty
+                      ? AppColors.teal
+                      : const Color(0xFFE2E8F0),
+                  width: ctrl.text.isNotEmpty ? 2 : 1)),
               focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: AppColors.teal, width: 2)),
-              filled: true, fillColor: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                  color: AppColors.teal, width: 2)),
+              filled: true,
+              fillColor: Colors.white,
             ),
           ),
         ),
