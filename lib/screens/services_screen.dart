@@ -62,29 +62,41 @@ class _State extends State<ServicesScreen> {
       debugPrint('Option prices load error: $e');
     }
 
-    // 3. Load reference prices from admin (hs-prices.html)
+    // 3. Load admin prices (ref + min/max per option) from price_ranges API
     try {
       final ref = await ProviderApiService.getServicePrices('');
       if (ref is Map) {
-        ref.forEach((svcId, grouped) {
-          if (grouped is! Map) return;
-          _refPrices[svcId.toString()] = {};
-          grouped.forEach((groupKey, groupVal) {
-            if (groupVal is Map) {
-              groupVal.forEach((optKey, price) {
-                final p = (price is num) ? price.toInt() : int.tryParse('$price') ?? 0;
-                if (p > 0) {
-                  _refPrices[svcId.toString()]!['${groupKey}_$optKey'] = p;
-                }
-              });
-            } else if (groupKey == 'base' && groupVal is num) {
-              _refPrices[svcId.toString()]!['base_base'] = groupVal.toInt();
-            }
-          });
+        ref.forEach((svcId, svcData) {
+          if (svcData is! Map) return;
+          final id = svcId.toString();
+          _refPrices[id] = {};
+
+          // admin_prices contains {groupKey: {optKey: ref, optKey_min: min, optKey_max: max}}
+          final adminPrices = svcData['admin_prices'];
+          if (adminPrices is Map) {
+            adminPrices.forEach((groupKey, groupVal) {
+              if (groupKey == 'name') return;
+              if (groupVal is Map) {
+                groupVal.forEach((optKey, price) {
+                  final p = (price is num) ? price.toInt() : int.tryParse('$price') ?? 0;
+                  if (p > 0) {
+                    // key format: groupKey_optKey (ref price)
+                    // min key: groupKey_optKey_min
+                    // max key: groupKey_optKey_max
+                    _refPrices[id]![optKey.toString().contains('_min') || optKey.toString().contains('_max')
+                        ? '${groupKey}_${optKey}'
+                        : '${groupKey}_${optKey}'] = p;
+                  }
+                });
+              } else if (groupKey == 'base' && groupVal is num) {
+                _refPrices[id]!['base_base'] = groupVal.toInt();
+              }
+            });
+          }
         });
       }
     } catch (e) {
-      debugPrint('Ref prices load error: $e');
+      debugPrint('Ref prices load error: \$e');
     }
 
     if (mounted) setState(() => _loading = false);
