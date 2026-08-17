@@ -561,8 +561,7 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
     final priceable = widget.svc.groups
         .where((g) => g.items.isNotEmpty &&
             (g.style == 'bhk' || g.style == 'select' ||
-             g.style == 'addon' || g.style == 'surcharge' ||
-             g.style == 'task' && g.key != 'task'))
+             g.style == 'addon' || g.style == 'surcharge'))
         .toList();
 
     // If no priceable groups found, show all non-info groups
@@ -680,8 +679,9 @@ Admin reference prices will appear here once set.',
     final key  = '${groupKey}_${opt.key}';
     // Create controller if missing
     if (!_ctrls.containsKey(key)) {
+      final existing = _prices[key] ?? 0;
       _ctrls[key] = TextEditingController(
-        text: (_prices[key] ?? 0) > 0 ? '${_prices[key]}' : '');
+        text: existing > 0 ? existing.toString() : '');
     }
     final ctrl = _ctrls[key]!;
 
