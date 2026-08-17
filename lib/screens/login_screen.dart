@@ -27,13 +27,34 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() => _error = 'Please enter email and password');
       return;
     }
+    if (!email.contains('@') || !email.contains('.')) {
+      setState(() => _error = 'Please enter a valid email address');
+      return;
+    }
     setState(() { _loading = true; _error = ''; });
     try {
-      // Login via MySQL API — checks email+password+status
+      // Try login first
       final result = await ProviderApiService.login(email, pwd);
 
       if (result == null) {
-        setState(() { _loading = false; _error = 'Email or password incorrect.'; });
+        // Email not found OR wrong password
+        // Check if email exists in DB
+        final exists = await ProviderApiService.checkEmailExists(email);
+        setState(() => _loading = false);
+
+        if (!exists) {
+          // New provider — redirect to registration with email + password pre-filled
+          if (mounted) {
+            Navigator.pushReplacement(context,
+              MaterialPageRoute(builder: (_) => RegisterScreen(
+                prefillEmail: email,
+                prefillPassword: pwd,
+              )));
+          }
+        } else {
+          // Email exists but wrong password
+          setState(() => _error = 'Incorrect password. Please try again.');
+        }
         return;
       }
 
@@ -41,11 +62,11 @@ class _LoginScreenState extends State<LoginScreen> {
       final status   = provider['status']?.toString() ?? 'pending';
 
       if (status == 'suspended') {
-        setState(() { _loading = false; _error = 'Your account has been suspended. Please contact support.'; });
+        setState(() { _loading = false; _error = 'Account suspended. Contact info@hamaraservice.com'; });
         return;
       }
       if (status == 'rejected') {
-        setState(() { _loading = false; _error = 'Your application was rejected. Please contact support.'; });
+        setState(() { _loading = false; _error = 'Application rejected. Contact info@hamaraservice.com'; });
         return;
       }
       if (status != 'approved') {
