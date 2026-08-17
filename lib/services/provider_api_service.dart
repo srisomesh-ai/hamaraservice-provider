@@ -88,6 +88,15 @@ class ProviderApiService {
     await clearToken();
   }
 
+  /// Check if email already registered — returns true if exists
+  static Future<bool> checkEmailExists(String email) async {
+    try {
+      final res = await _get('providers.php',
+          params: {'action': 'check_email', 'email': email});
+      return res['exists'] == true;
+    } catch (_) { return false; }
+  }
+
   // ── PROVIDER PROFILE ─────────────────────────────────────
 
   static Future<Map<String,dynamic>?> getProfile(String id) async {
