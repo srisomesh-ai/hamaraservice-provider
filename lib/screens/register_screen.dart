@@ -8,7 +8,13 @@ import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
 
 class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+  final String prefillEmail;
+  final String prefillPassword;
+  const RegisterScreen({
+    super.key,
+    this.prefillEmail = '',
+    this.prefillPassword = '',
+  });
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
 }
@@ -50,6 +56,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   void initState() {
     super.initState();
+    // Pre-fill email and password from login screen
+    if (widget.prefillEmail.isNotEmpty) {
+      _emailCtrl.text = widget.prefillEmail;
+    }
+    if (widget.prefillPassword.isNotEmpty) {
+      _pwdCtrl.text = widget.prefillPassword;
+    }
     _loadRefPrices();
   }
 
