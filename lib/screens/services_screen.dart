@@ -556,9 +556,19 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
 
   @override
   Widget build(BuildContext context) {
+    // Only show groups that have per-unit pricing (bhk, addon, select, surcharge)
+    // 'task' style = feature toggles, not priced individually
     final priceable = widget.svc.groups
-        .where((g) => g.style != 'info' && g.items.isNotEmpty)
+        .where((g) => g.items.isNotEmpty &&
+            (g.style == 'bhk' || g.style == 'select' ||
+             g.style == 'addon' || g.style == 'surcharge' ||
+             g.style == 'task' && g.key != 'task'))
         .toList();
+
+    // If no priceable groups found, show all non-info groups
+    final priceableGroups = priceable.isNotEmpty
+        ? priceable
+        : widget.svc.groups.where((g) => g.style != 'info' && g.items.isNotEmpty).toList();
 
     return DraggableScrollableSheet(
       initialChildSize: 0.85,
@@ -624,7 +634,15 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
                   controller: ctrl,
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
                   children: [
-                    for (final grp in priceable) ...[
+                    if (priceableGroups.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(24),
+                        child: Text(
+                          'Enter your price for this service below.
+Admin reference prices will appear here once set.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: AppColors.muted, fontSize: 14))),
+                    for (final grp in priceableGroups) ...[
                       Padding(
                         padding: const EdgeInsets.only(top: 14, bottom: 8),
                         child: Text(grp.title,
@@ -633,7 +651,23 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
                             color: AppColors.teal))),
                       for (final opt in grp.items) _optionRow(grp.key, opt),
                     ],
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 16),
+                    // Big SAVE button at bottom of sheet
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: ElevatedButton.icon(
+                        onPressed: _save,
+                        icon: const Icon(Icons.check_circle_rounded, size: 20),
+                        label: const Text('Save Prices',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.teal,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(double.infinity, 54),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14))),
+                      )),
+                    const SizedBox(height: 24),
                   ],
                 )),
             ]),
@@ -644,8 +678,12 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
 
   Widget _optionRow(String groupKey, HSOption opt) {
     final key  = '${groupKey}_${opt.key}';
-    final ctrl = _ctrls[key];
-    if (ctrl == null) return const SizedBox.shrink();
+    // Create controller if missing
+    if (!_ctrls.containsKey(key)) {
+      _ctrls[key] = TextEditingController(
+        text: (_prices[key] ?? 0) > 0 ? '${_prices[key]}' : '');
+    }
+    final ctrl = _ctrls[key]!;
 
     // Admin prices: ref = suggested, min/max enforced
     final ref = widget.refPrices[key] ?? 0;
