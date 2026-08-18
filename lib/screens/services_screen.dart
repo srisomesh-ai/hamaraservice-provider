@@ -725,29 +725,27 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
                 style: const TextStyle(
                   fontSize: 14, fontWeight: FontWeight.w700,
                   color: Color(0xFF1a1a2e))),
-              // Show admin range
-              if (adminMin > 0 || adminMax > 0) ...[
-                const SizedBox(height: 2),
-                Row(children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.teal.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(4)),
-                    child: Text(
-                      adminMin > 0 && adminMax > 0
-                          ? 'Range: ₹$adminMin – ₹$adminMax'
-                          : ref > 0 ? 'Suggested: ₹$ref' : '',
-                      style: const TextStyle(
-                        fontSize: 10, color: AppColors.teal,
-                        fontWeight: FontWeight.w700))),
-                ]),
+              // Show admin range or helpful message
+              const SizedBox(height: 3),
+              if (adminMin > 0 && adminMax > 0) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.teal.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4)),
+                  child: Text('Allowed: ₹$adminMin – ₹$adminMax',
+                    style: const TextStyle(
+                      fontSize: 10, color: AppColors.teal,
+                      fontWeight: FontWeight.w700))),
               ] else if (ref > 0) ...[
-                const SizedBox(height: 2),
                 Text('Suggested: ₹$ref',
                   style: const TextStyle(
                     fontSize: 11, color: AppColors.teal,
                     fontWeight: FontWeight.w600)),
+              ] else ...[
+                Text('Enter your price for ${opt.name}',
+                  style: const TextStyle(
+                    fontSize: 11, color: AppColors.muted)),
               ],
             ])),
           // Price input
