@@ -72,11 +72,23 @@ class _LoginScreenState extends State<LoginScreen> {
       if (status != 'approved') {
         setState(() { _loading = false; });
         if (mounted) {
-          Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => _PendingApprovalScreen(
-              name:  provider['name']?.toString() ?? 'Provider',
-              email: email,
-            )));
+          final name = provider['name']?.toString() ?? '';
+          final phone = provider['phone']?.toString() ?? '';
+          // If name or phone is empty → registration was incomplete → go to register form
+          if (name.isEmpty || phone.isEmpty) {
+            Navigator.pushReplacement(context,
+              MaterialPageRoute(builder: (_) => RegisterScreen(
+                prefillEmail: email,
+                prefillPassword: pwd,
+              )));
+          } else {
+            // Registration complete but pending approval
+            Navigator.pushReplacement(context,
+              MaterialPageRoute(builder: (_) => _PendingApprovalScreen(
+                name:  name,
+                email: email,
+              )));
+          }
         }
         return;
       }
