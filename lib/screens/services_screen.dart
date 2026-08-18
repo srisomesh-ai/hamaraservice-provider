@@ -637,8 +637,8 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
                       const Padding(
                         padding: EdgeInsets.all(24),
                         child: Text(
-                          'Enter your price for this service below.
-Admin reference prices will appear here once set.',
+                          'Enter your price for this service below.\nAdmin reference prices will appear here once set.',
+
                           textAlign: TextAlign.center,
                           style: TextStyle(color: AppColors.muted, fontSize: 14))),
                     for (final grp in priceableGroups) ...[
