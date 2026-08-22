@@ -284,10 +284,15 @@ class _DashboardScreenState extends State<DashboardScreen>
         } catch (e) {}
       }
     }
-    await ProviderApiService.updateProfile({
-      'available': val,
-      'updatedAt': DateTime.now().toIso8601String(),
-    });
+    // Use dedicated availability endpoint
+    final ok = await ProviderApiService.setAvailable(val);
+    if (!ok && mounted) {
+      // Revert on failure
+      setState(() => _available = !val);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Could not update status — check connection'),
+        backgroundColor: AppColors.red));
+    }
   }
 
   void _startPolling() {
