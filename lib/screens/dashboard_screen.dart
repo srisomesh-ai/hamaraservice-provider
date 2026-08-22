@@ -674,10 +674,10 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _offersService(Map<String, dynamic> booking) {
     final ids = _myServiceIds;
     if (ids.isEmpty) return true; // no filter = accept all
-    final svcId = booking['svcId']?.toString() ?? '';
+    final svcId = (booking['svc_id'] ?? booking['svcId'] ?? '').toString();
     if (svcId.isNotEmpty && ids.contains(svcId)) return true;
     // Fallback: match by name
-    final name = (booking['service'] ?? '').toString().toLowerCase();
+    final name = (booking['svc_name'] ?? booking['service'] ?? '').toString().toLowerCase();
     return ids.any((id) => id.toLowerCase() == name);
   }
 
