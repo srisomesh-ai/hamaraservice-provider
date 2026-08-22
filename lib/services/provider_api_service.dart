@@ -203,7 +203,7 @@ class ProviderApiService {
     // Get active bookings in MySQL
     final res = await _get('bookings.php', params: {
       'action': 'admin_list',
-      'status': 'active',
+      'status': 'searching',
     });
     if (res['success'] != true) return [];
     final all = (res['data'] as List).cast<Map<String,dynamic>>();
