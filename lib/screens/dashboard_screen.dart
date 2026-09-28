@@ -12,6 +12,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:vibration/vibration.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../utils/theme.dart';
+import '../utils/parse.dart';
+import '../services/hs_catalog.dart';
 import 'test_console_screen.dart';
 import 'login_screen.dart';
 import 'active_booking_screen.dart';
@@ -21,6 +23,7 @@ import 'earnings_screen.dart';
 import 'ratings_screen.dart';
 import 'open_jobs_screen.dart';
 import 'profile_edit_screen.dart';
+import 'quote_dialog.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String providerId;
@@ -46,6 +49,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   int _openJobsCount = 0;
   final _audioPlayer = AudioPlayer();
   final Set<String> _dismissedBookingKeys = {};
+  final Set<String> _reviewNotifiedIds = {};
+  bool _checkingBookings = false;
+  bool _loggingOut = false;
   int _testTapCount = 0;
   DateTime? _lastTestTap;
 
@@ -94,7 +100,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (cached != null && mounted) {
       setState(() {
         _providerData = cached;
-        _available    = cached['available'] == 1 || cached['available'] == true;
+        _available    = _isAvailable(cached['available']);
         _loading      = false;
       });
     }
@@ -106,19 +112,25 @@ class _DashboardScreenState extends State<DashboardScreen>
         await ProviderApiService.cacheProvider(fresh);
         setState(() {
           _providerData = fresh;
-          _available    = fresh['available'] == 1 || fresh['available'] == true;
+          _available    = _isAvailable(fresh['available']);
           _loading      = false;
         });
+        if (_checkAccountStatus(fresh)) return;
       }
     } catch (_) {}
+    if (!mounted) return;
+    if (_loading) setState(() => _loading = false);
 
     // FCM token
     try {
       final token = await FirebaseMessaging.instance.getToken();
       if (token != null) await ProviderApiService.saveFcmToken(token);
     } catch (_) {}
+    if (!mounted) return;
 
-    // Periodic refresh every 30 seconds
+    // Periodic refresh every 30 seconds — cancel any previous subscription
+    // first (_loadProfile runs again on pull-to-refresh / after edits).
+    _providerDataListener?.cancel();
     _providerDataListener = Stream.periodic(const Duration(seconds: 30))
         .asyncMap((_) => ProviderApiService.getProfile(_pid))
         .listen((data) {
@@ -126,15 +138,38 @@ class _DashboardScreenState extends State<DashboardScreen>
       ProviderApiService.cacheProvider(data);
       setState(() {
         _providerData = data;
-        _available    = data['available'] == 1 || data['available'] == true;
+        _available    = _isAvailable(data['available']);
       });
+      _checkAccountStatus(data);
     }, onError: (_) {});
 
     _listenBookings();
   }
 
+  bool _isAvailable(dynamic v) => v == 1 || v == true || v == '1';
+
+  /// Logs the provider out if the admin suspended/rejected the account.
+  /// Returns true when a logout was triggered.
+  bool _checkAccountStatus(Map<String, dynamic> data) {
+    final status = data['status']?.toString() ?? '';
+    if (status == 'suspended' || status == 'rejected') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(status == 'suspended'
+              ? 'Account suspended. Contact info@hamaraservice.com'
+              : 'Application rejected. Contact info@hamaraservice.com'),
+          backgroundColor: AppColors.red));
+      }
+      _logout();
+      return true;
+    }
+    return false;
+  }
+
   void _listenBookings() {
-    // Real-time bookings listener — updates immediately when status changes
+    // Polls the provider's active booking — cancel any previous subscription
+    // so repeated calls (refresh, profile edits) don't stack listeners.
+    _bookingsListener?.cancel();
     _bookingsListener = Stream.periodic(const Duration(seconds: 5))
         .asyncMap((_) => ProviderApiService.getActiveBooking(_pid))
         .listen((booking) {
@@ -147,16 +182,21 @@ class _DashboardScreenState extends State<DashboardScreen>
       final mine = all.entries
           .where((e) {
             final b = e.value as Map;
-            return b['providerId'] == _pid ||
+            return b['provider_id']?.toString() == _pid ||
+                b['providerId'] == _pid ||
                 (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid);
           })
-          .map((e) => Map<String, dynamic>.from({...e.value as Map, 'id': e.key}))
+          .map((e) => Map<String, dynamic>.from(
+              {'id': e.key, ...e.value as Map}))
           .toList()
         ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
 
       // Check for new review/rating
       for (final b in mine) {
-        if ((b['rating'] != null) && !(b['reviewNotified'] == true)) {
+        final rid = b['id']?.toString() ?? '';
+        if ((b['rating'] != null) && !(b['reviewNotified'] == true) &&
+            !_reviewNotifiedIds.contains(rid)) {
+          _reviewNotifiedIds.add(rid);
           _notifyNewReview(b);
           // Mark as notified
           // Review notified tracked locally
@@ -164,7 +204,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
 
       if (mounted) setState(() => _bookings = mine);
-    });
+    }, onError: (_) {});
   }
 
   void _notifyNewReview(Map<String, dynamic> booking) {
@@ -267,12 +307,23 @@ class _DashboardScreenState extends State<DashboardScreen>
                     '';
               }
             } catch (e) {}
-            await ProviderApiService.updateProfile({
+            final updated = await ProviderApiService.updateProfile({
               'available': 1,
               'lat': pos.latitude,
               'lng': pos.longitude,
               if (city.isNotEmpty) 'city': city,
             });
+            if (!updated) {
+              if (mounted) {
+                setState(() => _available = false);
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(ProviderApiService.lastError.isNotEmpty
+                        ? ProviderApiService.lastError
+                        : 'Could not go online — check connection'),
+                    backgroundColor: AppColors.red));
+              }
+              return;
+            }
             if (city.isNotEmpty && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                   content: Text('Location updated: $city'),
@@ -296,70 +347,60 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _startPolling() {
-    _newBookingListener = Stream.periodic(const Duration(seconds: 4))
-        .asyncMap((_) => ProviderApiService.getOpenBookings(_pid))
-        .listen((bookings) {
-      if (!mounted || !_available || _incomingBooking != null) return;
-      try {
-        final bk =
-            bookings.isEmpty ? <String,dynamic>{} : bookings.first;
-        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
-          return;
-        }
-        if (bk['status'] == 'cancelled') return;
-        // Skip if already declined or standbyed this session
-        if (_dismissedBookingKeys.contains(bk['id'])) return;
-        // Check provider offers this service (by svcId or name)
-        if (!_offersService(bk)) return;
-        setState(() {
-          _incomingBooking = bk;
-          _incomingBookingKey = bk['id']?.toString();
-          _countdownSeconds = 30;
-        });
-        _startCountdown();
-        _watchBookingStatus(bk['id']?.toString() ?? '');
-      } catch (e) {}
-    });
+    // Single open-jobs poller (the old 4s stream + 5s timer duplicated the
+    // same request). _checkForBookings does nothing while offline, so no
+    // network polling happens when the provider is unavailable.
+    _pollTimer?.cancel();
     _pollTimer = Timer.periodic(
         const Duration(seconds: 5), (_) => _checkForBookings());
   }
 
   Future<void> _checkForBookings() async {
-    if (!_available || _incomingBooking != null) return;
+    if (!mounted || !_available || _incomingBooking != null) return;
+    if (_checkingBookings) return;
+    if ((_providerData?['status'] ?? '') != 'approved') return;
+    _checkingBookings = true;
     try {
       final openList = await ProviderApiService.getOpenBookings(_pid);
-      if (openList.isEmpty) return;
+      if (!mounted || !_available || _incomingBooking != null) return;
       final all = <String,dynamic>{for (final b in openList) b['id']?.toString() ?? '': b};
-      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
-              ?.map((s) => (s is Map
-                      ? s['name'] ?? ''
-                      : s.toString())
-                  .toLowerCase())
-              .toList() ??
-          [];
+      int count = 0;
+      Map<String, dynamic>? first;
+      String? firstKey;
       for (final entry in all.entries) {
+        if (entry.key.isEmpty) continue;
         final bk = Map<String, dynamic>.from(entry.value as Map);
         if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
           continue;
         }
-        if (bk['status'] == 'cancelled') continue;
+        // Check provider offers this service (by svc_id, or name fallback)
+        if (!_offersService(bk)) continue;
+        count++;
         // Skip if already declined or standbyed this session
         if (_dismissedBookingKeys.contains(entry.key)) continue;
-        final svcName = (bk['service'] ?? '').toString().toLowerCase();
-        if (providerServices.isNotEmpty &&
-            !providerServices.any((s) => s == svcName)) continue;
+        if (first == null) { first = bk; firstKey = entry.key; }
+      }
+      if (mounted && count != _openJobsCount) {
+        setState(() => _openJobsCount = count);
+      }
+      if (first != null && firstKey != null) {
+        final bk = first;
+        final key = firstKey;
         if (mounted) {
           setState(() {
             _incomingBooking = bk;
-            _incomingBookingKey = entry.key;
+            _incomingBookingKey = key;
             _countdownSeconds = 30;
           });
           _startCountdown();
-          _watchBookingStatus(entry.key);
+          _watchBookingStatus(key);
         }
-        break;
       }
-    } catch (e) {}
+    } catch (e) {
+      // ignore — next tick retries
+    } finally {
+      _checkingBookings = false;
+    }
   }
 
   void _watchBookingStatus(String bookingKey) {
@@ -408,15 +449,13 @@ class _DashboardScreenState extends State<DashboardScreen>
           content: Text('Customer cancelled this booking.'),
           backgroundColor: AppColors.muted,
           behavior: SnackBarBehavior.floating));
-      } else if (status == 'accepted') {
-        ProviderApiService.getBooking(bookingKey).then((snap) {
-          if (snap?['provider_id']?.toString() != _pid) {
-            _alertCountdown?.cancel();
-            _bookingWatcher?.cancel();
-            _stopAlert();
-            if (mounted) setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-          }
-        });
+      } else if (status.isNotEmpty && status != 'searching' &&
+          data['provider_id']?.toString() != _pid) {
+        // Taken by another provider (price_quoted etc.)
+        _alertCountdown?.cancel();
+        _bookingWatcher?.cancel();
+        _stopAlert();
+        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
       }
     });
   }
@@ -460,77 +499,22 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (_incomingBooking == null || _incomingBookingKey == null) return;
     final bookingKey = _incomingBookingKey!;
     final booking = Map<String, dynamic>.from(_incomingBooking!);
-    final svcId = booking['serviceId']?.toString() ?? '';
+    // Pause the countdown/alert while the provider types a quote.
+    _alertCountdown?.cancel();
+    _stopAlert();
+    final quoted = await showQuoteDialog(context, _pid, booking);
+    if (!mounted) return;
 
-    // Get provider's min/max for this service
-    int minPrice = 0; int maxPrice = 0;
-    try {
-      final mysvcs = await ProviderApiService.getMyServices(_pid);
-      final svcMatch = mysvcs.where((s) => s['svc_id'] == svcId).toList();
-      if (svcMatch.isNotEmpty) {
-        final sd = svcMatch.first;
-        minPrice = (sd['min_price'] as num?)?.toInt() ?? 0;
-        maxPrice = (sd['max_price'] as num?)?.toInt() ?? 0;
-      }
-    } catch (_) {}
-
-    // Show quote entry dialog
-    final quoteCtrl = TextEditingController(
-      text: minPrice > 0 ? '$minPrice' : '');
-    final quoted = await showDialog<int>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Enter Your Quote', style: TextStyle(fontSize:18, fontWeight:FontWeight.w800)),
-          Text(booking['service']?.toString() ?? '',
-            style: const TextStyle(fontSize:13, color:AppColors.muted, fontWeight:FontWeight.w500)),
-        ]),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (minPrice > 0 && maxPrice > 0)
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
-              child: Row(children: [
-                const Icon(Icons.info_outline_rounded, color:AppColors.teal, size:16),
-                const SizedBox(width:8),
-                Text('Your range: ₹$minPrice – ₹$maxPrice',
-                  style: const TextStyle(fontSize:12, color:AppColors.teal, fontWeight:FontWeight.w700)),
-              ])),
-          const SizedBox(height:14),
-          TextField(
-            controller: quoteCtrl,
-            keyboardType: TextInputType.number,
-            autofocus: true,
-            decoration: InputDecoration(
-              labelText: 'Your quoted price (₹)',
-              prefixText: '₹ ',
-              hintText: minPrice > 0 ? '$minPrice' : 'Enter price',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
-          ),
-          const SizedBox(height:8),
-          const Text('Customer will see this price and can accept or negotiate.',
-            style: TextStyle(fontSize:11, color:AppColors.muted)),
-        ]),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('Cancel', style: TextStyle(color:AppColors.muted))),
-          ElevatedButton(
-            onPressed: () {
-              final v = int.tryParse(quoteCtrl.text.trim()) ?? 0;
-              if (v <= 0) return;
-              Navigator.pop(ctx, v);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor:AppColors.teal),
-            child: const Text('Send Quote', style: TextStyle(color:Colors.white))),
-        ],
-      ),
-    );
-
-    if (quoted == null || quoted <= 0) return; // Provider cancelled
+    if (quoted == null || quoted <= 0) {
+      // Provider cancelled the quote — dismiss this alert (still listed in Open Jobs)
+      _bookingWatcher?.cancel();
+      _dismissedBookingKeys.add(bookingKey);
+      setState(() {
+        _incomingBooking = null;
+        _incomingBookingKey = null;
+      });
+      return;
+    }
 
     _alertCountdown?.cancel();
     _bookingWatcher?.cancel();
@@ -541,63 +525,30 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     try {
-      final snapData = await ProviderApiService.getBooking(bookingKey);
-      if (snapData == null) return;
-      final current = snapData;
-      if (current['acceptedBy'] != null &&
-          current['acceptedBy'].toString() != 'null') {
+      final ok = await ProviderApiService.acceptBooking(bookingKey, quoted);
+      if (!ok) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Booking already accepted by another provider.'),
+          final msg = ProviderApiService.lastError;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(msg == 'Booking not available'
+                ? 'Booking already accepted by another provider.'
+                : (msg.isNotEmpty ? msg : 'Could not accept booking. Please try again.')),
             backgroundColor: AppColors.red));
         }
         return;
       }
-      final providerInfo = {
-        'id': _pid,
-        'name': _providerData?['name'] ?? '',
-        'phone': _providerData?['phone'] ?? '',
-        'photo': _providerData?['photo'] ?? '',
-      };
-      // Write accepted + quotedPrice + negotiation status
-      final update = {
-        'acceptedBy': providerInfo,
-        'status': 'price_quoted',
-        'providerId': _pid,
-        'providerName': _providerData?['name'] ?? '',
-        'acceptedAt': DateTime.now().toIso8601String(),
-        'quotedPrice': quoted,
-        'negotiationStatus': 'quoted',
-      };
-      await ProviderApiService.acceptBooking(bookingKey, (update['quotedPrice'] as num?)?.toInt() ?? 0);
-      // Booking update handled by MySQL acceptBooking API
-
-      // Notify customer — provider quoted a price
-      try {
-        final customerToken = ''; // FCM sent by MySQL API
-        await _sendPushNotification(
-          fcmToken: customerToken,
-          event: 'price_quoted',
-          data: {
-            'providerName': _providerData?['name']?.toString() ?? '',
-            'service': booking['service']?.toString() ?? '',
-            'quotedPrice': quoted.toString(),
-            'bookingId': bookingKey,
-          },
-        );
-      } catch (_) {}
 
       if (mounted) {
         Navigator.push(context, MaterialPageRoute(
             builder: (_) => ActiveBookingScreen(
                 bookingKey: bookingKey,
-                booking: {...booking, 'quotedPrice': quoted},
+                booking: {...booking, 'status': 'price_quoted', 'quoted_price': quoted, 'quotedPrice': quoted},
                 providerId: _pid)));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Error: \$e'), backgroundColor: AppColors.red));
+          content: Text('Error: $e'), backgroundColor: AppColors.red));
       }
     }
   }
@@ -640,12 +591,21 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<void> _logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('provider_id');
-    await prefs.remove('provider_email');
-    await prefs.setBool('provider_logged_in', false);
+    if (_loggingOut) return;
+    _loggingOut = true;
+    // Stop all polling before the token is cleared
+    _pollTimer?.cancel();
+    _alertCountdown?.cancel();
+    _bookingWatcher?.cancel();
+    _providerDataListener?.cancel();
+    _bookingsListener?.cancel();
+    _stopAlert();
+    // Go offline while the JWT is still valid, then clear JWT + cached data
     try {
       await ProviderApiService.setAvailable(false);
+    } catch (e) {}
+    try {
+      await ProviderApiService.logout();
     } catch (e) {}
     if (mounted) {
       Navigator.pushReplacement(context,
@@ -654,27 +614,21 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
 
+  // Server booking statuses where the provider still has work to do
+  static const List<String> _activeStatuses = [
+    'price_quoted', 'negotiating', 'negotiation_final', 'confirmed',
+    'accepted', 'active', 'otp_sent', 'payment_pending',
+  ];
+
   // Get provider's offered service IDs from either Map or List format
-  Set<String> get _myServiceIds {
-    final raw = _providerData?['services'];
-    if (raw == null) return {};
-    if (raw is Map) {
-      return raw.entries
-          .where((e) => e.value == true)
-          .map((e) => e.key.toString())
-          .toSet();
-    }
-    if (raw is List) {
-      return raw.map((s) => s.toString()).toSet();
-    }
-    return {};
-  }
+  // (List of ids, List of maps with svc_id/svcId/id, or Map {id: true})
+  Set<String> get _myServiceIds => serviceIdsOf(_providerData?['services']);
 
   // Check if provider offers a service by svcId OR service name
   bool _offersService(Map<String, dynamic> booking) {
     final ids = _myServiceIds;
     if (ids.isEmpty) return true; // no filter = accept all
-    final svcId = (booking['svc_id'] ?? booking['svcId'] ?? '').toString();
+    final svcId = bookingServiceIdOf(booking);
     if (svcId.isNotEmpty && ids.contains(svcId)) return true;
     // Fallback: match by name
     final name = (booking['svc_name'] ?? booking['service'] ?? '').toString().toLowerCase();
@@ -754,11 +708,15 @@ class _DashboardScreenState extends State<DashboardScreen>
     final isApproved =
         (_providerData?['status'] ?? 'pending') == 'approved';
     final activeBookings = _bookings
-        .where((b) => ['accepted', 'active', 'otp_sent', 'payment_pending'].contains(b['status']))
+        .where((b) => _activeStatuses.contains(b['status']))
         .toList();
-    final totalEarned = _providerData?['totalEarned'] ?? 0;
-    final photo = _providerData?['photo'] as String?;
-    final name = _providerData?['name'] ?? 'Provider';
+    // Withdrawable balance: server keeps pending_earned = total earned minus
+    // requested/approved payouts (same figure payouts.php checks).
+    final availableBalance = asInt(_providerData?['pending_earned']);
+    final photo = _providerData?['photo']?.toString();
+    final name = (_providerData?['name'] ?? '').toString().isNotEmpty
+        ? _providerData!['name'].toString()
+        : 'Provider';
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -796,7 +754,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                                   ? NetworkImage(photo!)
                                   : null,
                           child: (photo == null || photo.isEmpty)
-                              ? Text(name[0].toUpperCase(),
+                              ? Text(initialOf(name),
                                   style: const TextStyle(
                                       fontSize: 24,
                                       color: Colors.white,
@@ -1001,9 +959,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                             child: const Icon(Icons.miscellaneous_services_rounded,
                               color: const Color(0xFF8B5CF6), size: 22)),
                           const SizedBox(width: 12),
-                          const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text('My Services', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                            Text('Manage your 25 available services', style: TextStyle(fontSize: 11, color: AppColors.muted)),
+                          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            const Text('My Services', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                            Text('Manage your ${HSCatalog.services.length} available services', style: const TextStyle(fontSize: 11, color: AppColors.muted)),
                           ])),
                           const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
                         ]))),
@@ -1062,7 +1020,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                                         color: Colors.white70,
                                         fontWeight:
                                             FontWeight.w600)),
-                                Text('Rs.$totalEarned',
+                                Text('Rs.$availableBalance',
                                     style: const TextStyle(
                                         fontSize: 34,
                                         fontWeight:
@@ -1096,7 +1054,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     Row(children: [
                       _statTile(
                           'Total Jobs',
-                          '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}',
+                          '${_providerData?['total_bookings'] ?? _providerData?['totalBookings'] ?? 0}',
                           Icons.work_rounded,
                           AppColors.teal),
                       const SizedBox(width: 10),
@@ -1108,7 +1066,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                       const SizedBox(width: 10),
                       _statTile(
                           'Reviews',
-                          '${_providerData?['reviews'] ?? 0}',
+                          '${_providerData?['review_count'] ?? _providerData?['reviews'] ?? 0}',
                           Icons.reviews_rounded,
                           AppColors.brand),
                     ]),
@@ -1241,7 +1199,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   Widget _buildBookings() {
     final active = _bookings
         .where((b) =>
-            ['accepted', 'active', 'otp_sent', 'payment_pending'].contains(b['status']))
+            _activeStatuses.contains(b['status']))
         .toList();
     final completed = _bookings
         .where((b) => b['status'] == 'completed')
@@ -1302,8 +1260,16 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Widget _bookingCard(Map<String, dynamic> b,
       {bool compact = false}) {
-    final status = b['status'] ?? '';
+    final status = (b['status'] ?? '').toString();
     final statusColor = _statusColor(status);
+    final svcName = (b['svc_name'] ?? b['service'] ?? 'Service').toString();
+    final custName = (b['customer_name'] ?? b['customer'] ?? '').toString();
+    final custPhone = (b['customer_phone'] ?? b['phone'] ?? '').toString();
+    final date = (b['slot_date'] ?? b['date'] ?? '').toString();
+    final time = (b['slot_time'] ?? b['time'] ?? '').toString();
+    final price = [b['confirmed_price'], b['final_price'], b['quoted_price'], b['price']]
+        .map((v) => asInt(v))
+        .firstWhere((v) => v > 0, orElse: () => 0);
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
@@ -1325,7 +1291,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     const BorderRadius.vertical(top: Radius.circular(14))),
             child: Row(children: [
               Expanded(
-                  child: Text(b['service'] ?? 'Service',
+                  child: Text(svcName,
                       style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w700,
@@ -1352,9 +1318,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                     size: 13, color: AppColors.muted),
                 const SizedBox(width: 6),
                 Text(
-                    status == 'completed'
-                        ? '${b['customer'] ?? ''}'
-                        : '${b['customer'] ?? ''} - ${b['phone'] ?? ''}',
+                    status == 'completed' || custPhone.isEmpty
+                        ? custName
+                        : '$custName - $custPhone',
                     style: const TextStyle(
                         fontSize: 12,
                         color: AppColors.ink2,
@@ -1366,7 +1332,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     size: 13, color: AppColors.muted),
                 const SizedBox(width: 6),
                 Text(
-                    '${b['date'] ?? ''} - ${b['time'] ?? ''} - Rs.${b['price'] ?? 0}',
+                    '$date - $time - Rs.$price',
                     style: const TextStyle(
                         fontSize: 12, color: AppColors.muted)),
               ]),
@@ -1377,14 +1343,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                       size: 13, color: AppColors.muted),
                   const SizedBox(width: 6),
                   Expanded(
-                      child: Text(b['address'] ?? '',
+                      child: Text((b['address'] ?? '').toString(),
                           style: const TextStyle(
                               fontSize: 12,
                               color: AppColors.muted))),
                 ]),
               ],
-              if (['accepted', 'active', 'otp_sent', 'payment_pending']
-                  .contains(status)) ...[
+              if (_activeStatuses.contains(status)) ...[
                 const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
@@ -1393,7 +1358,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                         context,
                         MaterialPageRoute(
                             builder: (_) => ActiveBookingScreen(
-                                bookingKey: b['id'] ?? '',
+                                bookingKey: (b['id'] ?? '').toString(),
                                 booking: b,
                                 providerId: _pid))),
                     style: ElevatedButton.styleFrom(
@@ -1418,8 +1383,10 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   // ── PROFILE ───────────────────────────────────────────────────
   Widget _buildProfile() {
-    final photo = _providerData?['photo'] as String?;
-    final name = _providerData?['name'] ?? 'Provider';
+    final photo = _providerData?['photo']?.toString();
+    final name = (_providerData?['name'] ?? '').toString().isNotEmpty
+        ? _providerData!['name'].toString()
+        : 'Provider';
     return Scaffold(
       backgroundColor: AppColors.bg,
       body: CustomScrollView(slivers: [
@@ -1454,7 +1421,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                             : null,
                     child:
                         (photo == null || photo.isEmpty)
-                            ? Text(name[0].toUpperCase(),
+                            ? Text(initialOf(name),
                                 style: const TextStyle(
                                     fontSize: 32,
                                     color: Colors.white,
@@ -1548,7 +1515,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               Row(children: [
                 _statTile(
                     'Jobs Done',
-                    '${_providerData?['totalBookings'] ?? 0}',
+                    '${_providerData?['completed_bookings'] ?? _providerData?['totalBookings'] ?? 0}',
                     Icons.work_rounded,
                     AppColors.teal),
                 const SizedBox(width: 10),
@@ -1560,7 +1527,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 const SizedBox(width: 10),
                 _statTile(
                     'Earned',
-                    'Rs.${_providerData?['totalEarned'] ?? 0}',
+                    'Rs.${asInt(_providerData?['total_earned'] ?? _providerData?['totalEarned'])}',
                     Icons.currency_rupee_rounded,
                     AppColors.green),
               ]),
@@ -1741,6 +1708,10 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   String _statusLabel(String s) {
     switch (s) {
+      case 'price_quoted': return 'Quote Sent';
+      case 'negotiating': return 'Negotiating';
+      case 'negotiation_final': return 'Final Offer Sent';
+      case 'confirmed': return 'Confirmed';
       case 'accepted': return 'Accepted';
       case 'active': return 'In Progress';
       case 'otp_sent': return 'OTP Sent';
@@ -1907,7 +1878,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                                   Icons
                                       .home_repair_service_rounded,
                                   'Service',
-                                  bk['service'] ?? '',
+                                  (bk['svc_name'] ?? bk['service'] ?? '').toString(),
                                   AppColors.teal),
                               const Divider(
                                   height: 16,
@@ -1915,7 +1886,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                               _alertRow2(
                                   Icons.currency_rupee_rounded,
                                   'Price',
-                                  'Rs.${bk['price'] ?? bk['priceVal'] ?? 0}',
+                                  asInt(bk['price'] ?? bk['priceVal']) > 0
+                                      ? 'Rs.${asInt(bk['price'] ?? bk['priceVal'])}'
+                                      : 'You quote the price',
                                   AppColors.green),
                               const Divider(
                                   height: 16,
@@ -1923,7 +1896,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                               _alertRow2(
                                   Icons.calendar_today_rounded,
                                   'Date',
-                                  '${bk['date'] ?? ''} at ${bk['time'] ?? ''}',
+                                  '${bk['slot_date'] ?? bk['date'] ?? ''} at ${bk['slot_time'] ?? bk['time'] ?? ''}',
                                   AppColors.brand),
                               const Divider(
                                   height: 16,
@@ -1931,7 +1904,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                               _alertRow2(
                                   Icons.location_on_rounded,
                                   'Address',
-                                  bk['address'] ?? '',
+                                  (bk['address'] ?? '').toString(),
                                   AppColors.red),
                               const Divider(
                                   height: 16,
@@ -1939,7 +1912,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                               _alertRow2(
                                   Icons.person_rounded,
                                   'Customer',
-                                  '${bk['customer'] ?? ''} - ${bk['phone'] ?? ''}',
+                                  (bk['customer_name'] ?? bk['customer'] ?? '').toString(),
                                   AppColors.muted),
                             ],
                           ),

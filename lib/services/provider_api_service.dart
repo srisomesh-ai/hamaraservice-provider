@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../utils/parse.dart';
 
 // ─────────────────────────────────────────────────────────────
 // ProviderApiService — all data calls go to Hostinger MySQL
@@ -10,6 +12,28 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ProviderApiService {
   static const String _base = 'https://hamaraservice.com/api';
   static const String _tokenKey = 'provider_jwt';
+
+  /// Error message from the most recent failed API call. Read it only right
+  /// after a call reported failure.
+  static String lastError = '';
+
+  static Map<String,dynamic> _decode(http.Response resp) {
+    Map<String,dynamic> res;
+    try {
+      final decoded = jsonDecode(resp.body);
+      res = decoded is Map<String,dynamic>
+          ? decoded
+          : <String,dynamic>{'success': false, 'error': 'Unexpected server response'};
+    } catch (_) {
+      res = <String,dynamic>{'success': false, 'error': 'Server error (${resp.statusCode})'};
+    }
+    // Only written on failure, so a concurrent successful poll can't wipe
+    // the message before the failing caller reads it.
+    if (res['success'] != true) {
+      lastError = (res['error'] ?? res['message'] ?? 'Request failed').toString();
+    }
+    return res;
+  }
 
   // ── Token storage ────────────────────────────────────────
   static Future<String> getToken() async {
@@ -27,6 +51,8 @@ class ProviderApiService {
     await prefs.remove(_tokenKey);
     await prefs.remove('provider_id');
     await prefs.remove('provider_logged_in');
+    await prefs.remove('provider_data');
+    await prefs.remove('provider_email');
   }
 
   // ── HTTP helpers ─────────────────────────────────────────
@@ -39,7 +65,7 @@ class ProviderApiService {
       'Authorization': 'Bearer $token',
       'Content-Type': 'application/json',
     }).timeout(const Duration(seconds: 15));
-    return jsonDecode(resp.body) as Map<String,dynamic>;
+    return _decode(resp);
   }
 
   static Future<Map<String,dynamic>> _post(
@@ -55,7 +81,7 @@ class ProviderApiService {
       },
       body: jsonEncode(body),
     ).timeout(const Duration(seconds: 15));
-    return jsonDecode(resp.body) as Map<String,dynamic>;
+    return _decode(resp);
   }
 
   // ── AUTH ─────────────────────────────────────────────────
@@ -70,18 +96,25 @@ class ProviderApiService {
       // Cache provider data
       final prefs = await SharedPreferences.getInstance();
       final provider = data['provider'] as Map<String,dynamic>? ?? {};
+      final status = (provider['status'] ?? data['status'] ?? '').toString();
       await prefs.setString('provider_id', provider['id']?.toString() ?? '');
-      await prefs.setBool('provider_logged_in', true);
+      // Only approved providers are auto-logged-in on next launch.
+      // Pending/suspended/rejected must go through the login screen again.
+      await prefs.setBool('provider_logged_in', status == 'approved');
       await prefs.setString('provider_data', jsonEncode(provider));
       return data;
     }
     return null;
   }
 
-  static Future<bool> register(Map<String,dynamic> data) async {
+  /// Registers a provider. Returns the server-generated provider ID on
+  /// success ('' if the server did not return one), or null on failure.
+  static Future<String?> register(Map<String,dynamic> data) async {
     final res = await _post('providers.php', data,
         params: {'action': 'register'});
-    return res['success'] == true;
+    if (res['success'] != true) return null;
+    final d = res['data'];
+    return d is Map ? (d['id']?.toString() ?? '') : '';
   }
 
   static Future<void> logout() async {
@@ -196,9 +229,11 @@ class ProviderApiService {
   static Future<List<Map<String,dynamic>>> getOpenBookings(String providerId) async {
     final profile = await getProfile(providerId);
     if (profile == null) return [];
-    final lat = (profile['lat'] as num?)?.toDouble() ?? 0;
-    final lng = (profile['lng'] as num?)?.toDouble() ?? 0;
-    final radius = (profile['radius_km'] as num?)?.toDouble() ?? 10;
+    final lat = asDouble(profile['lat']);
+    final lng = asDouble(profile['lng']);
+    // Registration sends `radius`; DB column / profile uses `radius_km`.
+    var radius = asDouble(profile['radius_km'] ?? profile['radius'], 10);
+    if (radius <= 0) radius = 10;
 
     // Get active bookings in MySQL
     final res = await _get('bookings.php', params: {
@@ -209,8 +244,8 @@ class ProviderApiService {
 
     // Filter by distance
     return all.where((b) {
-      final bLat = (b['lat'] as num?)?.toDouble() ?? 0;
-      final bLng = (b['lng'] as num?)?.toDouble() ?? 0;
+      final bLat = asDouble(b['lat']);
+      final bLng = asDouble(b['lng']);
       if (bLat == 0 || bLng == 0) return true;
       if (lat == 0) return true;
       final dist = _haversine(lat, lng, bLat, bLng);
@@ -222,18 +257,14 @@ class ProviderApiService {
     const r = 6371.0;
     final dLat = _rad(lat2 - lat1);
     final dLon = _rad(lon2 - lon1);
-    final a = _sin2(dLat/2) + _sin2(dLon/2) * _cos(_rad(lat1)) * _cos(_rad(lat2));
-    return r * 2 * _asin(_sqrt(a));
+    final sinLat = math.sin(dLat / 2);
+    final sinLon = math.sin(dLon / 2);
+    final a = sinLat * sinLat +
+        math.cos(_rad(lat1)) * math.cos(_rad(lat2)) * sinLon * sinLon;
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return r * c;
   }
-  static double _rad(double d) => d * 3.141592653589793 / 180;
-  static double _sin2(double x) => _sin(x) * _sin(x);
-  static double _sin(double x) => x - x*x*x/6 + x*x*x*x*x/120;
-  static double _cos(double x) => 1 - x*x/2 + x*x*x*x/24;
-  static double _asin(double x) => x + x*x*x/6;
-  static double _sqrt(double x) {
-    if (x <= 0) return 0;
-    double r = x; for (int i = 0; i < 20; i++) r = (r + x/r) / 2; return r;
-  }
+  static double _rad(double d) => d * math.pi / 180;
 
   static Future<Map<String,dynamic>?> getBooking(String bookingId) async {
     final res = await _get('bookings.php',
@@ -289,6 +320,25 @@ class ProviderApiService {
     }, params: {'action': 'verify_otp'});
     if (res['success'] == true) return res['data'] as Map<String,dynamic>?;
     return null;
+  }
+
+  /// Provider finished the work: server generates the completion OTP and
+  /// pushes it to the customer. The OTP is NOT returned to the provider;
+  /// the customer reads it out and the provider submits it via [completeBooking].
+  static Future<bool> requestCompletionOtp(String bookingId) async {
+    final res = await _post('bookings.php',
+        {'booking_id': bookingId},
+        params: {'action': 'request_completion_otp'});
+    return res['success'] == true;
+  }
+
+  /// Completes the job with the completion OTP the customer shared.
+  static Future<bool> completeBooking(String bookingId, String completionOtp) async {
+    final res = await _post('bookings.php', {
+      'booking_id':     bookingId,
+      'completion_otp': completionOtp,
+    }, params: {'action': 'complete'});
+    return res['success'] == true;
   }
 
   /// Cancel/decline booking

@@ -1,13 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
-import 'package:firebase_database/firebase_database.dart';
 import '../services/provider_api_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../utils/theme.dart';
+import '../utils/parse.dart';
 import 'dashboard_screen.dart';
 
 class ActiveBookingScreen extends StatefulWidget {
@@ -27,9 +26,11 @@ class ActiveBookingScreen extends StatefulWidget {
 class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   String _status = 'accepted';
   bool _loading = false;
-  bool _showOtpEntry = false;
+  // True once the server has sent the completion OTP to the customer
+  bool _completionRequested = false;
   Map<String,dynamic> _liveBooking = {};
   bool _negotiationHandled = false;
+  bool _completedNotified = false;
   final List<TextEditingController> _otpCtrls = List.generate(4, (_) => TextEditingController());
   final List<FocusNode> _otpFocus = List.generate(4, (_) => FocusNode());
   String _otpError = '';
@@ -38,7 +39,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   @override
   void initState() {
     super.initState();
-    _status = widget.booking['status'] ?? 'accepted';
+    _status = (widget.booking['status'] ?? 'accepted').toString();
+    _completedNotified = _status == 'completed';
     _watchStatus();
   }
 
@@ -56,26 +58,70 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         .listen((data) {
       if (data == null || !mounted) return;
       final status = data['status']?.toString() ?? '';
+      final prevStatus = _status;
       if (status.isNotEmpty) setState(() { _status = status; _liveBooking = data; });
+
+      // Allow the negotiation dialog again if the customer negotiates later
+      if (status != 'negotiating') _negotiationHandled = false;
+      // Completion OTP is only relevant while the job is active
+      if (status != 'active' && _completionRequested) {
+        setState(() => _completionRequested = false);
+      }
 
       // Customer negotiating — show negotiation dialog to provider
       if (status == 'negotiating' && !_negotiationHandled) {
         _negotiationHandled = true;
-        final counter = (data['counterPrice'] as num?)?.toInt();
-        final custName = data['customerName']?.toString() ?? 'Customer';
+        final counter = _counterPrice(data);
+        final custName = _customerName(data);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _showNegotiationDialog(counter, custName, data);
         });
       }
 
-      // Customer paid — show success snackbar
-      if (status == 'completed') {
+      // Job completed — notify once (not on every poll)
+      if (status == 'completed' && !_completedNotified) {
+        _completedNotified = true;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('🎉 Payment received! Job completed.'),
+          content: Text('🎉 Job completed!'),
           backgroundColor: AppColors.green,
           duration: Duration(seconds: 4)));
       }
-    });
+
+      if (status == 'cancelled' && prevStatus != 'cancelled') {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('This booking was cancelled.'),
+          backgroundColor: AppColors.red));
+      }
+    }, onError: (_) {});
+  }
+
+  // ── Field helpers (MySQL snake_case with legacy camelCase fallbacks) ─────
+  Map<String, dynamic> get _bk => {...widget.booking, ..._liveBooking};
+
+  int? _counterPrice(Map<String, dynamic> b) {
+    final v = asInt(b['counter_price'] ?? b['counterPrice']);
+    return v > 0 ? v : null;
+  }
+
+  String _customerName(Map<String, dynamic> b) {
+    final n = (b['customer_name'] ?? b['customerName'] ?? b['customer'] ?? '').toString();
+    return n.isNotEmpty ? n : 'Customer';
+  }
+
+  int _priceOf(Map<String, dynamic> b) {
+    for (final k in ['confirmed_price', 'final_price', 'quoted_price', 'quotedPrice', 'price', 'priceVal']) {
+      final v = asInt(b[k]);
+      if (v > 0) return v;
+    }
+    return 0;
+  }
+
+  void _showError(String fallback) {
+    if (!mounted) return;
+    final msg = ProviderApiService.lastError;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg.isNotEmpty ? msg : fallback),
+      backgroundColor: AppColors.red));
   }
 
   // ── Negotiation dialog shown to provider when customer counters ──────────
@@ -179,7 +225,11 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   // Provider accepts customer's counter price
   Future<void> _acceptCounterPrice(int price) async {
     try {
-      await ProviderApiService.acceptCounter(widget.bookingKey);
+      final ok = await ProviderApiService.acceptCounter(widget.bookingKey);
+      if (!ok) {
+        _showError('Could not accept the counter offer. Please try again.');
+        return;
+      }
       // Notify customer
       await _notifyCustomer(
         event: 'price_confirmed',
@@ -201,7 +251,11 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   // Provider sends final offer (one time only)
   Future<void> _sendFinalOffer(int finalPrice) async {
     try {
-      await ProviderApiService.sendFinalOffer(widget.bookingKey, finalPrice);
+      final ok = await ProviderApiService.sendFinalOffer(widget.bookingKey, finalPrice);
+      if (!ok) {
+        _showError('Could not send final offer. Please try again.');
+        return;
+      }
       // Notify customer
       await _notifyCustomer(
         event: 'negotiation_final',
@@ -223,7 +277,11 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   // Provider declines negotiation — release job for another provider
   Future<void> _declineNegotiation() async {
     try {
-      await ProviderApiService.cancelBooking(widget.bookingKey);
+      final ok = await ProviderApiService.cancelBooking(widget.bookingKey);
+      if (!ok) {
+        _showError('Could not decline. Please try again.');
+        return;
+      }
       // Notify customer to search another
       await _notifyCustomer(
         event: 'provider_declined',
@@ -246,7 +304,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     required Map<String,String> extra,
   }) async {
     try {
-      final custId = (_liveBooking['customerId'] ?? widget.booking['customerId'])?.toString() ?? '';
+      final custId = (_liveBooking['customer_id'] ?? _liveBooking['customerId'] ??
+          widget.booking['customer_id'] ?? widget.booking['customerId'])?.toString() ?? '';
       if (custId.isEmpty) return;
       final custProfile = await ProviderApiService.getBooking(widget.bookingKey);
       final token = custProfile?['customer_fcm_token']?.toString() ?? '';
@@ -263,87 +322,110 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     } catch (_) {}
   }
 
-  Future<void> _updateStatus(String newStatus) async {
+  // ── Completion: server generates the completion OTP and pushes it to the
+  // customer. The provider never sees it; the customer reads it out once
+  // satisfied and the provider enters it below.
+  Future<void> _requestCompletion({bool resend = false}) async {
     setState(() => _loading = true);
-    // Status update handled by MySQL API actions
-    setState(() { _status = newStatus; _loading = false; });
-  }
-
-  Future<void> _initiateOTP() async {
-    setState(() => _loading = true);
-    final otp = (1000 + Random().nextInt(9000)).toString();
-
-    // customerId MUST be written — customer listener filters by this field
-    final custId = widget.booking['customerId']?.toString() ?? '';
-    // OTP generated and stored by MySQL verify_otp API
-
-    // Notify customer — OTP required (push notification)
+    bool ok = false;
     try {
-      final custId = widget.booking['customerId']?.toString() ?? '';
-      if (custId.isNotEmpty) {
-        final fcmToken = ''; // FCM sent by MySQL API
-        if (fcmToken.isNotEmpty) {
-          await http.post(
-            Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'event': 'otp_requested',
-              'fcmToken': fcmToken,
-              'data': {
-                'otp': otp,
-                'service': widget.booking['service']?.toString() ?? '',
-              },
-            }),
-          );
-        }
+      ok = await ProviderApiService.requestCompletionOtp(widget.bookingKey);
+    } catch (e) {
+      ProviderApiService.lastError = 'Network error. Please try again.';
+    }
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      if (ok) {
+        _completionRequested = true;
+        _otpError = '';
       }
-    } catch (_) {}
-    // OTP status stored in MySQL
-
-    setState(() { _status = 'otp_sent'; _showOtpEntry = true; _loading = false; });
+    });
+    if (!ok) {
+      final err = ProviderApiService.lastError;
+      if (err.startsWith('TOO_EARLY')) {
+        final parts = err.split(':');
+        final mins = parts.length > 1 ? parts[1] : '';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Please wait $mins more min before completing.'),
+          backgroundColor: AppColors.red));
+      } else {
+        _showError('Could not request completion OTP. Please try again.');
+      }
+      return;
+    }
+    for (final c in _otpCtrls) c.clear();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(resend
+          ? 'Completion OTP re-sent to customer ✅'
+          : 'Completion OTP sent to customer. Ask them for it.'),
+      backgroundColor: AppColors.green,
+      duration: const Duration(seconds: 3)));
   }
 
+  /// Start OTP (status 'confirmed') -> bookings.php verify_otp
+  /// Completion OTP (status 'active') -> bookings.php complete
   Future<void> _verifyOTP() async {
+    if (_loading) return;
     final entered = _otpCtrls.map((c) => c.text).join('');
     if (entered.length < 4) {
       setState(() => _otpError = 'Please enter all 4 digits');
       return;
     }
-    // Verify OTP via MySQL API
-    final otpResult = await ProviderApiService.verifyOtp(widget.bookingKey, entered);
-    final correctOtp = otpResult != null ? entered : '';
+    final isCompletion = _status == 'active';
+    setState(() { _loading = true; _otpError = ''; });
 
-    if (entered != correctOtp) {
-      setState(() => _otpError = 'Incorrect OTP. Ask customer to check their app.');
+    bool ok = false;
+    try {
+      if (isCompletion) {
+        ok = await ProviderApiService.completeBooking(widget.bookingKey, entered);
+      } else {
+        ok = (await ProviderApiService.verifyOtp(widget.bookingKey, entered)) != null;
+      }
+    } catch (e) {
+      ProviderApiService.lastError = 'Network error. Please try again.';
+    }
+    if (!mounted) return;
+
+    if (!ok) {
+      final err = ProviderApiService.lastError;
+      setState(() {
+        _loading = false;
+        _otpError = err.toLowerCase().contains('invalid')
+            ? 'Incorrect OTP. Ask customer to check their app.'
+            : (err.isNotEmpty ? err : 'Could not verify OTP. Please try again.');
+      });
       HapticFeedback.heavyImpact();
       for (final c in _otpCtrls) c.clear();
       _otpFocus[0].requestFocus();
       return;
     }
 
-    setState(() { _loading = true; _otpError = ''; });
-
-    // OTP verified — MySQL API already updated booking status to payment_pending
-
-    // Provider stats updated by MySQL API
-
-    setState(() { _loading = false; _status = 'payment_pending'; });
+    for (final c in _otpCtrls) c.clear();
+    setState(() {
+      _loading = false;
+      _completionRequested = false;
+      _status = isCompletion ? 'completed' : 'active';
+      if (isCompletion) _completedNotified = true;
+    });
 
     if (mounted) {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) => AlertDialog(
+        builder: (dCtx) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('OTP Verified! ✅', style: TextStyle(fontWeight: FontWeight.w800)),
-          content: const Text('Service verified! Waiting for customer to complete payment.'),
+          title: Text(isCompletion ? 'Job Completed! 🎉' : 'OTP Verified! ✅',
+              style: const TextStyle(fontWeight: FontWeight.w800)),
+          content: Text(isCompletion
+              ? 'The customer has been asked to pay. Payment status will update on your dashboard.'
+              : 'Service started. When the work is finished, tap "Complete Job".'),
           actions: [
             TextButton(
               onPressed: () {
-                // Close dialog
-                Navigator.pop(context);
-                // Close OTP screen and go back to dashboard
-                if (mounted) Navigator.pop(context);
+                Navigator.pop(dCtx);
+                // After completion go back to the dashboard
+                if (isCompletion && mounted) Navigator.pop(context);
               },
               child: const Text('OK', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
@@ -354,13 +436,20 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   }
 
   void _callCustomer() {
-    final phone = widget.booking['phone'] ?? '';
-    if (phone.isNotEmpty) launchUrl(Uri.parse('tel:$phone'));
+    final b = _bk;
+    final phone = (b['customer_phone'] ?? b['phone'] ?? '').toString();
+    if (phone.isNotEmpty) {
+      launchUrl(Uri.parse('tel:$phone'));
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer phone is shared once the booking is confirmed.'),
+        backgroundColor: AppColors.muted));
+    }
   }
 
   void _openMaps() {
-    final lat = widget.booking['lat'];
-    final lng = widget.booking['lng'];
+    final lat = _bk['lat'];
+    final lng = _bk['lng'];
 
     // Use GPS coordinates if available and valid
     if (lat != null && lng != null) {
@@ -372,7 +461,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       }
     }
     // Fallback to address
-    final address = Uri.encodeComponent(widget.booking['address'] ?? '');
+    final address = Uri.encodeComponent((_bk['address'] ?? '').toString());
     if (address.isNotEmpty) {
       launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$address&travelmode=driving'));
     }
@@ -380,7 +469,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final bk = widget.booking;
+    final bk = _bk;
+    final price = _priceOf(bk);
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -403,12 +493,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
               const Text('🔧', style: TextStyle(fontSize: 32)),
               const SizedBox(width: 12),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(bk['service'] ?? 'Service',
+                Text((bk['svc_name'] ?? bk['service'] ?? 'Service').toString(),
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
                 Text('Status: ${_statusLabel(_status)}',
                   style: const TextStyle(fontSize: 12, color: Colors.white70)),
               ])),
-              Text('₹${bk['price'] ?? bk['priceVal'] ?? 0}',
+              Text('₹$price',
                 style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white)),
             ]),
           ),
@@ -424,18 +514,18 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
               const Text('Customer Details',
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
               const SizedBox(height: 12),
-              _detailRow(Icons.person_rounded, 'Name', bk['customer'] ?? ''),
-              _detailRow(Icons.phone_rounded, 'Phone', bk['phone'] ?? ''),
+              _detailRow(Icons.person_rounded, 'Name', _customerName(bk)),
+              _detailRow(Icons.phone_rounded, 'Phone',
+                (bk['customer_phone'] ?? bk['phone'] ?? '').toString()),
               _detailRow(Icons.calendar_today_rounded, 'Date & Time',
-                '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
-              _detailRow(Icons.location_on_rounded, 'Address', bk['address'] ?? ''),
-              _detailRow(Icons.currency_rupee_rounded, 'Amount',
-                '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
+                '${bk['slot_date'] ?? bk['date'] ?? ''} at ${bk['slot_time'] ?? bk['time'] ?? ''}'),
+              _detailRow(Icons.location_on_rounded, 'Address', (bk['address'] ?? '').toString()),
+              _detailRow(Icons.currency_rupee_rounded, 'Amount', '₹$price'),
             ]),
           ),
 
           // Summary chips
-          if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
+          if (bk['summary'] is List && (bk['summary'] as List).isNotEmpty) ...[
             const SizedBox(height: 12),
             Container(
               width: double.infinity,
@@ -529,8 +619,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                   style: TextStyle(fontSize: 13, color: AppColors.brand, fontWeight: FontWeight.w600))),
                 TextButton(
                   onPressed: () {
-                    final counter = (_liveBooking['counterPrice'] as num?)?.toInt();
-                    final custName = _liveBooking['customerName']?.toString() ?? 'Customer';
+                    final counter = _counterPrice(_liveBooking);
+                    final custName = _customerName(_liveBooking);
                     _showNegotiationDialog(counter, custName, _liveBooking);
                   },
                   child: const Text('Respond', style: TextStyle(fontWeight: FontWeight.w800))),
@@ -552,32 +642,36 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   const Text('Final offer sent',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                  Text('₹${(_liveBooking['finalPrice'] as num?)?.toInt() ?? 0} — waiting for customer to accept',
+                  Text('₹${asInt(_liveBooking['final_price'] ?? _liveBooking['finalPrice'])} — waiting for customer to accept',
                     style: const TextStyle(fontSize: 12, color: AppColors.muted)),
                 ])),
               ])),
           ],
 
-          if (_status == 'accepted')
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _loading ? null : () => _updateStatus('active'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.brand,
-                  minimumSize: const Size(double.infinity, 52),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-                child: const Text('Start Service',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
-              ),
-            ),
+          // Confirmed — provider travels to customer, then enters the Start OTP
+          // the customer generates in their app (bookings.php verify_otp).
+          if (_status == 'confirmed' || _status == 'accepted') ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.greenSoft,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.green.withOpacity(0.3))),
+              child: const Row(children: [
+                Icon(Icons.check_circle_rounded, color: AppColors.green, size: 20),
+                SizedBox(width: 10),
+                Expanded(child: Text('Job confirmed! Head to the customer. When you arrive, ask them to generate the Start OTP in their app.',
+                  style: TextStyle(fontSize: 13, color: AppColors.ink, fontWeight: FontWeight.w600))),
+              ])),
+          ],
 
-          if (_status == 'active')
+          // Active — request completion OTP (server sends it to the customer)
+          if (_status == 'active' && !_completionRequested)
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _loading ? null : _initiateOTP,
+                onPressed: _loading ? null : () => _requestCompletion(),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.green,
                   minimumSize: const Size(double.infinity, 52),
@@ -587,36 +681,42 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                     ? const SizedBox(width: 22, height: 22,
                         child: CircularProgressIndicator(strokeWidth: 2.5,
                           valueColor: AlwaysStoppedAnimation(Colors.white)))
-                    : const Text('Complete Job (Get OTP)',
+                    : const Text('Complete Job',
                         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
               ),
             ),
 
-          // OTP entry
-          // Payment pending banner
-          if (_status == 'payment_pending') ...[
+          // Completed — payment status
+          if (_status == 'completed' || _status == 'payment_pending') ...[
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: AppColors.yellow.withOpacity(0.1),
+                color: (bk['payment_status'] == 'paid') ? AppColors.greenSoft : AppColors.yellow.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.yellow.withOpacity(0.4))),
-              child: const Column(children: [
+                border: Border.all(color: (bk['payment_status'] == 'paid')
+                    ? AppColors.green.withOpacity(0.4)
+                    : AppColors.yellow.withOpacity(0.4))),
+              child: Column(children: [
                 Row(children: [
-                  Icon(Icons.hourglass_top_rounded, color: AppColors.yellow, size: 22),
-                  SizedBox(width: 10),
-                  Expanded(child: Text('Awaiting Customer Payment',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink))),
+                  Icon(bk['payment_status'] == 'paid' ? Icons.check_circle_rounded : Icons.hourglass_top_rounded,
+                    color: bk['payment_status'] == 'paid' ? AppColors.green : AppColors.yellow, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(bk['payment_status'] == 'paid' ? 'Payment Received' : 'Awaiting Customer Payment',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink))),
                 ]),
-                SizedBox(height: 8),
-                Text('OTP verified! Waiting for customer to complete payment via the app. You will be notified when payment is done.',
-                  style: TextStyle(fontSize: 13, color: AppColors.muted, height: 1.4)),
+                const SizedBox(height: 8),
+                Text(bk['payment_status'] == 'paid'
+                    ? 'The customer has paid ₹$price.'
+                    : 'Job completed. Waiting for the customer to pay ₹$price. You will be notified when payment is done.',
+                  style: const TextStyle(fontSize: 13, color: AppColors.muted, height: 1.4)),
               ]),
             ),
           ],
 
-          if (_status == 'otp_sent' || _showOtpEntry) ...[
+          // OTP entry: Start OTP while confirmed, Completion OTP once requested
+          if (_status == 'confirmed' || _status == 'accepted' ||
+              (_status == 'active' && _completionRequested)) ...[
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(20),
@@ -628,10 +728,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
               child: Column(children: [
                 const Icon(Icons.lock_rounded, color: AppColors.green, size: 36),
                 const SizedBox(height: 12),
-                const Text('Enter OTP from Customer',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                Text(_status == 'active' ? 'Enter Completion OTP' : 'Enter Start OTP',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
                 const SizedBox(height: 6),
-                Text('Ask ${bk['customer'] ?? 'customer'} to read you the 4-digit code from their app.',
+                Text(_status == 'active'
+                    ? 'Ask ${_customerName(bk)} to read you the 4-digit completion code from their app once they are satisfied.'
+                    : 'Ask ${_customerName(bk)} to generate the Start OTP in their app and read you the 4-digit code.',
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 13, color: AppColors.muted)),
                 const SizedBox(height: 20),
@@ -691,36 +793,26 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                         ? const SizedBox(width: 22, height: 22,
                             child: CircularProgressIndicator(strokeWidth: 2.5,
                               valueColor: AlwaysStoppedAnimation(Colors.white)))
-                        : const Text('Verify OTP & Complete',
-                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+                        : Text(_status == 'active' ? 'Verify OTP & Complete Job' : 'Verify OTP & Start Job',
+                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
                   ),
                 ),
-                const SizedBox(height: 10),
-                // Resend OTP button — in case customer didn't receive
-                SizedBox(
-                  width: double.infinity,
-                  child: TextButton.icon(
-                    onPressed: _loading ? null : () async {
-                      // Clear existing OTP fields
-                      for (final c in _otpCtrls) c.clear();
-                      setState(() { _otpError = ''; });
-                      // Regenerate OTP
-                      await _initiateOTP();
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('New OTP sent to customer ✅'),
-                            backgroundColor: AppColors.green,
-                            duration: Duration(seconds: 3),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.refresh_rounded, color: AppColors.teal, size: 18),
-                    label: const Text('Resend OTP to Customer',
-                      style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w700)),
+                // Resend completion OTP — server re-sends the same OTP to the customer
+                if (_status == 'active') ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: TextButton.icon(
+                      onPressed: _loading ? null : () {
+                        setState(() { _otpError = ''; });
+                        _requestCompletion(resend: true);
+                      },
+                      icon: const Icon(Icons.refresh_rounded, color: AppColors.teal, size: 18),
+                      label: const Text('Resend OTP to Customer',
+                        style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w700)),
+                    ),
                   ),
-                ),
+                ],
               ]),
             ),
           ],
@@ -749,11 +841,17 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
   String _statusLabel(String s) {
     switch (s) {
+      case 'price_quoted': return 'Quote Sent — Waiting for Customer';
+      case 'negotiating': return 'Customer Negotiating';
+      case 'negotiation_final': return 'Final Offer Sent';
+      case 'confirmed': return 'Confirmed — Head to Customer';
+      case 'cancelled': return 'Cancelled';
+      case 'searching': return 'Released';
       case 'accepted': return 'Accepted — Ready to Start';
       case 'active': return 'In Progress';
       case 'otp_sent': return 'Waiting for OTP Verification';
       case 'payment_pending': return '⏳ Awaiting Customer Payment';
-      case 'completed': return '✅ Completed — Payment Received';
+      case 'completed': return '✅ Completed';
       default: return s;
     }
   }

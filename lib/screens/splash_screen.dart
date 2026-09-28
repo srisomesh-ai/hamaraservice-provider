@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
@@ -31,11 +32,29 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     final introSeen   = prefs.getBool('provider_intro_seen') ?? false;
     final loggedIn    = prefs.getBool('provider_logged_in') ?? false;
     final providerId  = prefs.getString('provider_id') ?? '';
+    final token       = prefs.getString('provider_jwt') ?? '';
+
+    // Re-check the cached account status — only approved providers may
+    // skip the login screen.
+    String status = '';
+    try {
+      final raw = prefs.getString('provider_data');
+      if (raw != null && raw.isNotEmpty) {
+        final data = jsonDecode(raw);
+        if (data is Map) status = data['status']?.toString() ?? '';
+      }
+    } catch (_) {}
+    final canAutoLogin = loggedIn && providerId.isNotEmpty &&
+        token.isNotEmpty && status == 'approved';
+    if (loggedIn && !canAutoLogin) {
+      await prefs.setBool('provider_logged_in', false);
+    }
+    if (!mounted) return;
 
     if (!introSeen) {
       Navigator.pushReplacement(context,
         MaterialPageRoute(builder: (_) => const IntroScreen()));
-    } else if (loggedIn && providerId.isNotEmpty) {
+    } else if (canAutoLogin) {
       Navigator.pushReplacement(context,
         MaterialPageRoute(builder: (_) => DashboardScreen(providerId: providerId)));
     } else {

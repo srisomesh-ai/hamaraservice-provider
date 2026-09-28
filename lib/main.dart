@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'services/provider_api_service.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -108,13 +108,19 @@ void main() async {
       } catch (_) {}
     });
 
-    // Save FCM token to Firebase so server can send push notifications
+    // Save FCM token to the HamaraService API so the server can push to
+    // this provider. Providers authenticate with a JWT (no FirebaseAuth user),
+    // so only save when a provider is logged in with a stored token.
+    // (The dashboard also saves the token after every login.)
     Future<void> saveFcmToken(String token) async {
       try {
-        final uid = FirebaseAuth.instance.currentUser?.uid;
-        if (uid != null && token.isNotEmpty) {
-          await ProviderApiService.saveFcmToken(token);
-          print('FCM Token saved for provider: $uid');
+        if (token.isEmpty) return;
+        final prefs = await SharedPreferences.getInstance();
+        final loggedIn = prefs.getBool('provider_logged_in') ?? false;
+        final jwt = await ProviderApiService.getToken();
+        if (loggedIn && jwt.isNotEmpty) {
+          final ok = await ProviderApiService.saveFcmToken(token);
+          print('FCM Token saved for provider: $ok');
         }
       } catch (e) {
         print('FCM save error: $e');

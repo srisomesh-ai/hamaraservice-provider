@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:firebase_database/firebase_database.dart';
 import '../services/provider_api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
@@ -226,11 +225,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       // Divider
                       const SizedBox(height: 8),
                       Row(children: [
-                        const Expanded(child: Divider(color: Colors.white24)),
+                        // (inside the white card — use dark-on-light colours)
+                        const Expanded(child: Divider(color: AppColors.line)),
                         const Padding(
                           padding: EdgeInsets.symmetric(horizontal: 12),
-                          child: Text('OR', style: TextStyle(color: Colors.white54, fontSize: 13))),
-                        const Expanded(child: Divider(color: Colors.white24)),
+                          child: Text('OR', style: TextStyle(color: AppColors.muted, fontSize: 13))),
+                        const Expanded(child: Divider(color: AppColors.line)),
                       ]),
                       const SizedBox(height: 12),
                       // Big Register button
@@ -255,9 +255,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      const Text('New to HamaraService? Create your provider account',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white54, fontSize: 11)),
+                      const SizedBox(
+                        width: double.infinity,
+                        child: Text('New to HamaraService? Create your provider account',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: AppColors.muted, fontSize: 11))),
                     ],
                   ),
                 ),

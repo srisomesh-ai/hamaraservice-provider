@@ -38,7 +38,7 @@ class _State extends State<ServicesScreen> {
       for (final s in svcs) {
         final id = s['svc_id']?.toString() ?? '';
         if (id.isEmpty) continue;
-        _enabled[id] = s['enabled'] == 1 || s['enabled'] == true;
+        _enabled[id] = s['enabled'] == 1 || s['enabled'] == true || s['enabled'] == '1';
       }
     } catch (_) {}
 
@@ -96,7 +96,7 @@ class _State extends State<ServicesScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Ref prices load error: \$e');
+      debugPrint('Ref prices load error: $e');
     }
 
     if (mounted) setState(() => _loading = false);
@@ -116,14 +116,35 @@ class _State extends State<ServicesScreen> {
         'min_price': _getMinPrice(s.id),
         'max_price': _getMaxPrice(s.id),
       }).toList();
-      await ProviderApiService.saveMyServices(svcsList);
+      final savedOk = await ProviderApiService.saveMyServices(svcsList);
+      if (!savedOk) {
+        if (mounted) {
+          final msg = ProviderApiService.lastError;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(msg.isNotEmpty ? 'Could not save services: $msg' : 'Could not save services. Please try again.'),
+            backgroundColor: AppColors.red));
+          setState(() => _saving = false);
+        }
+        return;
+      }
 
       // Save per-option prices
+      int priceFailures = 0;
       for (final svcId in _optionPrices.keys) {
         final prices = _optionPrices[svcId];
         if (prices != null && prices.isNotEmpty) {
-          await ProviderApiService.saveServiceOptionPrices(svcId, prices);
+          final ok = await ProviderApiService.saveServiceOptionPrices(svcId, prices);
+          if (!ok) priceFailures++;
         }
+      }
+      if (priceFailures > 0) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Services saved, but prices for $priceFailures service(s) failed to save. Please try again.'),
+            backgroundColor: AppColors.red));
+          setState(() => _saving = false);
+        }
+        return;
       }
 
       final count = _enabled.values.where((v) => v).length;
@@ -180,14 +201,15 @@ class _State extends State<ServicesScreen> {
   Future<void> _autoSaveService(HSService svc, Map<String,int> prices) async {
     try {
       // Save option prices
+      bool ok = true;
       if (prices.isNotEmpty) {
-        await ProviderApiService.saveServiceOptionPrices(svc.id, prices);
+        ok = await ProviderApiService.saveServiceOptionPrices(svc.id, prices);
       }
       // Calculate min/max and update service record
       final vals = prices.values.where((v) => v > 0).toList();
       final min = vals.isEmpty ? 0 : vals.reduce((a,b) => a<b?a:b);
       final max = vals.isEmpty ? 0 : vals.reduce((a,b) => a>b?a:b);
-      await ProviderApiService.saveMyServices([{
+      final svcOk = await ProviderApiService.saveMyServices([{
         'svc_id':    svc.id,
         'enabled':   (_enabled[svc.id] == true) ? 1 : 0,
         'svc_name':  svc.name,
@@ -196,6 +218,16 @@ class _State extends State<ServicesScreen> {
         'min_price': min,
         'max_price': max,
       }]);
+      if (!ok || !svcOk) {
+        if (mounted) {
+          final msg = ProviderApiService.lastError;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Could not save ${svc.name} prices${msg.isNotEmpty ? ': $msg' : ''}'),
+            backgroundColor: AppColors.red,
+          ));
+        }
+        return;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('✅ ${svc.name} prices saved'),

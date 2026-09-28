@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
 import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
+import '../utils/parse.dart';
 
 class RatingsScreen extends StatefulWidget {
   final String providerId;
@@ -25,11 +25,12 @@ class _RatingsScreenState extends State<RatingsScreen> {
     try {
       final reviews = await ProviderApiService.getReviews(widget.providerId);
       double total = 0;
-      for (final r in reviews) total += ((r['rating'] ?? 0) as num).toDouble();
+      for (final r in reviews) total += asDouble(r['rating']);
       final avg = reviews.isEmpty ? 0.0 : total / reviews.length;
+      if (!mounted) return;
       setState(() { _reviews = reviews; _avgRating = avg; _loading = false; });
     } catch (e) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -83,7 +84,8 @@ class _RatingsScreenState extends State<RatingsScreen> {
 
                       // Reviews list
                       ..._reviews.map((r) {
-                        final rating = ((r['rating'] ?? r['stars'] ?? 0) as num).toInt();
+                        final rating = asInt(r['rating'] ?? r['stars']);
+                        final custName = (r['customer_name'] ?? r['customerName'] ?? r['customer'] ?? '').toString();
                         return Container(
                           margin: const EdgeInsets.only(bottom: 12),
                           padding: const EdgeInsets.all(16),
@@ -96,27 +98,27 @@ class _RatingsScreenState extends State<RatingsScreen> {
                             Row(children: [
                               CircleAvatar(
                                 radius: 20, backgroundColor: AppColors.tealSoft,
-                                child: Text((r['customerName'] ?? r['customer'] ?? 'C')[0].toUpperCase(),
+                                child: Text(initialOf(custName, 'C'),
                                   style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.teal)),
                               ),
                               const SizedBox(width: 10),
                               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                Text(r['customerName'] ?? r['customer'] ?? 'Customer',
+                                Text(custName.isNotEmpty ? custName : 'Customer',
                                   style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
-                                Text(r['service'] ?? '',
+                                Text((r['svc_name'] ?? r['service'] ?? '').toString(),
                                   style: const TextStyle(fontSize: 11, color: AppColors.muted)),
                               ])),
                               Row(children: List.generate(5, (i) => Icon(
                                 i < rating ? Icons.star_rounded : Icons.star_outline_rounded,
                                 color: AppColors.yellow, size: 16))),
                             ]),
-                            if ((r['comment'] ?? '').toString().isNotEmpty) ...[
+                            if ((r['review'] ?? r['comment'] ?? '').toString().isNotEmpty) ...[
                               const SizedBox(height: 10),
-                              Text(r['comment'] ?? '',
+                              Text((r['review'] ?? r['comment'] ?? '').toString(),
                                 style: const TextStyle(fontSize: 13, color: AppColors.ink2, height: 1.4)),
                             ],
                             const SizedBox(height: 6),
-                            Text((r['createdAt'] ?? '').toString().substring(0, 10),
+                            Text(dateOnly(r['created_at'] ?? r['completed_at'] ?? r['createdAt']),
                               style: const TextStyle(fontSize: 11, color: AppColors.muted)),
                           ]),
                         );

@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
+import 'login_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String prefillEmail;
@@ -216,6 +217,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'address':      _address,
         'city':         _address.contains(',') ? _address.split(',').last.trim() : _address,
         'radius':       _radius,
+        'radius_km':    _radius,
         'status':       'pending',
         'available':    false,
         'rating':       0,
@@ -230,13 +232,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       // Register via MySQL API
       provider['servicesMap'] = servicesMap;
-      final success = await ProviderApiService.register(provider);
-      if (!success) {
-        setState(() { _submitting = false; _error = 'Registration failed. Please try again.'; });
+      final serverId = await ProviderApiService.register(provider);
+      if (serverId == null) {
+        final msg = ProviderApiService.lastError;
+        setState(() { _submitting = false; _error = msg.isNotEmpty ? msg : 'Registration failed. Please try again.'; });
         return;
       }
 
-      setState(() { _submitting = false; _generatedId = id; });
+      // Show the ID the server actually assigned (may differ from the local guess)
+      setState(() { _submitting = false; _generatedId = serverId.isNotEmpty ? serverId : id; });
     } catch (e) {
       setState(() { _submitting = false; _error = 'Registration failed. Please try again.'; });
     }
@@ -673,7 +677,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   const SizedBox(height: 8),
                   Text(_generatedId, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: AppColors.teal)),
                   const SizedBox(height: 6),
-                  const Text('Save this — you\'ll need it to login after approval',
+                  const Text('Keep this for reference. After approval, log in with your email and password.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12, color: AppColors.muted)),
                 ]),
@@ -701,7 +705,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
+                  // Register may have replaced the login route (pushReplacement),
+                  // so pop() would leave an empty stack — rebuild with Login only.
+                  onPressed: () => Navigator.pushAndRemoveUntil(context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                    (route) => false),
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 52),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),

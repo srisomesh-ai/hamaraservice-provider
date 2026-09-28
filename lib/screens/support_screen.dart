@@ -49,7 +49,7 @@ class _SupportScreenState extends State<SupportScreen> {
 
   void _callSupport() => launchUrl(Uri.parse('tel:+919999999999'));
   void _whatsappSupport() => launchUrl(Uri.parse('https://wa.me/919999999999?text=Hi, I need help with my provider account'));
-  void _emailSupport() => launchUrl(Uri.parse('mailto:support@hamaraservice.in'));
+  void _emailSupport() => launchUrl(Uri.parse('mailto:info@hamaraservice.com'));
 
   @override
   void dispose() { _msgCtrl.dispose(); super.dispose(); }

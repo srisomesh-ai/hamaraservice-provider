@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
 import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
+import '../utils/parse.dart';
 import 'active_booking_screen.dart';
+import 'quote_dialog.dart';
 
 class OpenJobsScreen extends StatefulWidget {
   final String providerId;
@@ -18,6 +19,7 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
   List<Map<String, dynamic>> _openJobs = [];
   List<Map<String, dynamic>> _acceptedJobs = [];
   String _filter = 'open';
+  bool _accepting = false;
 
   @override
   void initState() {
@@ -29,24 +31,18 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
     try {
       final openJobs = await ProviderApiService.getOpenBookings(widget.providerId);
       final all = <String, dynamic>{for (int i=0; i<openJobs.length; i++) openJobs[i]['id']?.toString() ?? '$i': openJobs[i]};
-      // Handle services as Map {SVC001:true} or List format
-    final rawSvcs = widget.providerData?['services'];
-    final providerServiceIds = <String>{};
-    if (rawSvcs is Map) {
-      rawSvcs.forEach((k,v){ if(v==true) providerServiceIds.add(k.toString()); });
-    } else if (rawSvcs is List) {
-      for (final s in rawSvcs) { providerServiceIds.add(s.toString()); }
-    }
+      // services may be a List of ids, a List of maps (svc_id/svcId/id) or a Map {id: true}
+      final providerServiceIds = serviceIdsOf(widget.providerData?['services']);
 
       List<Map<String, dynamic>> open = [];
       List<Map<String, dynamic>> accepted = [];
 
       for (final entry in all.entries) {
         final b = Map<String, dynamic>.from(entry.value as Map);
-        // Check service match by svcId or name
+        // Check service match by svc_id or name
         if (providerServiceIds.isNotEmpty) {
-          final bSvcId = b['svcId']?.toString() ?? '';
-          final bName = (b['service'] ?? '').toString().toLowerCase();
+          final bSvcId = bookingServiceIdOf(b);
+          final bName = (b['svc_name'] ?? b['service'] ?? '').toString().toLowerCase();
           final match = providerServiceIds.contains(bSvcId) ||
               providerServiceIds.any((id) => id.toLowerCase() == bName);
           if (!match) continue;
@@ -60,54 +56,87 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
         }
       }
 
-      open.sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
-      accepted.sort((a, b) => (b['acceptedAt'] ?? '').compareTo(a['acceptedAt'] ?? ''));
+      open.sort((a, b) => (b['created_at'] ?? b['createdAt'] ?? '').toString()
+          .compareTo((a['created_at'] ?? a['createdAt'] ?? '').toString()));
+      accepted.sort((a, b) => (b['acceptedAt'] ?? '').toString().compareTo((a['acceptedAt'] ?? '').toString()));
 
+      if (!mounted) return;
       setState(() { _openJobs = open; _acceptedJobs = accepted.take(10).toList(); _loading = false; });
     } catch (e) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
+  void _snack(String msg, {Color color = AppColors.red}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: color));
+  }
+
   Future<void> _acceptJob(Map<String, dynamic> booking) async {
-    final bookingKey = booking['id'] as String;
+    if (_accepting) return;
+    final bookingKey = (booking['id'] ?? '').toString();
+    if (bookingKey.isEmpty) return;
 
-    // Check booking still available via MySQL
-    final bkCheck = await ProviderApiService.getBooking(bookingKey);
-    if (bkCheck == null || bkCheck['status'] != 'active') {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('This booking is no longer available.'), backgroundColor: AppColors.red));
-      _loadJobs();
+    // Provider must be approved and online to take jobs.
+    // Use the freshest cached profile (the dashboard refreshes it).
+    Map<String, dynamic>? prov = widget.providerData;
+    try {
+      prov = await ProviderApiService.getCachedProvider() ?? prov;
+    } catch (_) {}
+    if (!mounted) return;
+    if ((prov?['status'] ?? '').toString() != 'approved') {
+      _snack('Your account is not approved yet.');
+      return;
+    }
+    final avail = prov?['available'];
+    if (!(avail == 1 || avail == true || avail == '1')) {
+      _snack('Go online from the Overview tab to accept jobs.');
       return;
     }
 
-    final current = bkCheck;
-    if (current['acceptedBy'] != null || (current['status'] != 'searching' && current['status'] != 'pending')) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('This job was accepted by another provider.'), backgroundColor: AppColors.red));
+    setState(() => _accepting = true);
+    try {
+      // Check booking is still open
+      final bkCheck = await ProviderApiService.getBooking(bookingKey);
+      final st = bkCheck?['status']?.toString() ?? '';
+      if (bkCheck == null || (st != 'searching' && st != 'pending')) {
+        _snack(bkCheck == null
+            ? 'This booking is no longer available.'
+            : 'This job was accepted by another provider.');
+        _loadJobs();
+        return;
+      }
+      if (!mounted) return;
+
+      // Ask for the quote (same dialog as the dashboard alert)
+      final price = await showQuoteDialog(context, widget.providerId, booking);
+      if (price == null || price <= 0) return;
+
+      final ok = await ProviderApiService.acceptBooking(bookingKey, price);
+      if (!ok) {
+        final msg = ProviderApiService.lastError;
+        _snack(msg == 'Booking not available'
+            ? 'This job was accepted by another provider.'
+            : (msg.isNotEmpty ? msg : 'Could not accept job. Please try again.'));
+        _loadJobs();
+        return;
+      }
+
+      if (mounted) {
+        Navigator.push(context, MaterialPageRoute(
+          builder: (_) => ActiveBookingScreen(
+            bookingKey: bookingKey,
+            booking: {...booking, 'status': 'price_quoted', 'quoted_price': price, 'quotedPrice': price},
+            providerId: widget.providerId,
+          )));
+      }
       _loadJobs();
-      return;
+    } catch (e) {
+      _snack('Error: $e');
+    } finally {
+      if (mounted) setState(() => _accepting = false);
     }
-
-    final providerInfo = {
-      'id': widget.providerId,
-      'name': widget.providerData?['name'] ?? '',
-      'phone': widget.providerData?['phone'] ?? '',
-    };
-
-    // Accept + quote price via MySQL API
-    // Get quoted price from booking data or ask provider
-    final price = (booking['quoted_price'] as num?)?.toInt()
-        ?? (booking['base_price'] as num?)?.toInt()
-        ?? 0;
-    await ProviderApiService.acceptBooking(bookingKey, price);
-
-    if (mounted) Navigator.push(context, MaterialPageRoute(
-      builder: (_) => ActiveBookingScreen(
-        bookingKey: bookingKey,
-        booking: booking,
-        providerId: widget.providerId,
-      )));
   }
 
   @override
@@ -215,7 +244,7 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Expanded(child: Text(b['service'] ?? 'Service',
+          Expanded(child: Text((b['svc_name'] ?? b['service'] ?? 'Service').toString(),
             style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
               color: isAcceptedByOther ? AppColors.muted : AppColors.ink))),
           Container(
@@ -230,17 +259,19 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
           ),
         ]),
         const SizedBox(height: 8),
-        _row(Icons.currency_rupee_rounded, '₹${b['price'] ?? b['priceVal'] ?? 0}'),
-        _row(Icons.calendar_today_rounded, '${b['date'] ?? ''} at ${b['time'] ?? ''}'),
-        _row(Icons.location_on_rounded, b['address'] ?? ''),
-        _row(Icons.person_rounded, '${b['customer'] ?? ''} · ${b['phone'] ?? ''}'),
+        _row(Icons.currency_rupee_rounded, asInt(b['price'] ?? b['priceVal']) > 0
+            ? '₹${asInt(b['price'] ?? b['priceVal'])}'
+            : 'You quote the price'),
+        _row(Icons.calendar_today_rounded, '${b['slot_date'] ?? b['date'] ?? ''} at ${b['slot_time'] ?? b['time'] ?? ''}'),
+        _row(Icons.location_on_rounded, (b['address'] ?? '').toString()),
+        _row(Icons.person_rounded, (b['customer_name'] ?? b['customer'] ?? '').toString()),
 
         if (canAccept) ...[
           const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: () => _acceptJob(b),
+              onPressed: _accepting ? null : () => _acceptJob(b),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.green,
                 minimumSize: const Size(double.infinity, 44),

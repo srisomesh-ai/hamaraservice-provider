@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
 import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
+import '../utils/parse.dart';
 
 // Commission rates per service (matching web admin)
 const Map<String, double> _commissionRates = {
@@ -90,15 +90,16 @@ class _EarningsScreenState extends State<EarningsScreen> {
 
       // Load from MySQL — balance and history
       final balance = await ProviderApiService.getBalance(widget.providerId);
-      totalNet  = ((balance['total_earned']   ?? 0) as num).toDouble();
-      withdrawn = ((balance['withdrawn']       ?? 0) as num).toDouble();
+      totalNet  = asDouble(balance['total_earned']);
+      withdrawn = asDouble(balance['withdrawn']);
 
       // Load booking history
       final bookings = await ProviderApiService.getBookingHistory(widget.providerId);
       for (final b in bookings) {
         if (b['status'] == 'completed') {
-          final paid     = ((b['amount'] ?? b['confirmed_price'] ?? 0) as num).toDouble();
-          final netEarned= ((b['provider_earns'] ?? 0) as num).toDouble();
+          var paid       = asDouble(b['amount']);
+          if (paid <= 0) paid = asDouble(b['confirmed_price']);
+          final netEarned= asDouble(b['provider_earns']);
           final commAmt  = paid - netEarned;
           final commRate = paid > 0 ? (commAmt / paid * 100) : 15.0;
           totalPaid += paid; totalComm += commAmt;
@@ -116,18 +117,24 @@ class _EarningsScreenState extends State<EarningsScreen> {
           });
         }
       }
-      jobs.sort((a,b) => (b['completedAt'] as String).compareTo(a['completedAt'] as String));
+      jobs.sort((a,b) => (b['completedAt'] ?? '').toString().compareTo((a['completedAt'] ?? '').toString()));
 
       // Load payout history
       final payouts = await ProviderApiService.getPayoutHistory(widget.providerId);
       for (final p in payouts) {
-        final amt = ((p['amount'] ?? 0) as num).toDouble();
+        final amt = asDouble(p['amount']);
         withdrawals.add(p);
         if (p['status'] == 'pending') withdrawn += amt;
       }
 
-      final available = totalNet - withdrawn;
+      var available = totalNet - withdrawn;
+      // Server's pending_earned is the authoritative withdrawable balance
+      // (payouts.php checks it); prefer it when present.
+      if (balance.containsKey('pending_earned')) {
+        available = asDouble(balance['pending_earned']);
+      }
 
+      if (!mounted) return;
       setState(() {
         _totalCustomerPaid = totalPaid;
         _totalCommission = totalComm;
@@ -139,7 +146,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
         _loading = false;
       });
     } catch (e) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -169,12 +176,21 @@ class _EarningsScreenState extends State<EarningsScreen> {
 
     setState(() => _requesting = true);
     try {
-      await ProviderApiService.requestPayout({
+      final ok = await ProviderApiService.requestPayout({
         'amount':       amount.toInt(),
         'account_type': _bankCtrl.text.contains('@') ? 'upi' : 'bank',
         'upi_id':       _bankCtrl.text.contains('@') ? _bankCtrl.text.trim() : '',
         'account_no':   _bankCtrl.text.contains('@') ? '' : _bankCtrl.text.trim(),
       });
+      if (!mounted) return;
+      if (!ok) {
+        final msg = ProviderApiService.lastError;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(msg.isNotEmpty ? msg : 'Withdrawal request failed. Please try again.'),
+            backgroundColor: AppColors.red));
+        setState(() => _requesting = false);
+        return;
+      }
 
       _amountCtrl.clear();
       _bankCtrl.clear();
@@ -185,10 +201,12 @@ class _EarningsScreenState extends State<EarningsScreen> {
               backgroundColor: AppColors.green, duration: Duration(seconds: 4)));
       _loadData();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
+      }
     }
-    setState(() => _requesting = false);
+    if (mounted) setState(() => _requesting = false);
   }
 
   void _showWithdrawDialog() {
@@ -372,8 +390,8 @@ class _EarningsScreenState extends State<EarningsScreen> {
                           const SizedBox(width: 12),
                           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             Text('Rs.${w['amount'] ?? 0}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                            Text(w['bankDetails'] ?? '', style: const TextStyle(fontSize: 11, color: AppColors.muted)),
-                            Text((w['requestedAt'] ?? '').toString().substring(0, 10),
+                            Text((w['upi_id'] ?? w['bankDetails'] ?? '').toString(), style: const TextStyle(fontSize: 11, color: AppColors.muted)),
+                            Text(dateOnly(w['requested_at'] ?? w['requestedAt']),
                                 style: const TextStyle(fontSize: 10, color: AppColors.muted)),
                           ])),
                           Container(

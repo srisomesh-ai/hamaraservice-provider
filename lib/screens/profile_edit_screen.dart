@@ -59,7 +59,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
         photoUrl = await ref.getDownloadURL();
       }
 
-      await ProviderApiService.updateProfile({
+      final ok = await ProviderApiService.updateProfile({
         'name':      _nameCtrl.text.trim(),
         'phone':     _phoneCtrl.text.trim(),
         'bio':       _bioCtrl.text.trim(),
@@ -67,6 +67,17 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
         if (photoUrl != null) 'photo': photoUrl,
         'updatedAt': DateTime.now().toIso8601String(),
       });
+
+      if (!ok) {
+        if (mounted) {
+          final msg = ProviderApiService.lastError;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(msg.isNotEmpty ? msg : 'Could not update profile. Please try again.'),
+            backgroundColor: AppColors.red));
+          setState(() => _saving = false);
+        }
+        return;
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -77,7 +88,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
     }
-    setState(() => _saving = false);
+    if (mounted) setState(() => _saving = false);
   }
 
   @override
