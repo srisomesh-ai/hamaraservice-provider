@@ -3,19 +3,17 @@ import 'services/provider_api_service.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'utils/theme.dart';
 import 'screens/splash_screen.dart';
-import 'firebase_options.dart';
 
 // Global FLNP instance — must be global to use inside async listeners
 final FlutterLocalNotificationsPlugin flnp = FlutterLocalNotificationsPlugin();
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await Firebase.initializeApp();
 
   // Data-only messages need to be shown manually
   final title = message.data['title'] ?? message.notification?.title ?? 'HamaraService';
@@ -52,7 +50,10 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    // No explicit options: on Android the native side is configured from
+    // android/app/google-services.json (written by CI from a secret), which
+    // carries the real app id.
+    await Firebase.initializeApp();
 
     // Initialize local notifications
     await flnp.initialize(

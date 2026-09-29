@@ -17,6 +17,10 @@ class ProviderApiService {
   /// after a call reported failure.
   static String lastError = '';
 
+  /// HTTP status of the most recent failed API call (e.g. 429 when too many
+  /// wrong OTP attempts were made). Read it only right after a failure.
+  static int lastStatus = 0;
+
   static Map<String,dynamic> _decode(http.Response resp) {
     Map<String,dynamic> res;
     try {
@@ -25,12 +29,27 @@ class ProviderApiService {
           ? decoded
           : <String,dynamic>{'success': false, 'error': 'Unexpected server response'};
     } catch (_) {
-      res = <String,dynamic>{'success': false, 'error': 'Server error (${resp.statusCode})'};
+      res = <String,dynamic>{
+        'success': false,
+        'error': resp.statusCode == 429
+            ? 'Too many attempts. Please wait a moment and try again.'
+            : 'Server error (${resp.statusCode})',
+      };
+    }
+    // A non-2xx status is always a failure, whatever the body says.
+    if (resp.statusCode >= 400 && res['success'] == true) {
+      res = {...res, 'success': false};
     }
     // Only written on failure, so a concurrent successful poll can't wipe
     // the message before the failing caller reads it.
     if (res['success'] != true) {
-      lastError = (res['error'] ?? res['message'] ?? 'Request failed').toString();
+      lastStatus = resp.statusCode;
+      final err = (res['error'] ?? res['message'] ?? '').toString();
+      lastError = err.isNotEmpty
+          ? err
+          : (resp.statusCode == 429
+              ? 'Too many attempts. Please wait a moment and try again.'
+              : 'Request failed');
     }
     return res;
   }
@@ -341,11 +360,53 @@ class ProviderApiService {
     return res['success'] == true;
   }
 
-  /// Cancel/decline booking
-  static Future<bool> cancelBooking(String bookingId) async {
+  /// Genuine cancellation of a booking (stored with cancel_reason and
+  /// cancelled_by='provider'). To back out of a job before work starts use
+  /// [releaseBooking] instead, which returns it to other providers.
+  static Future<bool> cancelBooking(String bookingId, {String reason = ''}) async {
+    final res = await _post('bookings.php', {
+      'booking_id': bookingId,
+      if (reason.isNotEmpty) 'reason': reason,
+    }, params: {'action': 'cancel'});
+    return res['success'] == true;
+  }
+
+  /// Assigned provider backs out before work starts (price_quoted,
+  /// negotiating, negotiation_final, confirmed). The booking goes back to
+  /// 'searching' and the server notifies the customer.
+  static Future<bool> releaseBooking(String bookingId) async {
     final res = await _post('bookings.php',
         {'booking_id': bookingId},
-        params: {'action': 'cancel'});
+        params: {'action': 'release'});
+    return res['success'] == true;
+  }
+
+  /// Live location while travelling to / working on a confirmed|active job.
+  static Future<bool> trackLocation(String bookingId, double lat, double lng) async {
+    final res = await _post('bookings.php', {
+      'booking_id': bookingId,
+      'lat':        lat,
+      'lng':        lng,
+    }, params: {'action': 'track'});
+    return res['success'] == true;
+  }
+
+  /// Provider rates the customer (once) after a completed booking.
+  static Future<bool> rateCustomer(String bookingId, int rating, {String comment = ''}) async {
+    final res = await _post('bookings.php', {
+      'booking_id': bookingId,
+      'rating':     rating,
+      if (comment.isNotEmpty) 'comment': comment,
+    }, params: {'action': 'rate_customer'});
+    return res['success'] == true;
+  }
+
+  /// Provider confirms the customer's cash payment (payment_status
+  /// 'cash_pending' -> 'paid').
+  static Future<bool> markPaid(String bookingId) async {
+    final res = await _post('bookings.php',
+        {'booking_id': bookingId},
+        params: {'action': 'mark_paid'});
     return res['success'] == true;
   }
 
@@ -384,6 +445,36 @@ class ProviderApiService {
       return (res['data'] as List).cast<Map<String,dynamic>>();
     }
     return [];
+  }
+
+  /// Cancels a withdrawal request that is still 'pending'; the amount is
+  /// returned to the withdrawable balance.
+  static Future<bool> cancelPayout(String payoutId) async {
+    final res = await _post('payouts.php',
+        {'payout_id': payoutId},
+        params: {'action': 'cancel'});
+    return res['success'] == true;
+  }
+
+  /// Penalties applied to this provider (provider sees only their own).
+  static Future<List<Map<String,dynamic>>> getPenalties() async {
+    final res = await _get('penalties.php', params: {'action': 'list'});
+    if (res['success'] != true) return [];
+    final d = res['data'];
+    final list = d is List ? d : (d is Map ? (d['rows'] ?? d['penalties']) : null);
+    if (list is! List) return [];
+    return list.whereType<Map>().map((m) => Map<String,dynamic>.from(m)).toList();
+  }
+
+  // ── AVAILABILITY SCHEDULE ────────────────────────────────
+
+  /// Weekly schedule: {mon:{on:true,from:"09:00",to:"18:00"}, ... sun}.
+  /// Read it back from [getProfile] (`schedule`).
+  static Future<bool> saveSchedule(Map<String,dynamic> schedule) async {
+    final res = await _post('providers.php',
+        {'schedule': schedule},
+        params: {'action': 'schedule'});
+    return res['success'] == true;
   }
 
   // ── REVIEWS ──────────────────────────────────────────────

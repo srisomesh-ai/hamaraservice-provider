@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import '../services/provider_api_service.dart';
-import 'package:flutter/services.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../utils/theme.dart';

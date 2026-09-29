@@ -3,48 +3,6 @@ import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
 import '../utils/parse.dart';
 
-// Commission rates per service (matching web admin)
-const Map<String, double> _commissionRates = {
-  // Current catalog names
-  'House Maid': 10, 'Deep Cleaning': 12, 'Bathroom Cleaning': 10,
-  'Kitchen Cleaning': 12, 'Sofa / Carpet Cleaning': 12, 'Laundry / Ironing': 10,
-  'Pest Control': 10, 'Gardener': 10, 'AC Cleaning & Repair': 15,
-  'Home Appliance Repair': 18, 'Water Purifier Service': 15,
-  'Plumber': 20, 'Electrician': 20, 'Carpenter': 12, 'Painter': 12,
-  'CCTV Installation': 15, 'Solar Panel Cleaning': 12,
-  'Car / Bike Wash': 10, 'Car & Bike Mechanic': 15,
-  'Cook / Cooking Person': 10, "Men's Haircut at Home": 12,
-  "Women's Haircut & Beauty": 12, 'Full Body Massage': 15,
-  'Gym / Fitness Trainer': 15, 'Doctor Visit at Home': 15,
-  'Nurse Visit at Home': 15, 'Lab Test Collection': 15,
-  'Babysitter / Nanny': 10, 'Elderly Care': 10,
-  'Driver': 15, 'Security Guard & Bouncers': 10,
-  // Legacy names for backward compatibility
-  'AC Service': 12, 'AC Cleaning': 12, 'AC Repair': 18,
-  'Appliance Repair': 18, 'Car Wash': 10, 'Bike Wash': 10,
-  'Car Mechanic': 15, 'Doctor Visit': 15, 'Nurse Visit': 15,
-  'Lab Test': 15, 'Fitness Trainer': 15, 'CCTV': 15, 'Solar Panel': 12,
-};
-
-double _getCommission(String service) {
-  final s = service.toLowerCase().trim();
-  // Exact name match first (most reliable)
-  for (final entry in _commissionRates.entries) {
-    if (s == entry.key.toLowerCase()) return entry.value;
-  }
-  // Partial match fallback
-  for (final entry in _commissionRates.entries) {
-    if (s.contains(entry.key.toLowerCase())) return entry.value;
-  }
-  // Keyword fallback for unknown services
-  if (s.contains('electrician') || s.contains('plumber')) return 20;
-  if (s.contains('appliance') || s.contains('repair')) return 18;
-  if (s.contains('doctor') || s.contains('nurse') || s.contains('lab')) return 15;
-  if (s.contains('fitness') || s.contains('massage') || s.contains('beauty')) return 15;
-  if (s.contains('mechanic') || s.contains('driver') || s.contains('cctv')) return 15;
-  return 10; // default 10%
-}
-
 class EarningsScreen extends StatefulWidget {
   final String providerId;
   const EarningsScreen({super.key, required this.providerId});
@@ -61,7 +19,9 @@ class _EarningsScreenState extends State<EarningsScreen> {
   double _availableBalance = 0;
   List<Map<String, dynamic>> _jobs = [];
   List<Map<String, dynamic>> _withdrawals = [];
+  List<Map<String, dynamic>> _penalties = [];
   bool _requesting = false;
+  String? _cancellingPayoutId;
   final _amountCtrl = TextEditingController();
   final _bankCtrl = TextEditingController();
 
@@ -119,6 +79,12 @@ class _EarningsScreenState extends State<EarningsScreen> {
       }
       jobs.sort((a,b) => (b['completedAt'] ?? '').toString().compareTo((a['completedAt'] ?? '').toString()));
 
+      // Penalties (own only); optional — ignore failures
+      List<Map<String, dynamic>> penalties = [];
+      try {
+        penalties = await ProviderApiService.getPenalties();
+      } catch (_) {}
+
       // Load payout history
       final payouts = await ProviderApiService.getPayoutHistory(widget.providerId);
       for (final p in payouts) {
@@ -143,6 +109,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
         _availableBalance = available;
         _jobs = jobs;
         _withdrawals = withdrawals;
+        _penalties = penalties;
         _loading = false;
       });
     } catch (e) {
@@ -207,6 +174,42 @@ class _EarningsScreenState extends State<EarningsScreen> {
       }
     }
     if (mounted) setState(() => _requesting = false);
+  }
+
+  Future<void> _cancelWithdrawal(Map<String, dynamic> w) async {
+    final id = (w['id'] ?? w['payout_id'] ?? '').toString();
+    if (id.isEmpty || _cancellingPayoutId != null) return;
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Cancel withdrawal?', style: TextStyle(fontWeight: FontWeight.w800)),
+        content: Text('Rs.${w['amount'] ?? 0} will be returned to your available balance.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Cancel Request', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700))),
+        ],
+      ),
+    );
+    if (yes != true || !mounted) return;
+    setState(() => _cancellingPayoutId = id);
+    bool ok = false;
+    try {
+      ok = await ProviderApiService.cancelPayout(id);
+    } catch (_) {
+      ProviderApiService.lastError = 'Network error. Please try again.';
+    }
+    if (!mounted) return;
+    setState(() => _cancellingPayoutId = null);
+    final msg = ProviderApiService.lastError;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok
+          ? 'Withdrawal request cancelled.'
+          : (msg.isNotEmpty ? msg : 'Could not cancel the request. Please try again.')),
+      backgroundColor: ok ? AppColors.green : AppColors.red));
+    if (ok) _loadData();
   }
 
   void _showWithdrawDialog() {
@@ -394,6 +397,63 @@ class _EarningsScreenState extends State<EarningsScreen> {
                             Text(dateOnly(w['requested_at'] ?? w['requestedAt']),
                                 style: const TextStyle(fontSize: 10, color: AppColors.muted)),
                           ])),
+                          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
+                              child: Text(status.toString().toUpperCase(), style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: color)),
+                            ),
+                            if (status == 'pending')
+                              TextButton(
+                                onPressed: _cancellingPayoutId != null ? null : () => _cancelWithdrawal(w),
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                                  minimumSize: const Size(0, 30),
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                                child: _cancellingPayoutId == (w['id'] ?? w['payout_id'])?.toString()
+                                    ? const SizedBox(width: 14, height: 14,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.red))
+                                    : const Text('Cancel', style: TextStyle(fontSize: 12, color: AppColors.red, fontWeight: FontWeight.w700)),
+                              ),
+                          ]),
+                        ]),
+                      );
+                    }).toList(),
+                  ],
+
+                  // Penalties applied by admin
+                  if (_penalties.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Align(alignment: Alignment.centerLeft,
+                        child: Text('Penalties', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink))),
+                    const SizedBox(height: 10),
+                    ..._penalties.map((p) {
+                      final status = (p['status'] ?? 'applied').toString();
+                      final waived = status == 'waived';
+                      final color = waived ? AppColors.muted : AppColors.red;
+                      final bookingId = (p['booking_id'] ?? '').toString();
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12),
+                            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)]),
+                        child: Row(children: [
+                          Container(width: 40, height: 40,
+                              decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+                              child: Icon(Icons.gavel_rounded, color: color, size: 20)),
+                          const SizedBox(width: 12),
+                          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text('- Rs.${asDouble(p['amount']).toStringAsFixed(0)}',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color,
+                                    decoration: waived ? TextDecoration.lineThrough : null)),
+                            if ((p['reason'] ?? '').toString().isNotEmpty)
+                              Text(p['reason'].toString(), style: const TextStyle(fontSize: 12, color: AppColors.ink2)),
+                            Text([
+                              if (bookingId.isNotEmpty) 'Booking $bookingId',
+                              dateOnly(p['created_at']),
+                            ].where((x) => x.isNotEmpty).join(' · '),
+                                style: const TextStyle(fontSize: 10, color: AppColors.muted)),
+                          ])),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                             decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
@@ -401,7 +461,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                           ),
                         ]),
                       );
-                    }).toList(),
+                    }),
                   ],
 
                   // Job breakdown
@@ -449,7 +509,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                     )).toList(),
                   ],
 
-                  if (_jobs.isEmpty && _withdrawals.isEmpty)
+                  if (_jobs.isEmpty && _withdrawals.isEmpty && _penalties.isEmpty)
                     Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                       const SizedBox(height: 40),
                       const Text('Rs.0', style: TextStyle(fontSize: 48, fontWeight: FontWeight.w900, color: AppColors.muted)),

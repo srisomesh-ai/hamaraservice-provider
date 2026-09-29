@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/provider_api_service.dart';
 import '../utils/theme.dart';
@@ -27,9 +26,20 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
     _loadJobs();
   }
 
+  // Jobs this provider has taken that are still in progress
+  static const _myActiveStatuses = {
+    'price_quoted', 'negotiating', 'negotiation_final', 'accepted', 'confirmed', 'active',
+  };
+
   Future<void> _loadJobs() async {
     try {
-      final openJobs = await ProviderApiService.getOpenBookings(widget.providerId);
+      final results = await Future.wait([
+        ProviderApiService.getOpenBookings(widget.providerId),
+        ProviderApiService.getBookingHistory(widget.providerId)
+            .catchError((_) => <Map<String, dynamic>>[]),
+      ]);
+      final openJobs = results[0];
+      final history = results[1];
       final all = <String, dynamic>{for (int i=0; i<openJobs.length; i++) openJobs[i]['id']?.toString() ?? '$i': openJobs[i]};
       // services may be a List of ids, a List of maps (svc_id/svcId/id) or a Map {id: true}
       final providerServiceIds = serviceIdsOf(widget.providerData?['services']);
@@ -50,15 +60,22 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
 
         if ((b['status'] == 'searching' || b['status'] == 'pending') && b['acceptedBy'] == null) {
           open.add({...b, 'id': entry.key});
-        } else if (b['status'] == 'accepted' && b['acceptedBy'] != null) {
-          // Recently accepted jobs
-          accepted.add({...b, 'id': entry.key});
+        }
+      }
+
+      // Recently accepted: this provider's own in-progress jobs from history
+      for (final b in history) {
+        final st = (b['status'] ?? '').toString();
+        if (_myActiveStatuses.contains(st) && (b['id']?.toString() ?? '').isNotEmpty) {
+          accepted.add(Map<String, dynamic>.from(b));
         }
       }
 
       open.sort((a, b) => (b['created_at'] ?? b['createdAt'] ?? '').toString()
           .compareTo((a['created_at'] ?? a['createdAt'] ?? '').toString()));
-      accepted.sort((a, b) => (b['acceptedAt'] ?? '').toString().compareTo((a['acceptedAt'] ?? '').toString()));
+      String acceptedAt(Map<String, dynamic> m) =>
+          (m['accepted_at'] ?? m['updated_at'] ?? m['created_at'] ?? '').toString();
+      accepted.sort((a, b) => acceptedAt(b).compareTo(acceptedAt(a)));
 
       if (!mounted) return;
       setState(() { _openJobs = open; _acceptedJobs = accepted.take(10).toList(); _loading = false; });
@@ -159,7 +176,7 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
             child: Row(children: [
               _filterBtn('open', 'Open (${_openJobs.length})'),
               const SizedBox(width: 8),
-              _filterBtn('accepted', 'Recently Accepted'),
+              _filterBtn('accepted', 'Recently Accepted (${_acceptedJobs.length})'),
             ]),
           ),
 
@@ -226,10 +243,33 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
     );
   }
 
+  void _openMyJob(Map<String, dynamic> b) {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => ActiveBookingScreen(
+        bookingKey: (b['id'] ?? '').toString(),
+        booking: b,
+        providerId: widget.providerId,
+      ))).then((_) { if (mounted) _loadJobs(); });
+  }
+
+  String _statusLabel(String s) {
+    switch (s) {
+      case 'price_quoted': return 'Quote Sent';
+      case 'negotiating': return 'Negotiating';
+      case 'negotiation_final': return 'Final Offer';
+      case 'confirmed': return 'Confirmed';
+      case 'active': return 'In Progress';
+      default: return 'Accepted';
+    }
+  }
+
   Widget _jobCard(Map<String, dynamic> b, {required bool canAccept}) {
-    final acceptedBy = b['acceptedBy'];
-    final isAcceptedByOther = !canAccept && acceptedBy != null &&
-        (acceptedBy is Map) && acceptedBy['id'] != widget.providerId;
+    // Open jobs show the customer's price hint; own jobs show the agreed/quoted price.
+    final shownPrice = canAccept
+        ? asInt(b['price'] ?? b['priceVal'])
+        : [b['confirmed_price'], b['final_price'], b['quoted_price'], b['price'], b['priceVal']]
+            .map((v) => asInt(v))
+            .firstWhere((v) => v > 0, orElse: () => 0);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -239,32 +279,48 @@ class _OpenJobsScreenState extends State<OpenJobsScreen> {
         borderRadius: BorderRadius.circular(14),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
         border: Border.all(
-          color: isAcceptedByOther ? AppColors.muted.withOpacity(0.3) :
-                 canAccept ? AppColors.green.withOpacity(0.3) : AppColors.teal.withOpacity(0.2)),
+          color: canAccept ? AppColors.green.withOpacity(0.3) : AppColors.teal.withOpacity(0.2)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(child: Text((b['svc_name'] ?? b['service'] ?? 'Service').toString(),
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
-              color: isAcceptedByOther ? AppColors.muted : AppColors.ink))),
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
+              color: AppColors.ink))),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
-              color: (isAcceptedByOther ? AppColors.muted : canAccept ? AppColors.green : AppColors.teal).withOpacity(0.1),
+              color: (canAccept ? AppColors.green : AppColors.teal).withOpacity(0.1),
               borderRadius: BorderRadius.circular(20)),
             child: Text(
-              isAcceptedByOther ? 'Accepted by other' : canAccept ? 'OPEN' : 'Accepted',
+              canAccept ? 'OPEN' : _statusLabel((b['status'] ?? '').toString()),
               style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
-                color: isAcceptedByOther ? AppColors.muted : canAccept ? AppColors.green : AppColors.teal)),
+                color: canAccept ? AppColors.green : AppColors.teal)),
           ),
         ]),
         const SizedBox(height: 8),
-        _row(Icons.currency_rupee_rounded, asInt(b['price'] ?? b['priceVal']) > 0
-            ? '₹${asInt(b['price'] ?? b['priceVal'])}'
+        _row(Icons.currency_rupee_rounded, shownPrice > 0
+            ? '₹$shownPrice'
             : 'You quote the price'),
         _row(Icons.calendar_today_rounded, '${b['slot_date'] ?? b['date'] ?? ''} at ${b['slot_time'] ?? b['time'] ?? ''}'),
         _row(Icons.location_on_rounded, (b['address'] ?? '').toString()),
-        _row(Icons.person_rounded, (b['customer_name'] ?? b['customer'] ?? '').toString()),
+        _row(Icons.person_rounded, (b['customer_name'] ?? b['other_party'] ?? b['customer'] ?? '').toString()),
+
+        if (!canAccept) ...[
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: () => _openMyJob(b),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(double.infinity, 42),
+                side: const BorderSide(color: AppColors.teal),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text('View and Manage',
+                style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.teal)),
+            ),
+          ),
+        ],
 
         if (canAccept) ...[
           const SizedBox(height: 10),

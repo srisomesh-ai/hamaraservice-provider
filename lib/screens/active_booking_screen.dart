@@ -1,13 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import '../services/provider_api_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../utils/theme.dart';
 import '../utils/parse.dart';
-import 'dashboard_screen.dart';
 
 class ActiveBookingScreen extends StatefulWidget {
   final String bookingKey;
@@ -36,17 +34,29 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   String _otpError = '';
   StreamSubscription? _statusWatcher;
 
+  // Live GPS tracking (bookings.php?action=track) while confirmed/active
+  static const _trackStatuses = {'confirmed', 'active'};
+  Timer? _trackTimer;
+  bool _trackSending = false;
+  bool _trackDenied = false;
+
+  bool _customerRated = false;
+  bool _markingPaid = false;
+
   @override
   void initState() {
     super.initState();
     _status = (widget.booking['status'] ?? 'accepted').toString();
     _completedNotified = _status == 'completed';
+    _customerRated = asInt(widget.booking['customer_rating']) > 0;
     _watchStatus();
+    _syncTracking();
   }
 
   @override
   void dispose() {
     _statusWatcher?.cancel();
+    _trackTimer?.cancel();
     for (final c in _otpCtrls) c.dispose();
     for (final f in _otpFocus) f.dispose();
     super.dispose();
@@ -59,7 +69,14 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       if (data == null || !mounted) return;
       final status = data['status']?.toString() ?? '';
       final prevStatus = _status;
-      if (status.isNotEmpty) setState(() { _status = status; _liveBooking = data; });
+      if (status.isNotEmpty) {
+        setState(() {
+          _status = status;
+          _liveBooking = data;
+          if (asInt(data['customer_rating']) > 0) _customerRated = true;
+        });
+      }
+      _syncTracking();
 
       // Allow the negotiation dialog again if the customer negotiates later
       if (status != 'negotiating') _negotiationHandled = false;
@@ -230,13 +247,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         _showError('Could not accept the counter offer. Please try again.');
         return;
       }
-      // Notify customer
-      await _notifyCustomer(
-        event: 'price_confirmed',
-        title: 'Price Accepted! ✅',
-        body:  'Provider accepted ₹$price. Booking confirmed!',
-        extra: {'confirmedPrice': price.toString()},
-      );
+      // The server pushes the confirmation to the customer.
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Accepted ₹$price — booking confirmed!'),
@@ -256,13 +267,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         _showError('Could not send final offer. Please try again.');
         return;
       }
-      // Notify customer
-      await _notifyCustomer(
-        event: 'negotiation_final',
-        title: "Provider's Final Offer 💰",
-        body:  "Provider's final price: ₹$finalPrice. Accept or search another provider.",
-        extra: {'finalPrice': finalPrice.toString()},
-      );
+      // The server pushes the final offer to the customer.
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Final offer ₹$finalPrice sent to customer'),
@@ -277,18 +282,13 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
   // Provider declines negotiation — release job for another provider
   Future<void> _declineNegotiation() async {
     try {
-      final ok = await ProviderApiService.cancelBooking(widget.bookingKey);
+      final ok = await ProviderApiService.releaseBooking(widget.bookingKey);
       if (!ok) {
         _showError('Could not decline. Please try again.');
         return;
       }
-      // Notify customer to search another
-      await _notifyCustomer(
-        event: 'provider_declined',
-        title: 'Provider Declined',
-        body:  'The provider declined negotiation. Searching for another provider...',
-        extra: {},
-      );
+      // The server returns the booking to 'searching' and notifies the customer.
+      _stopTracking();
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
@@ -296,30 +296,212 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
     }
   }
 
-  // Helper — notify customer via FCM
-  Future<void> _notifyCustomer({
-    required String event,
-    required String title,
-    required String body,
-    required Map<String,String> extra,
-  }) async {
+  // Statuses in which the provider may still back out (release) of the job
+  static const _releasable = {'price_quoted', 'negotiating', 'negotiation_final', 'confirmed', 'accepted'};
+
+  /// Backs out of the job before work starts — the booking goes back to
+  /// other providers (bookings.php?action=release).
+  Future<void> _confirmRelease() async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Release this job?', style: TextStyle(fontWeight: FontWeight.w800)),
+        content: const Text('The customer will be matched with another provider. '
+            'Frequent releases may affect your account.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep Job')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Release', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700))),
+        ],
+      ),
+    );
+    if (yes == true) await _declineNegotiation();
+  }
+
+  /// Genuine cancellation with a reason (bookings.php?action=cancel).
+  Future<void> _confirmCancel() async {
+    final reasonCtrl = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Cancel booking', style: TextStyle(fontWeight: FontWeight.w800)),
+        content: TextField(
+          controller: reasonCtrl,
+          maxLines: 3,
+          decoration: InputDecoration(
+            labelText: 'Reason',
+            hintText: 'e.g. Customer asked to cancel',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Back')),
+          TextButton(
+            onPressed: () {
+              final r = reasonCtrl.text.trim();
+              if (r.isEmpty) return;
+              Navigator.pop(ctx, r);
+            },
+            child: const Text('Cancel Booking', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700))),
+        ],
+      ),
+    );
+    reasonCtrl.dispose();
+    if (reason == null || reason.isEmpty) return;
     try {
-      final custId = (_liveBooking['customer_id'] ?? _liveBooking['customerId'] ??
-          widget.booking['customer_id'] ?? widget.booking['customerId'])?.toString() ?? '';
-      if (custId.isEmpty) return;
-      final custProfile = await ProviderApiService.getBooking(widget.bookingKey);
-      final token = custProfile?['customer_fcm_token']?.toString() ?? '';
-      if (token.isEmpty) return;
-      await http.post(
-        Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'event':    event,
-          'fcmToken': token,
-          'data':     {'title': title, 'body': body, ...extra},
-        }),
-      );
-    } catch (_) {}
+      final ok = await ProviderApiService.cancelBooking(widget.bookingKey, reason: reason);
+      if (!ok) {
+        _showError('Could not cancel the booking. Please try again.');
+        return;
+      }
+      _stopTracking();
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      _showError('Network error. Please try again.');
+    }
+  }
+
+  // ── Live location tracking ────────────────────────────────────────────
+  void _syncTracking() {
+    if (_trackStatuses.contains(_status)) {
+      if (_trackTimer == null && !_trackDenied) {
+        _sendLocation();
+        _trackTimer = Timer.periodic(const Duration(seconds: 15), (_) => _sendLocation());
+      }
+    } else {
+      _stopTracking();
+    }
+  }
+
+  void _stopTracking() {
+    _trackTimer?.cancel();
+    _trackTimer = null;
+  }
+
+  Future<void> _sendLocation() async {
+    if (_trackSending || !mounted || !_trackStatuses.contains(_status)) return;
+    _trackSending = true;
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) return;
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+        // Don't keep prompting every 15 s.
+        _trackDenied = true;
+        _stopTracking();
+        return;
+      }
+      final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 10));
+      if (!mounted || !_trackStatuses.contains(_status)) return;
+      await ProviderApiService.trackLocation(widget.bookingKey, pos.latitude, pos.longitude);
+    } catch (_) {
+      // Next tick retries.
+    } finally {
+      _trackSending = false;
+    }
+  }
+
+  // ── Cash payment confirmation ─────────────────────────────────────────
+  Future<void> _confirmCashReceived(int price) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Confirm cash received', style: TextStyle(fontWeight: FontWeight.w800)),
+        content: Text('Confirm that you received ₹$price in cash from the customer.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Not yet')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.green),
+            child: const Text('Yes, received', style: TextStyle(color: Colors.white))),
+        ],
+      ),
+    );
+    if (yes != true || !mounted) return;
+    setState(() => _markingPaid = true);
+    bool ok = false;
+    try {
+      ok = await ProviderApiService.markPaid(widget.bookingKey);
+    } catch (_) {
+      ProviderApiService.lastError = 'Network error. Please try again.';
+    }
+    if (!mounted) return;
+    setState(() {
+      _markingPaid = false;
+      if (ok) _liveBooking = {..._liveBooking, 'payment_status': 'paid'};
+    });
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Cash payment confirmed ✅'), backgroundColor: AppColors.green));
+    } else {
+      _showError('Could not confirm the payment. Please try again.');
+    }
+  }
+
+  // ── Rate the customer (once, after completion) ─────────────────────────
+  Future<void> _showRateCustomerDialog() async {
+    int rating = 5;
+    final commentCtrl = TextEditingController();
+    final submit = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Text('Rate ${_customerName(_bk)}', style: const TextStyle(fontWeight: FontWeight.w800)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(5, (i) => IconButton(
+                onPressed: () => setD(() => rating = i + 1),
+                icon: Icon(i < rating ? Icons.star_rounded : Icons.star_border_rounded,
+                  color: AppColors.yellow, size: 32),
+              )),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: commentCtrl,
+              maxLines: 2,
+              decoration: InputDecoration(
+                hintText: 'Comment (optional)',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.teal),
+              child: const Text('Submit', style: TextStyle(color: Colors.white))),
+          ],
+        ),
+      ),
+    );
+    final comment = commentCtrl.text.trim();
+    commentCtrl.dispose();
+    if (submit != true || !mounted) return;
+    bool ok = false;
+    try {
+      ok = await ProviderApiService.rateCustomer(widget.bookingKey, rating, comment: comment);
+    } catch (_) {
+      ProviderApiService.lastError = 'Network error. Please try again.';
+    }
+    if (!mounted) return;
+    if (ok) {
+      setState(() => _customerRated = true);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Thanks for rating the customer!'), backgroundColor: AppColors.green));
+    } else {
+      final err = ProviderApiService.lastError.toLowerCase();
+      if (err.contains('already')) setState(() => _customerRated = true);
+      _showError('Could not submit the rating. Please try again.');
+    }
   }
 
   // ── Completion: server generates the completion OTP and pushes it to the
@@ -389,11 +571,19 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
 
     if (!ok) {
       final err = ProviderApiService.lastError;
+      final tooMany = ProviderApiService.lastStatus == 429;
       setState(() {
         _loading = false;
-        _otpError = err.toLowerCase().contains('invalid')
-            ? 'Incorrect OTP. Ask customer to check their app.'
-            : (err.isNotEmpty ? err : 'Could not verify OTP. Please try again.');
+        if (tooMany) {
+          // Server regenerated the OTP after too many wrong tries.
+          _otpError = err.isNotEmpty
+              ? err
+              : 'Too many wrong OTP attempts. A new OTP has been sent to the customer.';
+        } else {
+          _otpError = err.toLowerCase().contains('invalid')
+              ? 'Incorrect OTP. Ask customer to check their app.'
+              : (err.isNotEmpty ? err : 'Could not verify OTP. Please try again.');
+        }
       });
       HapticFeedback.heavyImpact();
       for (final c in _otpCtrls) c.clear();
@@ -408,6 +598,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
       _status = isCompletion ? 'completed' : 'active';
       if (isCompletion) _completedNotified = true;
     });
+    _syncTracking();
 
     if (mounted) {
       showDialog(
@@ -418,15 +609,19 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
           title: Text(isCompletion ? 'Job Completed! 🎉' : 'OTP Verified! ✅',
               style: const TextStyle(fontWeight: FontWeight.w800)),
           content: Text(isCompletion
-              ? 'The customer has been asked to pay. Payment status will update on your dashboard.'
+              ? 'The customer has been asked to pay. If they pay in cash, confirm it on this screen.'
               : 'Service started. When the work is finished, tap "Complete Job".'),
           actions: [
+            if (isCompletion && !_customerRated)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(dCtx);
+                  _showRateCustomerDialog();
+                },
+                child: const Text('Rate Customer', style: TextStyle(color: AppColors.brand, fontWeight: FontWeight.w700)),
+              ),
             TextButton(
-              onPressed: () {
-                Navigator.pop(dCtx);
-                // After completion go back to the dashboard
-                if (isCompletion && mounted) Navigator.pop(context);
-              },
+              onPressed: () => Navigator.pop(dCtx),
               child: const Text('OK', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
             ),
           ],
@@ -477,6 +672,26 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
         title: const Text('Active Booking'),
         backgroundColor: AppColors.teal,
         automaticallyImplyLeading: false,
+        leading: const {'completed', 'cancelled', 'searching'}.contains(_status)
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back_rounded),
+                onPressed: () => Navigator.pop(context))
+            : null,
+        actions: [
+          if (_releasable.contains(_status) || _status == 'active')
+            PopupMenuButton<String>(
+              onSelected: (v) {
+                if (v == 'release') _confirmRelease();
+                if (v == 'cancel') _confirmCancel();
+              },
+              itemBuilder: (_) => [
+                if (_releasable.contains(_status))
+                  const PopupMenuItem(value: 'release', child: Text("Release job (can't do it)")),
+                if (_status == 'confirmed' || _status == 'accepted' || _status == 'active')
+                  const PopupMenuItem(value: 'cancel', child: Text('Cancel booking…')),
+              ],
+            ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
@@ -686,8 +901,51 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
               ),
             ),
 
+          // Cash payment: customer says they paid in cash — provider confirms
+          if (bk['payment_status'] == 'cash_pending' &&
+              (_status == 'active' || _status == 'completed' || _status == 'payment_pending')) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.yellow.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.yellow.withOpacity(0.4))),
+              child: Column(children: [
+                const Row(children: [
+                  Icon(Icons.payments_rounded, color: AppColors.yellow, size: 22),
+                  SizedBox(width: 10),
+                  Expanded(child: Text('Customer chose to pay in cash',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink))),
+                ]),
+                const SizedBox(height: 8),
+                Text('Collect ₹$price and confirm once you have received it.',
+                  style: const TextStyle(fontSize: 13, color: AppColors.muted, height: 1.4)),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _markingPaid ? null : () => _confirmCashReceived(price),
+                    icon: _markingPaid
+                        ? const SizedBox(width: 18, height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation(Colors.white)))
+                        : const Icon(Icons.check_circle_rounded, color: Colors.white),
+                    label: const Text('Confirm cash received',
+                      style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.green,
+                      minimumSize: const Size(double.infinity, 48),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  ),
+                ),
+              ]),
+            ),
+          ],
+
           // Completed — payment status
-          if (_status == 'completed' || _status == 'payment_pending') ...[
+          if ((_status == 'completed' || _status == 'payment_pending') &&
+              bk['payment_status'] != 'cash_pending') ...[
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(16),
@@ -711,6 +969,31 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
                     : 'Job completed. Waiting for the customer to pay ₹$price. You will be notified when payment is done.',
                   style: const TextStyle(fontSize: 13, color: AppColors.muted, height: 1.4)),
               ]),
+            ),
+          ],
+
+          // Completed — rate the customer (once)
+          if (_status == 'completed') ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: _customerRated
+                  ? const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      Icon(Icons.star_rounded, color: AppColors.yellow, size: 18),
+                      SizedBox(width: 6),
+                      Text('You rated this customer',
+                        style: TextStyle(fontSize: 13, color: AppColors.muted, fontWeight: FontWeight.w600)),
+                    ])
+                  : OutlinedButton.icon(
+                      onPressed: _showRateCustomerDialog,
+                      icon: const Icon(Icons.star_rounded, color: AppColors.yellow),
+                      label: const Text('Rate Customer',
+                        style: TextStyle(color: AppColors.ink, fontWeight: FontWeight.w700)),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 48),
+                        side: const BorderSide(color: AppColors.yellow),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                    ),
             ),
           ],
 

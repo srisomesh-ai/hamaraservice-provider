@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import '../services/provider_api_service.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../utils/theme.dart';
 
@@ -12,7 +10,8 @@ class SupportScreen extends StatefulWidget {
 }
 
 class _SupportScreenState extends State<SupportScreen> {
-  final _user = FirebaseAuth.instance.currentUser;
+  // Providers sign in with a JWT (no FirebaseAuth user) — show cached profile.
+  String _who = '';
   final _msgCtrl = TextEditingController();
   String _selectedType = 'complaint';
   bool _submitting = false;
@@ -47,8 +46,19 @@ class _SupportScreenState extends State<SupportScreen> {
     }
   }
 
-  void _callSupport() => launchUrl(Uri.parse('tel:+919999999999'));
-  void _whatsappSupport() => launchUrl(Uri.parse('https://wa.me/919999999999?text=Hi, I need help with my provider account'));
+  @override
+  void initState() {
+    super.initState();
+    ProviderApiService.getCachedProvider().then((p) {
+      if (!mounted || p == null) return;
+      final name = (p['name'] ?? '').toString();
+      final email = (p['email'] ?? '').toString();
+      setState(() => _who = [name, email].where((s) => s.isNotEmpty).join(' · '));
+    }).catchError((_) {});
+  }
+
+  void _callSupport() => launchUrl(Uri.parse('tel:+918985849710'));
+  void _whatsappSupport() => launchUrl(Uri.parse('https://wa.me/918985849710?text=Hi, I need help with my provider account'));
   void _emailSupport() => launchUrl(Uri.parse('mailto:info@hamaraservice.com'));
 
   @override
@@ -179,7 +189,7 @@ class _SupportScreenState extends State<SupportScreen> {
                       const Icon(Icons.person_rounded, color: AppColors.muted, size: 16),
                       const SizedBox(width: 8),
                       Expanded(child: Text(
-                        '${_user?.displayName ?? ''} · ${_user?.email ?? ''}',
+                        _who,
                         style: const TextStyle(fontSize: 12, color: AppColors.muted),
                       )),
                     ]),

@@ -1,7 +1,6 @@
 import 'dart:io';
 import '../services/provider_api_service.dart';
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import '../utils/theme.dart';

@@ -1,11 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:flutter/services.dart';
-import 'package:firebase_database/firebase_database.dart';
 import '../services/provider_api_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -14,7 +9,6 @@ import 'package:audioplayers/audioplayers.dart';
 import '../utils/theme.dart';
 import '../utils/parse.dart';
 import '../services/hs_catalog.dart';
-import 'test_console_screen.dart';
 import 'login_screen.dart';
 import 'active_booking_screen.dart';
 import 'services_screen.dart';
@@ -24,6 +18,7 @@ import 'ratings_screen.dart';
 import 'open_jobs_screen.dart';
 import 'profile_edit_screen.dart';
 import 'quote_dialog.dart';
+import 'schedule_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String providerId;
@@ -52,8 +47,6 @@ class _DashboardScreenState extends State<DashboardScreen>
   final Set<String> _reviewNotifiedIds = {};
   bool _checkingBookings = false;
   bool _loggingOut = false;
-  int _testTapCount = 0;
-  DateTime? _lastTestTap;
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
@@ -70,7 +63,6 @@ class _DashboardScreenState extends State<DashboardScreen>
         CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
     _loadProfile();
     _startPolling();
-    _watchOpenJobs();
     _setupAudio();
   }
 
@@ -233,34 +225,6 @@ class _DashboardScreenState extends State<DashboardScreen>
       behavior: SnackBarBehavior.floating));
   }
 
-  void _watchOpenJobs() {
-    // Open jobs polled by _checkForBookings
-    if (false) Stream.periodic(const Duration(seconds: 1)).listen((_) {
-      if (!mounted) return;
-      final all =
-          <String,dynamic>{};
-      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
-              ?.map((s) => (s is Map
-                      ? s['name'] ?? ''
-                      : s.toString())
-                  .toLowerCase())
-              .toList() ??
-          [];
-      int count = 0;
-      for (final entry in all.entries) {
-        final b = Map<String, dynamic>.from(entry.value as Map);
-        if (b['status'] != 'searching' || b['acceptedBy'] != null) {
-          continue;
-        }
-        final svcName = (b['service'] ?? '').toString().toLowerCase();
-        if (providerServices.isNotEmpty &&
-            !providerServices.any((s) => s == svcName)) continue;
-        count++;
-      }
-      if (mounted) setState(() => _openJobsCount = count);
-    });
-  }
-
   Future<void> _toggleAvailability(bool val) async {
     setState(() => _available = val);
     // Update cache immediately so refresh doesn't revert
@@ -414,7 +378,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         setState(() { _incomingBooking = null; _incomingBookingKey = null; });
         return;
       }
-      final status = snap?['status']?.toString() ?? '';
+      final status = snap['status']?.toString() ?? '';
       if (status == 'cancelled') {
         _alertCountdown?.cancel();
         _stopAlert();
@@ -438,7 +402,6 @@ class _DashboardScreenState extends State<DashboardScreen>
           behavior: SnackBarBehavior.floating));
         return;
       }
-      final bkData = data ?? <String,dynamic>{};
       final status = data['status']?.toString() ?? '';
       if (status == 'cancelled') {
         _alertCountdown?.cancel();
@@ -559,7 +522,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     _bookingWatcher?.cancel();
     _stopAlert();
     final bookingKey = _incomingBookingKey!;
-    final booking = Map<String, dynamic>.from(_incomingBooking!);
     // Add to dismissed so it never pops up again this session
     _dismissedBookingKeys.add(bookingKey);
     setState(() {
@@ -1580,6 +1542,16 @@ class _DashboardScreenState extends State<DashboardScreen>
               }),
               const SizedBox(height: 10),
               _menuTile(
+                  'Availability Schedule',
+                  Icons.schedule_rounded,
+                  AppColors.brand,
+                  () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) =>
+                              ScheduleScreen(providerId: _pid)))),
+              const SizedBox(height: 10),
+              _menuTile(
                   'Help and Support',
                   Icons.headset_mic_rounded,
                   AppColors.muted,
@@ -1723,45 +1695,6 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
 
-  // ── Send push notification via Hostinger API ────────────────
-  Future<void> _sendPushNotification({
-    required String fcmToken,
-    required String event,
-    required Map<String, String> data,
-  }) async {
-    if (fcmToken.isEmpty) return;
-    try {
-      await http.post(
-        Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'event': event,
-          'fcmToken': fcmToken,
-          'data': data,
-        }),
-      );
-    } catch (_) {}
-  }
-
-  String _mapToJson(Map<String, String> map) {
-    final entries = map.entries.map((e) => '"${e.key}":"${e.value}"').join(',');
-    return '{$entries}';
-  }
-
-
-  void _secretTap() {
-    final now = DateTime.now();
-    if (_lastTestTap != null && now.difference(_lastTestTap!).inSeconds > 2) {
-      _testTapCount = 0;
-    }
-    _lastTestTap = now;
-    _testTapCount++;
-    if (_testTapCount >= 5) {
-      _testTapCount = 0;
-      Navigator.push(context, MaterialPageRoute(
-        builder: (_) => TestConsoleScreen(providerId: _pid)));
-    }
-  }
   // ── INCOMING ALERT ────────────────────────────────────────────
   Widget _buildIncomingAlert() {
     final bk = _incomingBooking!;

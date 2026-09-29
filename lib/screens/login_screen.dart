@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/provider_api_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
 import 'dashboard_screen.dart';
 import 'register_screen.dart';
