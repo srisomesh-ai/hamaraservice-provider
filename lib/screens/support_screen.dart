@@ -1,18 +1,23 @@
 import 'package:flutter/material.dart';
-import '../services/provider_api_service.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../utils/support_contact.dart';
 import '../utils/theme.dart';
 
 class SupportScreen extends StatefulWidget {
-  const SupportScreen({super.key});
+  final String providerName;
+  final String providerEmail;
+  final String providerId;
+  const SupportScreen({
+    super.key,
+    this.providerName = '',
+    this.providerEmail = '',
+    this.providerId = '',
+  });
   @override
   State<SupportScreen> createState() => _SupportScreenState();
 }
 
 class _SupportScreenState extends State<SupportScreen> {
-  final _user = FirebaseAuth.instance.currentUser;
   final _msgCtrl = TextEditingController();
   String _selectedType = 'complaint';
   bool _submitting = false;
@@ -28,28 +33,54 @@ class _SupportScreenState extends State<SupportScreen> {
   ];
 
   Future<void> _submitRequest() async {
-    if (_msgCtrl.text.trim().isEmpty) {
+    final msg = _msgCtrl.text.trim();
+    if (msg.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please describe your issue'),
           backgroundColor: AppColors.red));
       return;
     }
     setState(() => _submitting = true);
+    final type = _types.firstWhere((t) => t['key'] == _selectedType,
+        orElse: () => _types.last)['label'] as String;
+    final uri = supportMailto(
+      subject: 'Provider support: $type${widget.providerId.isNotEmpty ? ' (${widget.providerId})' : ''}',
+      body: '$msg\n\n---\nProvider: ${widget.providerName}\n'
+          'Email: ${widget.providerEmail}\nProvider ID: ${widget.providerId}\n',
+    );
+    bool opened = false;
     try {
-      // Support request submitted — handled separately
-      setState(() { _submitted = true; _submitting = false; });
-      _msgCtrl.clear();
-    } catch (e) {
-      setState(() => _submitting = false);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to submit. Please try again.'),
-          backgroundColor: AppColors.red));
+      opened = await launchUrl(uri);
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() { _submitting = false; _submitted = opened; });
+    if (!opened) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No email app found. Please write to $kSupportEmail'),
+        backgroundColor: AppColors.red));
     }
   }
 
-  void _callSupport() => launchUrl(Uri.parse('tel:+919999999999'));
-  void _whatsappSupport() => launchUrl(Uri.parse('https://wa.me/919999999999?text=Hi, I need help with my provider account'));
-  void _emailSupport() => launchUrl(Uri.parse('mailto:support@hamaraservice.in'));
+  Future<void> _open(Uri uri, {bool external = false}) async {
+    bool ok = false;
+    try {
+      ok = await launchUrl(uri,
+          mode: external ? LaunchMode.externalApplication : LaunchMode.platformDefault);
+    } catch (_) {}
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Could not open. Please write to $kSupportEmail'),
+        backgroundColor: AppColors.red));
+    }
+  }
+
+  void _callSupport() => _open(Uri.parse('tel:+91$kSupportPhone'));
+  void _whatsappSupport() => _open(
+      Uri.parse('https://wa.me/91$kSupportPhone?text=${Uri.encodeComponent('Hi, I need help with my provider account')}'),
+      external: true);
+  void _emailSupport() => _open(supportMailto(
+      subject: 'Provider support${widget.providerId.isNotEmpty ? ' (${widget.providerId})' : ''}',
+      body: ''));
 
   @override
   void dispose() { _msgCtrl.dispose(); super.dispose(); }
@@ -73,11 +104,13 @@ class _SupportScreenState extends State<SupportScreen> {
               color: AppColors.muted, letterSpacing: 0.8)),
             const SizedBox(height: 10),
             Row(children: [
-              _contactBtn('📞', 'Call', AppColors.teal, _callSupport),
-              const SizedBox(width: 10),
-              _contactBtn('💬', 'WhatsApp', const Color(0xFF25D366), _whatsappSupport),
-              const SizedBox(width: 10),
-              _contactBtn('📧', 'Email', AppColors.brand, _emailSupport),
+              if (hasSupportPhone) ...[
+                _contactBtn('📞', 'Call', AppColors.teal, _callSupport),
+                const SizedBox(width: 10),
+                _contactBtn('💬', 'WhatsApp', const Color(0xFF25D366), _whatsappSupport),
+                const SizedBox(width: 10),
+              ],
+              _contactBtn('📧', 'Email $kSupportEmail', AppColors.brand, _emailSupport),
             ]),
 
             const SizedBox(height: 24),
@@ -98,10 +131,10 @@ class _SupportScreenState extends State<SupportScreen> {
                 child: Column(children: [
                   const Text('✅', style: TextStyle(fontSize: 48)),
                   const SizedBox(height: 12),
-                  const Text('Request Submitted!',
+                  const Text('Email app opened',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.green)),
                   const SizedBox(height: 6),
-                  const Text('We\'ll get back to you within 24 hours.',
+                  const Text('Send the email from your mail app. We usually reply within 24 hours.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 13, color: AppColors.muted)),
                   const SizedBox(height: 16),
@@ -179,7 +212,7 @@ class _SupportScreenState extends State<SupportScreen> {
                       const Icon(Icons.person_rounded, color: AppColors.muted, size: 16),
                       const SizedBox(width: 8),
                       Expanded(child: Text(
-                        '${_user?.displayName ?? ''} · ${_user?.email ?? ''}',
+                        '${widget.providerName} · ${widget.providerEmail}',
                         style: const TextStyle(fontSize: 12, color: AppColors.muted),
                       )),
                     ]),
@@ -199,7 +232,7 @@ class _SupportScreenState extends State<SupportScreen> {
                           ? const SizedBox(width: 22, height: 22,
                               child: CircularProgressIndicator(strokeWidth: 2.5,
                                 valueColor: AlwaysStoppedAnimation(Colors.white)))
-                          : const Text('Submit Request',
+                          : const Text('Send via Email',
                               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                     ),
                   ),
@@ -218,9 +251,9 @@ class _SupportScreenState extends State<SupportScreen> {
             _faqItem('How do I add more services?',
               'Go to Dashboard → My Services → Edit My Services to add or remove services.'),
             _faqItem('When will I get paid?',
-              'Payment is collected from customer after service. Settlement happens weekly.'),
+              'Online payments are added to your wallet; withdraw from Earnings. Cash jobs add the platform commission to your dues.'),
             _faqItem('My booking alert is not showing',
-              'Make sure you are Online (toggle Available switch) and have services selected.'),
+              'Keep the app open and Online, allow location, and make sure your services are enabled in My Services.'),
 
             const SizedBox(height: 32),
           ],
@@ -243,7 +276,7 @@ class _SupportScreenState extends State<SupportScreen> {
           child: Column(children: [
             Text(emoji, style: const TextStyle(fontSize: 24)),
             const SizedBox(height: 4),
-            Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: color)),
+            Text(label, textAlign: TextAlign.center, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: color)),
           ]),
         ),
       ),

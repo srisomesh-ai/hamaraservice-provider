@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:firebase_database/firebase_database.dart';
+import '../services/notification_service.dart';
 import '../services/provider_api_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
 import 'dashboard_screen.dart';
+import 'pending_approval_screen.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  /// Shown above the form, e.g. after a 401 or for a suspended account.
+  final String? message;
+  final bool sessionExpired;
+  const LoginScreen({super.key, this.message, this.sessionExpired = false});
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
@@ -20,93 +22,72 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _showPwd    = false;
   String _error    = '';
 
+  bool _noAccount  = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.message != null && widget.message!.isNotEmpty) {
+      _error = widget.message!;
+    } else if (widget.sessionExpired) {
+      _error = 'Your session has expired. Please log in again.';
+    }
+  }
+
   Future<void> _login() async {
     final email = _emailCtrl.text.trim().toLowerCase();
-    final pwd   = _pwdCtrl.text.trim();
+    final pwd   = _pwdCtrl.text;
     if (email.isEmpty || pwd.isEmpty) {
-      setState(() => _error = 'Please enter email and password');
+      setState(() { _error = 'Please enter email and password'; _noAccount = false; });
       return;
     }
     if (!email.contains('@') || !email.contains('.')) {
-      setState(() => _error = 'Please enter a valid email address');
+      setState(() { _error = 'Please enter a valid email address'; _noAccount = false; });
       return;
     }
-    setState(() { _loading = true; _error = ''; });
-    try {
-      // Try login first
-      final result = await ProviderApiService.login(email, pwd);
+    setState(() { _loading = true; _error = ''; _noAccount = false; });
 
-      if (result == null) {
-        // Email not found OR wrong password
-        // Check if email exists in DB
-        final exists = await ProviderApiService.checkEmailExists(email);
-        setState(() => _loading = false);
+    final res = await ProviderApiService.login(email, pwd);
+    if (!mounted) return;
 
-        if (!exists) {
-          // New provider — redirect to registration with email + password pre-filled
-          if (mounted) {
-            Navigator.pushReplacement(context,
-              MaterialPageRoute(builder: (_) => RegisterScreen(
-                prefillEmail: email,
-                prefillPassword: pwd,
-              )));
-          }
-        } else {
-          // Email exists but wrong password
-          setState(() => _error = 'Incorrect password. Please try again.');
-        }
-        return;
+    if (!res.ok) {
+      // Unknown email? Offer registration (never prefill the password).
+      bool noAccount = false;
+      if (!res.networkError && res.status < 500) {
+        noAccount = (await ProviderApiService.checkEmailExists(email)) == false;
       }
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _noAccount = noAccount;
+        _error = noAccount ? 'No account found for $email.' : res.error;
+      });
+      return;
+    }
 
-      final provider = result['provider'] as Map<String,dynamic>? ?? {};
-      final status   = provider['status']?.toString() ?? 'pending';
+    final data     = res.map ?? {};
+    final provider = data['provider'] is Map
+        ? Map<String, dynamic>.from(data['provider'] as Map)
+        : <String, dynamic>{};
+    final status   = '${data['status'] ?? provider['status'] ?? 'pending'}';
+    final providerId = '${provider['id'] ?? ''}';
 
-      if (status == 'suspended') {
-        setState(() { _loading = false; _error = 'Account suspended. Contact info@hamaraservice.com'; });
-        return;
-      }
-      if (status == 'rejected') {
-        setState(() { _loading = false; _error = 'Application rejected. Contact info@hamaraservice.com'; });
-        return;
-      }
-      if (status != 'approved') {
-        setState(() { _loading = false; });
-        if (mounted) {
-          final name    = provider['name']?.toString() ?? '';
-          final phone   = provider['phone']?.toString() ?? '';
-          final city    = provider['city']?.toString() ?? '';
-          final address = provider['address']?.toString() ?? '';
+    await NotificationService.registerToken();
+    if (!mounted) return;
+    setState(() => _loading = false);
 
-          // Registration is complete only if name + phone + location are filled
-          final isComplete = name.isNotEmpty && phone.isNotEmpty &&
-              (city.isNotEmpty || address.isNotEmpty);
-
-          if (!isComplete) {
-            // Incomplete registration — send back to form with prefilled email
-            Navigator.pushReplacement(context,
-              MaterialPageRoute(builder: (_) => RegisterScreen(
-                prefillEmail: email,
-                prefillPassword: pwd,
-              )));
-          } else {
-            // Registration complete — waiting for admin approval
-            Navigator.pushReplacement(context,
-              MaterialPageRoute(builder: (_) => _PendingApprovalScreen(
-                name:  name.isNotEmpty ? name : 'Provider',
-                email: email,
-              )));
-          }
-        }
-        return;
-      }
-
-      final providerId = provider['id']?.toString() ?? '';
-      if (mounted) {
-        Navigator.pushReplacement(context,
-          MaterialPageRoute(builder: (_) => DashboardScreen(providerId: providerId)));
-      }
-    } catch (e) {
-      setState(() { _loading = false; _error = 'Connection error. Please try again.'; });
+    if (status == 'approved') {
+      Navigator.pushAndRemoveUntil(context,
+        MaterialPageRoute(builder: (_) => DashboardScreen(providerId: providerId)),
+        (_) => false);
+    } else if (status == 'pending') {
+      Navigator.pushAndRemoveUntil(context,
+        MaterialPageRoute(builder: (_) => PendingApprovalScreen(
+          name: '${provider['name'] ?? 'Provider'}', email: email)),
+        (_) => false);
+    } else {
+      await ProviderApiService.clearToken();
+      if (mounted) setState(() => _error = 'Account $status. Contact info@hamaraservice.com');
     }
   }
 
@@ -200,6 +181,24 @@ class _LoginScreenState extends State<LoginScreen> {
                             Expanded(child: Text(_error, style: const TextStyle(fontSize: 12, color: Color(0xFFE53E3E)))),
                           ]),
                         ),
+                        if (_noAccount) ...[
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.person_add_rounded, size: 18, color: AppColors.brand),
+                              label: const Text('No account found — Register?',
+                                style: TextStyle(color: AppColors.brand, fontWeight: FontWeight.w700)),
+                              onPressed: () => Navigator.push(context, MaterialPageRoute(
+                                builder: (_) => RegisterScreen(
+                                  prefillEmail: _emailCtrl.text.trim().toLowerCase()))),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: AppColors.brand),
+                                minimumSize: const Size(double.infinity, 44),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                            ),
+                          ),
+                        ],
                       ],
 
                       const SizedBox(height: 20),
@@ -226,11 +225,11 @@ class _LoginScreenState extends State<LoginScreen> {
                       // Divider
                       const SizedBox(height: 8),
                       Row(children: [
-                        const Expanded(child: Divider(color: Colors.white24)),
+                        const Expanded(child: Divider(color: AppColors.line)),
                         const Padding(
                           padding: EdgeInsets.symmetric(horizontal: 12),
-                          child: Text('OR', style: TextStyle(color: Colors.white54, fontSize: 13))),
-                        const Expanded(child: Divider(color: Colors.white24)),
+                          child: Text('OR', style: TextStyle(color: AppColors.muted, fontSize: 13))),
+                        const Expanded(child: Divider(color: AppColors.line)),
                       ]),
                       const SizedBox(height: 12),
                       // Big Register button
@@ -257,7 +256,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 8),
                       const Text('New to HamaraService? Create your provider account',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white54, fontSize: 11)),
+                        style: TextStyle(color: AppColors.muted, fontSize: 11)),
                     ],
                   ),
                 ),
@@ -271,125 +270,3 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// ── Pending Approval Screen ───────────────────────────────────────────────
-class _PendingApprovalScreen extends StatelessWidget {
-  final String name;
-  final String email;
-  const _PendingApprovalScreen({required this.name, required this.email});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter, end: Alignment.bottomCenter,
-            colors: [Color(0xFF0D3D47), AppColors.bg],
-          ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 90, height: 90,
-                  decoration: BoxDecoration(
-                    color: AppColors.yellow.withOpacity(0.15),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: AppColors.yellow, width: 2)),
-                  child: const Icon(Icons.hourglass_top_rounded,
-                    color: AppColors.yellow, size: 44),
-                ),
-                const SizedBox(height: 28),
-                const Text('Application Under Review',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Colors.white)),
-                const SizedBox(height: 12),
-                Text('Hi $name! Your provider application is being reviewed by our team.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 14, color: Colors.white70, height: 1.5)),
-                const SizedBox(height: 32),
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20)),
-                  child: Column(children: [
-                    _infoRow(Icons.check_circle_outline_rounded, AppColors.green,
-                      'Application received', 'We have your details'),
-                    const SizedBox(height: 14),
-                    _infoRow(Icons.manage_search_rounded, AppColors.yellow,
-                      'Under review', 'Usually takes 24–48 hours'),
-                    const SizedBox(height: 14),
-                    _infoRow(Icons.notifications_active_rounded, AppColors.muted,
-                      'Approval notification', 'You will get notified when approved'),
-                  ]),
-                ),
-                const SizedBox(height: 28),
-                Text('Registered with: $email',
-                  style: const TextStyle(fontSize: 13, color: Colors.white60)),
-                const SizedBox(height: 8),
-                const Text('For support: info@hamaraservice.com',
-                  style: TextStyle(fontSize: 12, color: Colors.white54)),
-                const SizedBox(height: 24),
-                // Contact support button
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.support_agent_rounded, size: 18),
-                    label: const Text('Contact Support',
-                      style: TextStyle(fontWeight: FontWeight.w700)),
-                    onPressed: () async {
-                      final uri = Uri.parse(
-                        'mailto:info@hamaraservice.com'
-                        '?subject=Provider%20Account%20Query%20--%20$email'
-                        '&body=Hi%20HamaraService%20Team%2C%0A%0AI%20registered%20as%20a%20provider%20with%20email%3A%20$email%0A%0APlease%20help%20me%20with%20my%20application.%0A%0AThank%20you.'
-                      );
-                      // ignore: deprecated_member_use
-                      if (await canLaunchUrl(uri)) await launchUrl(uri);
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.brand,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(double.infinity, 48),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.pushReplacement(context,
-                      MaterialPageRoute(builder: (_) => const LoginScreen())),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.white54),
-                      minimumSize: const Size(double.infinity, 48),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                    child: const Text('Back to Login',
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _infoRow(IconData icon, Color color, String title, String sub) {
-    return Row(children: [
-      Container(
-        width: 40, height: 40,
-        decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
-        child: Icon(icon, color: color, size: 20)),
-      const SizedBox(width: 14),
-      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink)),
-        Text(sub, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-      ]),
-    ]);
-  }
-}

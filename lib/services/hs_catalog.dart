@@ -2,7 +2,7 @@
 // ║  HamaraService — MASTER CATALOG                                  ║
 // ║  Single source of truth for ALL services, subcategories & prices ║
 // ║  Matches hs-prices.html exactly. DO NOT edit prices here —       ║
-// ║  admin updates Firebase; apps read from Firebase.                ║
+// ║  live prices come from the MySQL API (services.php / providers). ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
 
@@ -515,36 +515,4 @@ class HSCatalog {
 
   static int basePrice(String id) => getById(id)?.basePrice ?? 0;
 
-  // Seed handled by MySQL setup.php — no-op here
-  static Future<void> seedToFirebase() async {}
-
-  static Map<String, dynamic> _toFirebase(HSService svc) {
-    return {
-      'id': svc.id,
-      'name': svc.name,
-      'icon': svc.icon,
-      'cat': svc.cat,
-      'basePrice': svc.basePrice,
-      'status': 'active',
-      'groups': svc.groups.map((g) => {
-        'key': g.key,
-        'title': g.title,
-        'style': g.style,
-        if (g.showOn != null) 'showOn': g.showOn,
-        if (g.info != null) 'info': g.info,
-        'items': g.items.map((o) => {
-          'key': o.key,
-          'name': o.name,
-          'ico': o.ico,
-          'p': o.price,
-        }).toList(),
-      }).toList(),
-    };
-  }
-
-  // Load live prices from Firebase (overrides base prices if admin updated)
-  // Prices loaded from MySQL API — no Firebase needed
-  static Future<Map<String, int>> loadLivePrices() async {
-    return {};
-  }
 }

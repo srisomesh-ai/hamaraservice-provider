@@ -1,19 +1,17 @@
 import 'package:flutter/material.dart';
 import '../services/provider_api_service.dart';
-import 'package:flutter/services.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
+import '../utils/support_contact.dart';
+import 'login_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String prefillEmail;
-  final String prefillPassword;
   const RegisterScreen({
     super.key,
     this.prefillEmail = '',
-    this.prefillPassword = '',
   });
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -46,6 +44,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   double? _lat;
   double? _lng;
   String _address = '';
+  String _city = '';
   bool _detectingLocation = false;
   int _radius = 5; // default 5km radius
 
@@ -56,12 +55,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   void initState() {
     super.initState();
-    // Pre-fill email and password from login screen
+    // Pre-fill email from the login screen (never the password)
     if (widget.prefillEmail.isNotEmpty) {
       _emailCtrl.text = widget.prefillEmail;
-    }
-    if (widget.prefillPassword.isNotEmpty) {
-      _pwdCtrl.text = widget.prefillPassword;
     }
     _loadRefPrices();
   }
@@ -75,9 +71,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
         res.forEach((svcId, grouped) {
           if (grouped is! Map) return;
           final List<int> vals = [];
-          (grouped as Map).forEach((_, gv) {
+          grouped.forEach((_, gv) {
             if (gv is Map) {
-              (gv as Map).forEach((_, v) {
+              gv.forEach((_, v) {
                 if (v is num && v.toInt() > 0) vals.add(v.toInt());
               });
             }
@@ -99,20 +95,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
     super.dispose();
   }
 
-  String _generateId() {
-    final name = _nameCtrl.text.trim().replaceAll(RegExp(r'[^a-zA-Z]'), '').toUpperCase().padRight(4, 'X').substring(0, 4);
-    final phone = _phoneCtrl.text.trim();
-    final phonePart = phone.length >= 4 ? phone.substring(phone.length - 4) : phone.padLeft(4, '0');
-    return 'HS-PRO-$name$phonePart';
-  }
-
   bool _validateStep1() {
     if (_nameCtrl.text.trim().isEmpty) { setState(() => _error = 'Enter your full name'); return false; }
-    if (_phoneCtrl.text.trim().length < 10) { setState(() => _error = 'Enter valid 10-digit phone'); return false; }
-    if (!_emailCtrl.text.contains('@')) { setState(() => _error = 'Enter valid email address'); return false; }
+    final phone = _normPhone(_phoneCtrl.text);
+    if (!_phoneRe.hasMatch(phone)) { setState(() => _error = 'Enter a valid 10-digit mobile number (starts with 6-9)'); return false; }
+    final wa = _normPhone(_whatsappCtrl.text);
+    if (_whatsappCtrl.text.trim().isNotEmpty && !_phoneRe.hasMatch(wa)) { setState(() => _error = 'Enter a valid 10-digit WhatsApp number'); return false; }
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_emailCtrl.text.trim())) { setState(() => _error = 'Enter a valid email address'); return false; }
     if (_pwdCtrl.text.length < 8) { setState(() => _error = 'Password must be at least 8 characters'); return false; }
     if (_pwdCtrl.text != _confirmPwdCtrl.text) { setState(() => _error = 'Passwords do not match'); return false; }
     if (_idNumCtrl.text.trim().isEmpty) { setState(() => _error = 'Enter your ID proof number'); return false; }
+    setState(() => _error = '');
+    return true;
+  }
+
+  static final RegExp _phoneRe = RegExp(r'^[6-9]\d{9}$');
+
+  /// Keeps the last 10 digits (strips +91 / spaces / dashes).
+  String _normPhone(String v) {
+    final d = v.replaceAll(RegExp(r'\D'), '');
+    return d.length > 10 ? d.substring(d.length - 10) : d;
+  }
+
+  bool _validateStep3() {
+    if (_lat == null || _lng == null) { setState(() => _error = 'Tap "Detect" to set your service location'); return false; }
     setState(() => _error = '');
     return true;
   }
@@ -130,6 +136,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       setState(() { _currentStep++; _error = ''; });
       _pageCtrl.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
     } else {
+      if (!_validateStep3()) return;
       _submitRegistration();
     }
   }
@@ -152,15 +159,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.low);
       final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
       String addr = '';
+      String city = '';
       if (placemarks.isNotEmpty) {
         final p = placemarks.first;
-        addr = [p.locality, p.subAdministrativeArea, p.administrativeArea]
+        addr = [p.subLocality, p.locality, p.subAdministrativeArea, p.administrativeArea]
             .where((s) => s != null && s.isNotEmpty).join(', ');
+        // City = locality (fallback: district). Never the state.
+        city = (p.locality?.isNotEmpty == true)
+            ? p.locality!
+            : (p.subAdministrativeArea ?? '');
       }
       setState(() {
         _lat = pos.latitude;
         _lng = pos.longitude;
         _address = addr;
+        _city = city;
         _detectingLocation = false;
       });
     } catch (e) {
@@ -170,76 +183,46 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _submitRegistration() async {
     setState(() { _submitting = true; _error = ''; });
-    try {
-      final id = _generateId();
 
-      // Check if already registered
-      // Duplicate check handled by MySQL API (unique email constraint)
-
-      // Map selected IDs to full service data — NO hardcoded price
-      final services = _selectedServices.map((svcId) {
-        final matches = HSCatalog.services.where((sv) => sv.id == svcId).toList();
-        final sName = matches.isNotEmpty ? matches.first.name : svcId;
-        final sIcon = matches.isNotEmpty ? matches.first.icon : '🔧';
-        final sCat  = matches.isNotEmpty ? matches.first.cat  : 'Service';
-        return {
-          'id':   svcId,
-          'name': sName,
-          'icon': sIcon,
-          'cat':  sCat,
-          // price is set by provider AFTER approval in My Services screen
-          // min/max stored separately in services/{svcId}
-        };
-      }).toList();
-
-      // Also save services as a Map for the services_screen to read
-      final servicesMap = <String, dynamic>{};
-      for (final svcId in _selectedServices) {
-        servicesMap[svcId] = {'enabled': true, 'min': 0, 'max': 0};
-      }
-
-      final provider = {
-        'id':           id,
-        'name':         _nameCtrl.text.trim(),
-        'phone':        _phoneCtrl.text.trim(),
-        'email':        _emailCtrl.text.trim().toLowerCase(),
-        'whatsapp':     _whatsappCtrl.text.trim().isNotEmpty ? _whatsappCtrl.text.trim() : _phoneCtrl.text.trim(),
-        'password':     _pwdCtrl.text.trim(),
-        'gender':       _gender,
-        'experience':   _experience,
-        'bio':          _bioCtrl.text.trim(),
-        'idType':       _idType,
-        'idNum':        _idNumCtrl.text.trim(),
-        'services':     services,
-        'lat':          _lat ?? 0.0,
-        'lng':          _lng ?? 0.0,
-        'address':      _address,
-        'city':         _address.contains(',') ? _address.split(',').last.trim() : _address,
-        'radius':       _radius,
-        'status':       'pending',
-        'available':    false,
-        'rating':       0,
-        'reviews':      0,
-        'totalBookings':0,
-        'completedBookings': 0,
-        'totalEarned':  0,
-        'pendingEarned':0,
-        'registeredAt': DateTime.now().toIso8601String(),
-        'appliedAt':    DateTime.now().toIso8601String(),
+    final services = _selectedServices.map((svcId) {
+      final matches = HSCatalog.services.where((sv) => sv.id == svcId).toList();
+      return {
+        'id':   svcId,
+        'name': matches.isNotEmpty ? matches.first.name : svcId,
+        'icon': matches.isNotEmpty ? matches.first.icon : '🔧',
+        'cat':  matches.isNotEmpty ? matches.first.cat  : 'Service',
+        // min/max prices are set by the provider after approval (My Services)
       };
+    }).toList();
 
-      // Register via MySQL API
-      provider['servicesMap'] = servicesMap;
-      final success = await ProviderApiService.register(provider);
-      if (!success) {
-        setState(() { _submitting = false; _error = 'Registration failed. Please try again.'; });
-        return;
-      }
-
-      setState(() { _submitting = false; _generatedId = id; });
-    } catch (e) {
-      setState(() { _submitting = false; _error = 'Registration failed. Please try again.'; });
+    final phone = _normPhone(_phoneCtrl.text);
+    final wa = _normPhone(_whatsappCtrl.text);
+    final res = await ProviderApiService.register({
+      'name':       _nameCtrl.text.trim(),
+      'phone':      phone,
+      'email':      _emailCtrl.text.trim().toLowerCase(),
+      'whatsapp':   wa.isNotEmpty ? wa : phone,
+      'password':   _pwdCtrl.text,
+      'gender':     _gender,
+      'experience': _experience,
+      'bio':        _bioCtrl.text.trim(),
+      'id_type':    _idType,
+      'id_number':  _idNumCtrl.text.trim(),
+      'address':    _address,
+      'city':       _city,
+      'lat':        _lat ?? 0.0,
+      'lng':        _lng ?? 0.0,
+      'radius_km':  _radius,
+      'areas':      <String>[],
+      'services':   services,
+    });
+    if (!mounted) return;
+    if (!res.ok) {
+      setState(() { _submitting = false; _error = res.error; });
+      return;
     }
+    final id = '${res.map?['id'] ?? ''}';
+    setState(() { _submitting = false; _generatedId = id.isNotEmpty ? id : 'Submitted'; });
   }
 
   @override
@@ -614,7 +597,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             _summaryRow('Phone', _phoneCtrl.text),
             _summaryRow('Email', _emailCtrl.text),
             _summaryRow('Services', '${_selectedServices.length} of ${HSCatalog.services.length} selected'),
-            _summaryRow('Your ID will be', _generateId()),
+            _summaryRow('City', _city.isNotEmpty ? _city : '—'),
           ]),
         ),
 
@@ -673,7 +656,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   const SizedBox(height: 8),
                   Text(_generatedId, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: AppColors.teal)),
                   const SizedBox(height: 6),
-                  const Text('Save this — you\'ll need it to login after approval',
+                  const Text('Log in with your email and password once approved',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12, color: AppColors.muted)),
                 ]),
@@ -691,8 +674,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 child: Column(children: [
                   const Text('For faster approval, contact Admin', style: TextStyle(fontSize: 12, color: AppColors.muted)),
                   const SizedBox(height: 6),
-                  const Text('📞 8985849710', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.brand)),
-                  const Text('Call or WhatsApp', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                  if (hasSupportPhone) ...[
+                    const Text('📞 $kSupportPhone', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.brand)),
+                    const Text('Call or WhatsApp', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                  ] else
+                    const Text(kSupportEmail, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.brand)),
                 ]),
               ),
 
@@ -701,7 +687,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: () => Navigator.pushAndRemoveUntil(context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()), (_) => false),
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 52),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),

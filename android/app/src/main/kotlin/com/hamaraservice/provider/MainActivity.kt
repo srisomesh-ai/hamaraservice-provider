@@ -27,7 +27,6 @@ class MainActivity: FlutterActivity() {
                 enableLights(true)
                 setShowBadge(true)
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-                setBypassDnd(true)  // Show even in Do Not Disturb
             }
             manager.createNotificationChannel(channel)
 
@@ -41,7 +40,6 @@ class MainActivity: FlutterActivity() {
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 500, 200, 500)
                 enableLights(true)
-                setBypassDnd(true)
             }
             manager.createNotificationChannel(oldChannel)
         }

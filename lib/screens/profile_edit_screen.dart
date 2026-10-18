@@ -1,9 +1,8 @@
 import 'dart:io';
-import '../services/provider_api_service.dart';
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import '../services/provider_api_service.dart';
+import '../utils/parse.dart';
 import '../utils/theme.dart';
 
 class ProfileEditScreen extends StatefulWidget {
@@ -26,11 +25,12 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   @override
   void initState() {
     super.initState();
-    _nameCtrl.text  = widget.providerData?['name'] ?? '';
-    _phoneCtrl.text = widget.providerData?['phone'] ?? '';
-    _bioCtrl.text   = widget.providerData?['bio'] ?? '';
-    _cityCtrl.text  = widget.providerData?['city'] ?? '';
-    _photoUrl       = widget.providerData?['photo'];
+    _nameCtrl.text  = str(widget.providerData?['name']);
+    _phoneCtrl.text = str(widget.providerData?['phone']);
+    _bioCtrl.text   = str(widget.providerData?['bio']);
+    _cityCtrl.text  = str(widget.providerData?['city']);
+    final p = photoUrl(widget.providerData?['photo']);
+    _photoUrl       = p.isEmpty ? null : p;
   }
 
   @override
@@ -42,42 +42,52 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
 
   Future<void> _pickPhoto() async {
     final picker = ImagePicker();
-    final img = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+    final img = await picker.pickImage(
+        source: ImageSource.gallery, imageQuality: 70, maxWidth: 1024, maxHeight: 1024);
     if (img != null) setState(() => _selectedImage = File(img.path));
   }
 
+  void _snack(String msg, Color color) => ScaffoldMessenger.of(context)
+      .showSnackBar(SnackBar(content: Text(msg), backgroundColor: color));
+
   Future<void> _save() async {
-    setState(() => _saving = true);
-    try {
-      String? photoUrl = _photoUrl;
-
-      // Upload photo if selected
-      if (_selectedImage != null) {
-        final ref = FirebaseStorage.instance
-            .ref('provider_photos/${widget.providerId}.jpg');
-        await ref.putFile(_selectedImage!);
-        photoUrl = await ref.getDownloadURL();
-      }
-
-      await ProviderApiService.updateProfile({
-        'name':      _nameCtrl.text.trim(),
-        'phone':     _phoneCtrl.text.trim(),
-        'bio':       _bioCtrl.text.trim(),
-        'city':      _cityCtrl.text.trim(),
-        if (photoUrl != null) 'photo': photoUrl,
-        'updatedAt': DateTime.now().toIso8601String(),
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile updated!'), backgroundColor: AppColors.green));
-        Navigator.pop(context, true);
-      }
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
+    if (_saving) return;
+    final name = _nameCtrl.text.trim();
+    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+    final phone10 = phone.length > 10 ? phone.substring(phone.length - 10) : phone;
+    if (name.isEmpty) { _snack('Enter your name', AppColors.red); return; }
+    if (!RegExp(r'^[6-9]\d{9}$').hasMatch(phone10)) {
+      _snack('Enter a valid 10-digit mobile number', AppColors.red);
+      return;
     }
+    setState(() => _saving = true);
+
+    // 1. Photo → upload.php?action=provider_photo (server stores the URL)
+    if (_selectedImage != null) {
+      final up = await ProviderApiService.uploadPhoto(_selectedImage!);
+      if (!mounted) return;
+      if (!up.ok) {
+        setState(() => _saving = false);
+        if (!up.unauthorized) _snack('Photo upload failed: ${up.error}', AppColors.red);
+        return;
+      }
+    }
+
+    // 2. Profile fields
+    final res = await ProviderApiService.updateProfile({
+      'name':  name,
+      'phone': phone10,
+      'bio':   _bioCtrl.text.trim(),
+      'city':  _cityCtrl.text.trim(),
+    });
+    if (!mounted) return;
     setState(() => _saving = false);
+    if (!res.ok) {
+      if (!res.unauthorized) _snack(res.error, AppColors.red);
+      return;
+    }
+    _snack('Profile updated!', AppColors.green);
+    Navigator.pop(context, true);
   }
 
   @override

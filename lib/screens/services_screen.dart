@@ -18,6 +18,7 @@ class _State extends State<ServicesScreen> {
 
   bool   _loading = true;
   bool   _saving  = false;
+  bool   _loadFailed = false;
   String _cat     = 'All';
 
   static const _cats = [
@@ -38,14 +39,23 @@ class _State extends State<ServicesScreen> {
       for (final s in svcs) {
         final id = s['svc_id']?.toString() ?? '';
         if (id.isEmpty) continue;
-        _enabled[id] = s['enabled'] == 1 || s['enabled'] == true;
+        _enabled[id] = s['enabled'] == 1 || s['enabled'] == true || '${s['enabled']}' == '1';
       }
-    } catch (_) {}
+      _loadFailed = false;
+    } catch (e) {
+      _loadFailed = true;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not load your services: $e'),
+          backgroundColor: AppColors.red,
+        ));
+      }
+    }
 
     // 2. Load per-option prices — API returns {svcId: {key: price}}
     try {
       final prices = await ProviderApiService.getServiceOptionPrices();
-      if (prices is Map) {
+      {
         prices.forEach((svcId, opts) {
           if (opts is Map) {
             _optionPrices[svcId.toString()] = {};
@@ -65,7 +75,7 @@ class _State extends State<ServicesScreen> {
     // 3. Load admin prices (ref + min/max per option) from price_ranges API
     try {
       final ref = await ProviderApiService.getServicePrices('');
-      if (ref is Map) {
+      {
         ref.forEach((svcId, svcData) {
           if (svcData is! Map) return;
           final id = svcId.toString();
@@ -96,13 +106,22 @@ class _State extends State<ServicesScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Ref prices load error: \$e');
+      debugPrint('Ref prices load error: $e');
     }
 
     if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _save() async {
+    if (_loadFailed) {
+      // Saving now would overwrite the real list with an empty one.
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Your services did not load. Retrying — save again once they appear.'),
+        backgroundColor: AppColors.red,
+      ));
+      _load();
+      return;
+    }
     setState(() => _saving = true);
     HapticFeedback.mediumImpact();
     try {
@@ -204,7 +223,12 @@ class _State extends State<ServicesScreen> {
         ));
       }
     } catch (e) {
-      debugPrint('Auto-save error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not save ${svc.name}: $e'),
+          backgroundColor: AppColors.red,
+        ));
+      }
     }
   }
 

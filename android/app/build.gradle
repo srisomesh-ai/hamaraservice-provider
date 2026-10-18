@@ -8,6 +8,17 @@ if (flutterRoot == null) throw new GradleException("Flutter SDK not found.")
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode') ?: '1'
 def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '1.0'
 
+// Release signing: android/key.properties (written by CI from secrets, or
+// created locally). Format:
+//   storePassword=...  keyPassword=...  keyAlias=...  storeFile=upload-keystore.jks
+// storeFile is resolved relative to android/app/.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+def hasReleaseKey = keystorePropertiesFile.exists()
+if (hasReleaseKey) {
+    keystorePropertiesFile.withReader('UTF-8') { reader -> keystoreProperties.load(reader) }
+}
+
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
@@ -17,7 +28,12 @@ android {
     namespace "com.hamaraservice.provider"
     compileSdkVersion 34
     ndkVersion flutter.ndkVersion
-    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+    compileOptions {
+        // flutter_local_notifications requires core library desugaring
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
     kotlinOptions { jvmTarget = '1.8' }
     sourceSets { main.java.srcDirs += 'src/main/kotlin' }
     defaultConfig {
@@ -28,12 +44,32 @@ android {
         versionName flutterVersionName
         multiDexEnabled true
     }
-    buildTypes {
-        release { signingConfig signingConfigs.debug; minifyEnabled false; shrinkResources false }
+    signingConfigs {
+        if (hasReleaseKey) {
+            release {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+            }
+        }
     }
+    buildTypes {
+        release {
+            // Debug key is a LOCAL-ONLY fallback; such builds cannot be
+            // published or installed over a Play-signed app.
+            signingConfig hasReleaseKey ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
+}
+if (!hasReleaseKey) {
+    logger.warn("WARNING: android/key.properties not found — release build is signed with the DEBUG key (local testing only).")
 }
 flutter { source '../..' }
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
     implementation platform('com.google.firebase:firebase-bom:31.5.0')
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:1.2.2'
 }
