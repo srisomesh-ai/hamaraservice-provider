@@ -64,7 +64,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       return _go(DashboardScreen(providerId: pid));
     }
     await ProviderApiService.markLoggedIn(false);
-    if (status == 'pending') {
+    if (status == 'pending' || status == 'review') {
       return _go(PendingApprovalScreen(
           name: '${p['name'] ?? 'Provider'}', email: '${p['email'] ?? ''}'));
     }

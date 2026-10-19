@@ -61,6 +61,24 @@ class ProviderApiService {
 
   static Future<bool> hasToken() async => (await getToken()).isNotEmpty;
 
+  /// Own provider id (saved at login). Sent as `id` on "my …" requests:
+  /// the current API derives it from the JWT, the previous API version
+  /// requires it explicitly — sending it keeps both working.
+  static Future<String> myId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('provider_id') ?? '';
+  }
+
+  static Future<Map<String, String>> _mine(String action,
+      {bool role = false}) async {
+    final id = await myId();
+    return {
+      'action': action,
+      if (id.isNotEmpty) 'id': id,
+      if (role) 'role': 'provider',
+    };
+  }
+
   static Future<void> saveToken(String token) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
@@ -218,7 +236,7 @@ class ProviderApiService {
 
   /// Own full profile (no id) — includes `services` rows.
   static Future<ApiResult> getMyProfile() async {
-    final res = await get('providers.php', params: {'action': 'get'});
+    final res = await get('providers.php', params: await _mine('get'));
     if (res.ok && res.map != null) await cacheProvider(res.map!);
     return res;
   }
@@ -305,11 +323,11 @@ class ProviderApiService {
       get('bookings.php', params: {'action': 'get', 'id': bookingId});
 
   /// My current booking (includes completed-but-unpaid) or data == null.
-  static Future<ApiResult> getActiveBooking() =>
-      get('bookings.php', params: {'action': 'active'});
+  static Future<ApiResult> getActiveBooking() async =>
+      get('bookings.php', params: await _mine('active', role: true));
 
-  static Future<ApiResult> getBookingHistory() =>
-      get('bookings.php', params: {'action': 'history'});
+  static Future<ApiResult> getBookingHistory() async =>
+      get('bookings.php', params: await _mine('history', role: true));
 
   static Future<ApiResult> acceptBooking(String bookingId, int quotedPrice) =>
       _bk('accept', {'booking_id': bookingId, 'quoted_price': quotedPrice});
@@ -342,19 +360,19 @@ class ProviderApiService {
 
   // ── EARNINGS / PAYOUTS ───────────────────────────────────
 
-  static Future<ApiResult> getBalance() =>
-      get('payouts.php', params: {'action': 'balance'});
+  static Future<ApiResult> getBalance() async =>
+      get('payouts.php', params: await _mine('balance'));
 
   static Future<ApiResult> requestPayout(Map<String, dynamic> data) =>
       post('payouts.php', data, params: {'action': 'request'});
 
-  static Future<ApiResult> getPayoutHistory() =>
-      get('payouts.php', params: {'action': 'history'});
+  static Future<ApiResult> getPayoutHistory() async =>
+      get('payouts.php', params: await _mine('history'));
 
   // ── REVIEWS ──────────────────────────────────────────────
 
-  static Future<ApiResult> getMyReviews() =>
-      get('reviews.php', params: {'action': 'provider'});
+  static Future<ApiResult> getMyReviews() async =>
+      get('reviews.php', params: await _mine('provider'));
 
   // ── CACHED PROVIDER DATA ─────────────────────────────────
 

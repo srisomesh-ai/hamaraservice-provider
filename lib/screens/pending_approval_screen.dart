@@ -47,7 +47,7 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
           context,
           MaterialPageRoute(builder: (_) => DashboardScreen(providerId: '${p['id'] ?? ''}')),
           (_) => false);
-    } else if (status == 'pending') {
+    } else if (status == 'pending' || status == 'review') {
       _snack('Still under review. We will notify you when approved.', AppColors.teal);
     } else {
       await ProviderApiService.clearToken();

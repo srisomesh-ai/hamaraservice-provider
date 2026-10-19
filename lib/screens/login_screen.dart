@@ -80,7 +80,7 @@ class _LoginScreenState extends State<LoginScreen> {
       Navigator.pushAndRemoveUntil(context,
         MaterialPageRoute(builder: (_) => DashboardScreen(providerId: providerId)),
         (_) => false);
-    } else if (status == 'pending') {
+    } else if (status == 'pending' || status == 'review') {
       Navigator.pushAndRemoveUntil(context,
         MaterialPageRoute(builder: (_) => PendingApprovalScreen(
           name: '${provider['name'] ?? 'Provider'}', email: email)),

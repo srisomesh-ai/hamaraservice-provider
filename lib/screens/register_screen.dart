@@ -149,17 +149,45 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _detectLocation() async {
-    setState(() => _detectingLocation = true);
+    setState(() { _detectingLocation = true; _error = ''; });
+
+    // 1. Location services + permission
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      if (!mounted) return;
+      setState(() { _detectingLocation = false; _error = 'Turn on Location (GPS) and tap Detect again'; });
+      await Geolocator.openLocationSettings();
+      return;
+    }
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      if (!mounted) return;
+      setState(() { _detectingLocation = false; _error = 'Location permission is needed to find jobs near you. Allow it in Settings.'; });
+      if (permission == LocationPermission.deniedForever) await Geolocator.openAppSettings();
+      return;
+    }
+
+    // 2. Position — with a timeout, falling back to the last known fix
+    Position? pos;
     try {
-      final permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-        setState(() { _detectingLocation = false; _error = 'Location permission denied'; });
-        return;
-      }
-      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.low);
+      pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium, timeLimit: const Duration(seconds: 20));
+    } catch (_) {
+      try { pos = await Geolocator.getLastKnownPosition(); } catch (_) {}
+    }
+    if (pos == null) {
+      if (!mounted) return;
+      setState(() { _detectingLocation = false; _error = 'Could not get your location. Move near a window and tap Detect again.'; });
+      return;
+    }
+
+    // 3. Address lookup is best effort — never lose the GPS fix because of it
+    String addr = '';
+    String city = '';
+    try {
       final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
-      String addr = '';
-      String city = '';
       if (placemarks.isNotEmpty) {
         final p = placemarks.first;
         addr = [p.subLocality, p.locality, p.subAdministrativeArea, p.administrativeArea]
@@ -169,16 +197,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ? p.locality!
             : (p.subAdministrativeArea ?? '');
       }
-      setState(() {
-        _lat = pos.latitude;
-        _lng = pos.longitude;
-        _address = addr;
-        _city = city;
-        _detectingLocation = false;
-      });
-    } catch (e) {
-      setState(() { _detectingLocation = false; _error = 'Could not detect location'; });
-    }
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _lat = pos!.latitude;
+      _lng = pos.longitude;
+      _address = addr.isNotEmpty
+          ? addr
+          : '${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}';
+      _city = city;
+      _detectingLocation = false;
+    });
   }
 
   Future<void> _submitRegistration() async {
