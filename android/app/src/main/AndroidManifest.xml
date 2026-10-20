@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- New-job alerts wake the screen and show over the lock screen -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
 
     <!-- url_launcher (Android 11+ package visibility): dialer, email, maps/browser,
          WhatsApp support (https://wa.me/… opens WhatsApp); UPI apps for Razorpay -->
@@ -45,7 +47,9 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true">
             <meta-data android:name="io.flutter.embedding.android.NormalTheme" android:resource="@style/NormalTheme"/>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
@@ -53,15 +57,9 @@
             </intent-filter>
         </activity>
 
-        <!-- FCM background service — required for push when app is killed -->
-        <service
-            android:name="com.google.firebase.messaging.FirebaseMessagingService"
-            android:exported="false"
-            android:directBootAware="true">
-            <intent-filter android:priority="100">
-                <action android:name="com.google.firebase.MESSAGING_EVENT"/>
-            </intent-filter>
-        </service>
+        <!-- FCM: the firebase_messaging plugin registers its own service
+             (declaring the base FirebaseMessagingService here swallowed
+             background messages). -->
 
         <!-- Default notification channel — must match channel in MainActivity -->
         <meta-data

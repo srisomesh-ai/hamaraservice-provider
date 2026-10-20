@@ -26,6 +26,26 @@ const AndroidNotificationDetails _androidDetails = AndroidNotificationDetails(
   visibility: NotificationVisibility.public,
 );
 
+// Events that wake the screen (full-screen alert over the lock screen,
+// like an incoming call) — the provider must act on these quickly.
+const Set<String> _wakeEvents = {
+  'new_booking', 'price_negotiation', 'price_confirmed', 'booking_confirmed',
+};
+
+const AndroidNotificationDetails _wakeDetails = AndroidNotificationDetails(
+  kChannelId,
+  kChannelName,
+  channelDescription: 'New job alerts, booking updates and payments',
+  importance: Importance.max,
+  priority: Priority.max,
+  playSound: true,
+  enableVibration: true,
+  visibility: NotificationVisibility.public,
+  fullScreenIntent: true,
+  category: AndroidNotificationCategory.call,
+  autoCancel: true,
+);
+
 int _notificationId(RemoteMessage m) {
   final key = m.messageId ??
       '${m.data['event']}-${m.data['bookingId']}-${m.sentTime?.millisecondsSinceEpoch}';
@@ -41,7 +61,8 @@ Future<void> _showLocal(FlutterLocalNotificationsPlugin plugin, RemoteMessage m)
     _notificationId(m),
     title,
     body,
-    const NotificationDetails(android: _androidDetails),
+    NotificationDetails(
+        android: _wakeEvents.contains('${m.data['event']}') ? _wakeDetails : _androidDetails),
     payload: jsonEncode(m.data),
   );
 }
@@ -104,12 +125,30 @@ class NotificationService {
       _handlePayload(launch?.notificationResponse?.payload);
     }
 
+    await _askFullScreenOnce();
+
     // Token refresh → save only when logged in.
     FirebaseMessaging.instance.onTokenRefresh.listen((t) async {
       if (await ProviderApiService.hasToken()) {
         await ProviderApiService.saveFcmToken(t);
       }
     });
+  }
+
+  /// Android 14+ asks the user to allow full-screen alerts (needed to wake
+  /// the screen for new jobs). Asked once per install.
+  static Future<void> _askFullScreenOnce() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('hs_fsi_asked') == true) return;
+      await prefs.setBool('hs_fsi_asked', true);
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestFullScreenIntentPermission();
+    } catch (e) {
+      debugPrint('Full-screen permission: $e');
+    }
   }
 
   /// Call after a successful login (and on dashboard start).
