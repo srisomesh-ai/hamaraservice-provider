@@ -115,6 +115,7 @@ jobs:
           adb logcat -d -b crash || true
           echo "===== APP LOG ====="
           adb logcat -d | grep -iE "AndroidRuntime|FATAL|flutter|hamaraservice|DEBUG   :|libc    :|Firebase" | tail -300 || true
+          adb shell pidof com.hamaraservice.provider > /dev/null || { echo "::error::App crashed on launch"; exit 1; }
           LAUNCHEOF
       - uses: reactivecircus/android-emulator-runner@v2
         with:
