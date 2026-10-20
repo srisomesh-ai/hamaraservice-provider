@@ -3,6 +3,7 @@ import '../services/notification_service.dart';
 import '../services/provider_api_service.dart';
 import '../utils/support_contact.dart';
 import '../utils/theme.dart';
+import '../widgets/ui.dart';
 import 'dashboard_screen.dart';
 import 'login_screen.dart';
 
@@ -11,7 +12,10 @@ import 'login_screen.dart';
 class PendingApprovalScreen extends StatefulWidget {
   final String name;
   final String email;
-  const PendingApprovalScreen({super.key, required this.name, required this.email});
+  /// Just registered → "Hi <name>! Application submitted."
+  final bool submitted;
+  const PendingApprovalScreen(
+      {super.key, required this.name, required this.email, this.submitted = false});
 
   @override
   State<PendingApprovalScreen> createState() => _PendingApprovalScreenState();
@@ -43,12 +47,13 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
     if (status == 'approved') {
       await ProviderApiService.markLoggedIn(true);
       if (!mounted) return;
+      _snack('🎉 Approved! Welcome aboard', AppColors.green);
       Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (_) => DashboardScreen(providerId: '${p['id'] ?? ''}')),
           (_) => false);
     } else if (status == 'pending' || status == 'review') {
-      _snack('Still under review. We will notify you when approved.', AppColors.teal);
+      _snack('Still under review — we will notify you', AppColors.teal);
     } else {
       await ProviderApiService.clearToken();
       if (!mounted) return;
@@ -67,8 +72,8 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
   }
 
   void _snack(String msg, Color color) {
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: color));
+    showSnack(context, msg,
+        tone: color == AppColors.red ? Tone.error : color == AppColors.green ? Tone.success : Tone.neutral);
   }
 
   Future<void> _contactSupport() async {
@@ -82,126 +87,65 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter, end: Alignment.bottomCenter,
-            colors: [Color(0xFF0D3D47), AppColors.bg],
-          ),
-        ),
-        child: SafeArea(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
-            child: Column(
-              children: [
-                const SizedBox(height: 24),
-                Container(
-                  width: 90, height: 90,
-                  decoration: BoxDecoration(
-                    color: AppColors.yellow.withOpacity(0.15),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: AppColors.yellow, width: 2)),
-                  child: const Icon(Icons.hourglass_top_rounded,
-                    color: AppColors.yellow, size: 44),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Center(
+                child: Container(
+                  width: 96, height: 96,
+                  decoration: const BoxDecoration(color: AppColors.yellowSoft, shape: BoxShape.circle),
+                  child: const Icon(Icons.hourglass_top_rounded, color: AppColors.yellow, size: 48),
                 ),
-                const SizedBox(height: 28),
-                const Text('Application Under Review',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Colors.white)),
-                const SizedBox(height: 12),
-                Text('Hi ${widget.name}! Your provider application is being reviewed by our team.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 14, color: Colors.white70, height: 1.5)),
-                const SizedBox(height: 32),
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20)),
+              ),
+              const SizedBox(height: 24),
+              Text('Application Under Review', textAlign: TextAlign.center, style: t.headlineSmall),
+              const SizedBox(height: 8),
+              Text(widget.submitted ? 'Hi ${widget.name}! Application submitted.' : widget.name,
+                  textAlign: TextAlign.center, style: t.titleMedium?.copyWith(color: AppColors.ink2)),
+              const SizedBox(height: 6),
+              Text('Approval usually takes 24–48 hours.',
+                  textAlign: TextAlign.center, style: t.bodyMedium?.copyWith(color: AppColors.muted)),
+              if (widget.email.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(widget.email, textAlign: TextAlign.center, style: t.bodySmall),
+              ],
+              const SizedBox(height: 28),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Column(children: [
                     _infoRow(Icons.check_circle_outline_rounded, AppColors.green,
-                      'Application received', 'We have your details'),
-                    const SizedBox(height: 14),
+                        'Application received', 'We have your details'),
                     _infoRow(Icons.manage_search_rounded, AppColors.yellow,
-                      'Under review', 'Usually takes 24–48 hours'),
-                    const SizedBox(height: 14),
-                    _infoRow(Icons.notifications_active_rounded, AppColors.muted,
-                      'Approval notification', 'You will get notified when approved'),
+                        'Under review', 'Usually takes 24–48 hours'),
+                    _infoRow(Icons.notifications_active_outlined, AppColors.teal,
+                        'Approval notification', 'You will get notified when approved'),
                   ]),
                 ),
-                const SizedBox(height: 28),
-                if (widget.email.isNotEmpty)
-                  Text('Registered with: ${widget.email}',
-                    style: const TextStyle(fontSize: 13, color: AppColors.ink2)),
-                const SizedBox(height: 8),
-                Text('For support: ${supportConfigNow.email}',
-                  style: TextStyle(fontSize: 12, color: AppColors.muted)),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    icon: _checking
-                        ? const SizedBox(width: 18, height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.refresh_rounded, size: 18),
-                    label: const Text('Check Approval Status',
-                      style: TextStyle(fontWeight: FontWeight.w700)),
-                    onPressed: _checking ? null : _checkStatus,
-                    style: ElevatedButton.styleFrom(
-                      minimumSize: const Size(double.infinity, 48),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.support_agent_rounded, size: 18),
-                    label: const Text('Contact Support',
-                      style: TextStyle(fontWeight: FontWeight.w700)),
-                    onPressed: _contactSupport,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.brand,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(double.infinity, 48),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: _logout,
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppColors.teal),
-                      minimumSize: const Size(double.infinity, 48),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                    child: const Text('Log Out',
-                      style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
-                  ),
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 28),
+              BigButton('Check Approval Status',
+                  icon: Icons.refresh_rounded, busy: _checking, onPressed: _checkStatus),
+              const SizedBox(height: 12),
+              BigButton('Contact support on WhatsApp',
+                  icon: Icons.chat_outlined, outlined: true, onPressed: _contactSupport),
+              const SizedBox(height: 4),
+              TextButton(onPressed: _logout, child: const Text('Use Different Account')),
+            ]),
           ),
         ),
       ),
     );
   }
 
-  Widget _infoRow(IconData icon, Color color, String title, String sub) {
-    return Row(children: [
-      Container(
-        width: 40, height: 40,
-        decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
-        child: Icon(icon, color: color, size: 20)),
-      const SizedBox(width: 14),
-      Expanded(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink)),
-          Text(sub, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-        ]),
-      ),
-    ]);
-  }
+  Widget _infoRow(IconData icon, Color color, String title, String sub) => ListTile(
+        leading: IconTile(icon, color: color),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: Text(sub),
+      );
 }

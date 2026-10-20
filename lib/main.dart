@@ -41,6 +41,7 @@ Future<void> main() async {
   };
 
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  SystemChrome.setSystemUIOverlayStyle(AppTheme.overlay);
   runZonedGuarded(() => runApp(const ProviderApp()),
       (e, s) => debugPrint('Uncaught: $e\n$s'));
 }

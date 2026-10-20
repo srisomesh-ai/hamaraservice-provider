@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:vibration/vibration.dart';
 import '../services/location_service.dart';
 import '../services/notification_service.dart';
@@ -9,32 +10,59 @@ import '../utils/parse.dart';
 import '../utils/support_contact.dart';
 import '../utils/theme.dart';
 import '../widgets/accept_job.dart';
+import '../widgets/active_job_card.dart';
+import '../widgets/new_job_card.dart';
+import '../widgets/ui.dart';
 import 'active_booking_screen.dart';
 import 'earnings_screen.dart';
 import 'login_screen.dart';
-import 'map_picker_screen.dart';
-import 'open_jobs_screen.dart';
-import 'profile_edit_screen.dart';
+import 'profile_tab.dart';
 import 'ratings_screen.dart';
 import 'services_screen.dart';
-import 'support_screen.dart';
 
+/// Home shell shown after login: a Material 3 [NavigationBar] with four tabs
+/// (Jobs · Earnings · Services · Profile) kept alive in an [IndexedStack].
+/// The shell owns job discovery (one poller), the new-job alert and the
+/// current-job poll, exactly like the website dashboard.
 class DashboardScreen extends StatefulWidget {
   final String providerId;
   final int initialTab;
-  const DashboardScreen({super.key, required this.providerId, this.initialTab = 0});
+
+  // ── Test-only sample data (screenshots). When [debugProfile] is set the
+  // shell never touches the network, plugins or timers.
+  final Map<String, dynamic>? debugProfile;
+  final Map<String, dynamic>? debugActive;
+  final List<Map<String, dynamic>>? debugOpenJobs;
+  final Map<String, dynamic>? debugIncoming;
+  final Map<String, dynamic>? debugBalance;
+  final EarningsDemo? debugEarnings;
+  final ServicesDemo? debugServices;
+
+  const DashboardScreen({
+    super.key,
+    required this.providerId,
+    this.initialTab = 0,
+    this.debugProfile,
+    this.debugActive,
+    this.debugOpenJobs,
+    this.debugIncoming,
+    this.debugBalance,
+    this.debugEarnings,
+    this.debugServices,
+  });
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-/// Booking statuses in which the provider is engaged with a customer.
-const _engagedStatuses = {
-  'price_quoted', 'negotiating', 'negotiation_final', 'confirmed', 'active',
-};
+const int _alertSeconds = 30;
 
 class _DashboardScreenState extends State<DashboardScreen>
-    with TickerProviderStateMixin, WidgetsBindingObserver {
-  late int _tab = widget.initialTab;
+    with WidgetsBindingObserver {
+  late int _tab = widget.initialTab.clamp(0, 3);
+  final Set<int> _visited = {};
+  int _earningsTick = 0;
+  int _servicesTick = 0;
+
   bool _loading = true;
   bool _available = false;
   bool _toggling = false;
@@ -42,47 +70,61 @@ class _DashboardScreenState extends State<DashboardScreen>
   Map<String, dynamic>? _profile;
   Map<String, dynamic>? _balance;
   Timer? _profileTimer; // rating / earnings stay current (every 60 s)
-  bool _savingLoc = false;
 
-  // Job discovery (ONE poller)
+  // "My saved price" sources (same as the website)
+  Map<String, dynamic> _optionPrices = {};
+  Map<String, dynamic> _adminRanges = {};
+
+  // Job discovery (ONE poller, every 4 s like the website)
   Timer? _jobsTimer;
   bool _jobsFetching = false;
   List<Map<String, dynamic>> _openJobs = [];
   String _openError = '';
-  final Set<String> _dismissed = {};
+  final Map<String, DateTime> _shownAt = {}; // re-alert after 45 s (web)
   final Set<String> _acceptingIds = {};
 
-  // Incoming popup
+  // New-job alert
   Map<String, dynamic>? _incoming;
   Timer? _countdownTimer;
-  int _countdown = 30;
-  final _audio = AudioPlayer();
+  int _countdown = _alertSeconds;
+  int _incomingSaved = 0;
+  final _priceCtrl = TextEditingController();
+  AudioPlayer? _audio;
 
-  // Current job
+  // Current job (polled every 4 s like the website)
   Timer? _activeTimer;
   Map<String, dynamic>? _active;
+  String? _lastStatus;
+  String? _lastPay;
+  DateTime? _quoteDeadline;
+  Timer? _quoteTick;
 
-  // History
-  List<Map<String, dynamic>> _history = [];
-  bool _historyLoading = false;
-  String _historyError = '';
-
-  late AnimationController _pulseCtrl;
-  late Animation<double> _pulseAnim;
-
+  bool get _demo => widget.debugProfile != null;
   String get _pid => widget.providerId;
   bool get _approved => str(_profile?['status'], 'pending') == 'approved';
-  bool get _engaged => _active != null && _engagedStatuses.contains(str(_active!['status']));
 
   @override
   void initState() {
     super.initState();
+    _visited.add(_tab);
+    if (_demo) {
+      _profile = widget.debugProfile;
+      _available = toBool(_profile?['available']);
+      _active = widget.debugActive;
+      _openJobs = widget.debugOpenJobs ?? [];
+      _balance = widget.debugBalance;
+      _loading = false;
+      if (_active != null) _setQuoteDeadline(_active!);
+      final inc = widget.debugIncoming;
+      if (inc != null) {
+        _incoming = inc;
+        _incomingSaved = _savedPrice(inc);
+        _priceCtrl.text = _incomingSaved > 0 ? '$_incomingSaved' : '';
+      }
+      return;
+    }
     WidgetsBinding.instance.addObserver(this);
-    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))
-      ..repeat(reverse: true);
-    _pulseAnim = Tween(begin: 1.0, end: 1.04)
-        .animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
-    _audio.setReleaseMode(ReleaseMode.loop);
+    _audio = AudioPlayer()..setReleaseMode(ReleaseMode.loop);
     _init();
   }
 
@@ -104,19 +146,20 @@ class _DashboardScreenState extends State<DashboardScreen>
     _startActivePolling();
     _startProfilePolling();
     loadSupportConfig();
-    if (_tab == 1) _loadHistory();
+    _loadPriceSources();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
+    if (!_demo) WidgetsBinding.instance.removeObserver(this);
     _jobsTimer?.cancel();
     _activeTimer?.cancel();
     _profileTimer?.cancel();
     _countdownTimer?.cancel();
+    _quoteTick?.cancel();
     _stopAlert();
-    _audio.dispose();
-    _pulseCtrl.dispose();
+    _audio?.dispose();
+    _priceCtrl.dispose();
     super.dispose();
   }
 
@@ -142,6 +185,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<void> _refreshAll() async {
+    if (_demo) return;
     await Future.wait([_loadProfile(), _loadActive(), _loadBalance()]);
     _syncJobPoller();
   }
@@ -159,67 +203,10 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _startProfilePolling() {
     _profileTimer?.cancel();
-    _profileTimer = Timer.periodic(const Duration(seconds: 60), (_) => _loadProfile());
-  }
-
-  /// "⭐ 4.8 (12 reviews) · view" / "⭐ New provider — no reviews yet"
-  String get _ratingText {
-    final rt = toDouble(_profile?['rating']);
-    final n = toInt(_profile?['review_count']);
-    return rt > 0
-        ? '⭐ ${rt.toStringAsFixed(1)} ($n review${n == 1 ? '' : 's'}) · view'
-        : '⭐ New provider — no reviews yet';
-  }
-
-  void _openReviews() => Navigator.push(context, MaterialPageRoute(
-      builder: (_) => RatingsScreen(providerId: _pid, rating: toDouble(_profile?['rating']))));
-
-  void _support() => openSupport(context, providerId: _pid);
-
-  Future<void> _openServices() async {
-    await Navigator.push(context,
-        MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-    if (mounted) _loadProfile();
-  }
-
-  // ── Service location & range (map pin) ─────────────────────
-  bool get _pinnedLoc =>
-      toDouble(_profile?['base_lat']) != 0 && toDouble(_profile?['base_lng']) != 0;
-
-  Future<void> _pinServiceArea() async {
-    if (_savingLoc) return;
-    final p = _profile ?? {};
-    double? pick(String a, String b) {
-      final v = toDouble(p[a]);
-      return v != 0 ? v : (toDouble(p[b]) != 0 ? toDouble(p[b]) : null);
-    }
-    final r = await MapPickerScreen.open(context,
-        lat: pick('base_lat', 'lat'),
-        lng: pick('base_lng', 'lng'),
-        radiusKm: toInt(p['radius_km'], 5),
-        title: 'Your service location & range',
-        confirmText: 'Save location & range');
-    if (r == null || !mounted) return;
-    final body = <String, dynamic>{
-      'base_lat': r.lat,
-      'base_lng': r.lng,
-      'radius_km': r.radiusKm,
-      if (r.address.isNotEmpty) 'address': r.address,
-      if (r.city.isNotEmpty) 'city': r.city,
-    };
-    setState(() => _savingLoc = true);
-    final res = await ProviderApiService.updateProfile(body);
-    if (!mounted) return;
-    setState(() => _savingLoc = false);
-    if (!res.ok) {
-      if (!res.unauthorized) _snack(res.error, AppColors.red);
-      return;
-    }
-    final updated = {...?_profile, ...body};
-    setState(() => _profile = updated);
-    await ProviderApiService.cacheProvider(updated);
-    _snack('✅ Location & ${r.radiusKm} km range saved', AppColors.green);
-    _loadProfile();
+    _profileTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      _loadProfile();
+      _loadBalance();
+    });
   }
 
   Future<void> _loadBalance() async {
@@ -227,18 +214,72 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (mounted && res.ok) setState(() => _balance = res.map);
   }
 
+  /// Saved option prices + admin defaults → prefill of "Your Price (₹)".
+  Future<void> _loadPriceSources() async {
+    try {
+      final op = await ProviderApiService.getServiceOptionPrices();
+      final ad = await ProviderApiService.getServicePrices('');
+      if (!mounted) return;
+      _optionPrices = op;
+      _adminRanges = ad;
+    } catch (_) {}
+  }
+
   // ── Current job ─────────────────────────────────────────────
   void _startActivePolling() {
     _activeTimer?.cancel();
-    _activeTimer = Timer.periodic(const Duration(seconds: 15), (_) => _loadActive());
+    _activeTimer = Timer.periodic(const Duration(seconds: 4), (_) => _loadActive());
   }
 
   Future<void> _loadActive() async {
     final res = await ProviderApiService.getActiveBooking();
     if (!mounted || !res.ok) return;
-    setState(() => _active = res.map);
-    LocationService.instance.onJob = _active != null &&
-        ['confirmed', 'active'].contains(str(_active!['status']));
+    final b = res.map;
+    final active = (b != null && str(b['id']).isNotEmpty) ? b : null;
+    if (active != null) _detectChanges(active);
+    setState(() => _active = active);
+    if (active != null) _setQuoteDeadline(active);
+    if (active == null) _setQuoteDeadline(const {});
+    LocationService.instance.onJob = active != null &&
+        ['confirmed', 'active'].contains(str(active['status']));
+    if (active != null && _incoming != null) _closeIncoming(dismiss: false);
+  }
+
+  /// Status-change pop-ups (website pDetect()).
+  void _detectChanges(Map<String, dynamic> b) {
+    final st = str(b['status']);
+    final pay = str(b['payment_status']);
+    if (_lastStatus != null && st != _lastStatus) {
+      if (st == 'confirmed') {
+        final p = toInt(b['confirmed_price']) > 0 ? toInt(b['confirmed_price']) : toInt(b['quoted_price']);
+        showSnack(context, '✅ Customer Confirmed! ₹$p — head to the location', tone: Tone.success);
+      } else if (st == 'searching' && _lastStatus == 'price_quoted') {
+        showSnack(context, '❌ Customer Declined — they chose to search another provider', tone: Tone.error);
+      } else if (st == 'cancelled') {
+        showSnack(context, '❌ Booking Cancelled — this job was cancelled', tone: Tone.error);
+      }
+    }
+    if (_lastPay != null && pay != _lastPay && pay == 'paid') {
+      final amt = toInt(b['amount']) > 0 ? toInt(b['amount']) : toInt(b['confirmed_price']);
+      showSnack(context, '💰 Payment Received! ₹$amt marked paid', tone: Tone.success);
+    }
+    _lastStatus = st;
+    _lastPay = pay;
+  }
+
+  void _setQuoteDeadline(Map<String, dynamic> b) {
+    final st = str(b['status']);
+    final live = (st == 'price_quoted' || st == 'negotiation_final') && b['quote_expires_in'] != null;
+    _quoteDeadline = live ? DateTime.now().add(Duration(seconds: toInt(b['quote_expires_in']))) : null;
+    if (_demo) return;
+    if (live && _quoteTick == null) {
+      _quoteTick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && _tab == 0) setState(() {});
+      });
+    } else if (!live) {
+      _quoteTick?.cancel();
+      _quoteTick = null;
+    }
   }
 
   Future<void> _openBooking(String id, {Map<String, dynamic>? initial}) async {
@@ -248,11 +289,12 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (!mounted) return;
     _loadActive();
     _loadBalance();
-    if (_tab == 1) _loadHistory();
+    _loadProfile();
   }
 
   // ── Job discovery: single poller ────────────────────────────
   void _syncJobPoller() {
+    if (_demo) return;
     final shouldRun = _available && _approved && _foreground;
     if (!shouldRun) {
       _jobsTimer?.cancel();
@@ -262,11 +304,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
     if (_jobsTimer != null) return;
     _fetchOpenJobs();
-    _jobsTimer = Timer.periodic(const Duration(seconds: 5), (_) => _fetchOpenJobs());
+    _jobsTimer = Timer.periodic(const Duration(seconds: 4), (_) => _fetchOpenJobs());
   }
 
   Future<void> _fetchOpenJobs() async {
-    if (_jobsFetching) return;
+    if (_jobsFetching || _demo) return;
     _jobsFetching = true;
     try {
       final res = await ProviderApiService.getOpenBookings();
@@ -295,110 +337,137 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _maybeShowIncoming(List<Map<String, dynamic>> jobs) {
     final ids = jobs.map((j) => str(j['id'])).toSet();
-    // Popup job disappeared (taken by someone else / cancelled)
+    // Alert job disappeared (taken by someone else / cancelled)
     if (_incoming != null && !ids.contains(str(_incoming!['id']))) {
       if (!_acceptingIds.contains(str(_incoming!['id']))) {
         _closeIncoming(dismiss: true);
-        _snack('That job is no longer available.', AppColors.muted);
+        showSnack(context, 'That job is no longer available.');
       }
       return;
     }
-    if (_incoming != null || _engaged || !_available) return;
-    // Don't ring while another screen (booking, earnings…) is on top.
+    // Website: no alerts while a job (incl. completed-but-unpaid) is ours.
+    if (_incoming != null || _active != null || !_available) return;
+    // Don't ring while another screen (job, ratings…) is on top.
     if (ModalRoute.of(context)?.isCurrent != true) return;
+    final now = DateTime.now();
     for (final j in jobs) {
       final id = str(j['id']);
-      if (id.isEmpty || _dismissed.contains(id)) continue;
-      setState(() {
-        _incoming = j;
-        _countdown = 30;
-      });
-      _startAlert();
+      if (id.isEmpty) continue;
+      final last = _shownAt[id];
+      if (last != null && now.difference(last).inSeconds < 45) continue;
+      _shownAt[id] = now;
+      _showIncoming(j);
       break;
     }
   }
 
-  void _startAlert() {
-    try {
-      Vibration.vibrate(pattern: [0, 600, 200, 600, 200, 600], repeat: 0);
-    } catch (_) {}
-    _audio.play(AssetSource('sounds/alert.mp3')).catchError((_) {});
+  int _savedPrice(Map<String, dynamic> job) {
+    final svc = str(job['svc_id']);
+    return savedPriceFor(svc,
+        optionPrices: _optionPrices,
+        range: priceRangeFor(_profile, svc),
+        adminRanges: _adminRanges);
+  }
+
+  void _showIncoming(Map<String, dynamic> job, {bool alert = true}) {
+    final saved = _savedPrice(job);
+    _priceCtrl.text = saved > 0 ? '$saved' : '';
+    setState(() {
+      _incoming = job;
+      _incomingSaved = saved;
+      _countdown = _alertSeconds;
+    });
+    if (alert) _startAlert();
+    if (_demo) return;
     _countdownTimer?.cancel();
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
       if (_countdown <= 1) {
         t.cancel();
-        _closeIncoming(dismiss: true); // expired → never show again
+        _closeIncoming(dismiss: true);
         return;
       }
       setState(() => _countdown--);
     });
   }
 
+  void _startAlert() {
+    if (_demo) return;
+    try {
+      Vibration.vibrate(pattern: [0, 600, 200, 600, 200, 600], repeat: 0);
+    } catch (_) {}
+    _audio?.play(AssetSource('sounds/alert.mp3')).catchError((_) {});
+  }
+
   void _stopAlert() {
+    if (_demo) return;
     try { Vibration.cancel(); } catch (_) {}
-    try { _audio.stop(); } catch (_) {}
+    try { _audio?.stop(); } catch (_) {}
   }
 
   void _closeIncoming({required bool dismiss}) {
     _countdownTimer?.cancel();
     _stopAlert();
     final id = str(_incoming?['id']);
-    if (dismiss && id.isNotEmpty) _dismissed.add(id);
+    if (dismiss && id.isNotEmpty) _shownAt[id] = DateTime.now();
     if (mounted) setState(() => _incoming = null);
   }
 
-  Future<void> _accept(Map<String, dynamic> job) async {
+  Future<void> _acceptIncoming() async {
+    final job = _incoming;
+    if (job == null) return;
     final id = str(job['id']);
     if (id.isEmpty || _acceptingIds.contains(id)) return;
-    if (_incoming != null && str(_incoming!['id']) == id) {
-      _countdownTimer?.cancel();
-      _stopAlert();
-    }
-    setState(() => _acceptingIds.add(id));
-    final ok = await acceptJobWithQuote(context, job, _profile);
-    if (!mounted) return;
-    setState(() => _acceptingIds.remove(id));
-    if (_incoming != null && str(_incoming!['id']) == id) _closeIncoming(dismiss: true);
-    if (!ok) {
-      _fetchOpenJobs();
+    final price = int.tryParse(_priceCtrl.text.trim()) ?? 0;
+    if (price < 1) {
+      showSnack(context, 'Enter your price for this job', tone: Tone.error);
       return;
     }
-    _dismissed.add(id);
-    setState(() => _openJobs.removeWhere((j) => str(j['id']) == id));
-    await _loadActive();
+    FocusScope.of(context).unfocus();
+    _stopAlert();
+    setState(() => _acceptingIds.add(id));
+    final ok = await sendQuote(context, id, price);
     if (!mounted) return;
-    _openBooking(id);
+    setState(() => _acceptingIds.remove(id));
+    _closeIncoming(dismiss: true);
+    if (ok) {
+      setState(() => _openJobs.removeWhere((j) => str(j['id']) == id));
+      await _loadActive();
+    } else {
+      _fetchOpenJobs();
+    }
   }
 
   // ── Online / offline ────────────────────────────────────────
   Future<void> _toggleAvailability(bool val) async {
-    if (_toggling) return;
+    if (_toggling || _demo) return;
     if (val && !_approved) {
-      _snack('Your account is not approved yet.', AppColors.red);
+      showSnack(context, 'Your account is not approved yet.', tone: Tone.error);
       return;
     }
-    setState(() => _toggling = true);
+    HapticFeedback.selectionClick();
+    setState(() { _toggling = true; _available = val; });
     if (val) {
       final pos = await LocationService.currentPosition(ask: true);
       if (pos != null) {
         await ProviderApiService.sendLocation(pos.latitude, pos.longitude);
       } else if (mounted) {
-        _snack('Location unavailable — jobs will be matched by your saved area. '
-            'Enable location for better matches.', AppColors.yellow);
+        showSnack(context, 'Location unavailable — jobs will be matched by your saved area. '
+            'Enable location for better matches.', tone: Tone.warning);
       }
     }
     final res = await ProviderApiService.setAvailable(val);
     if (!mounted) return;
     setState(() => _toggling = false);
     if (!res.ok) {
+      setState(() => _available = !val);
       if (!res.unauthorized) {
-        _snack(res.status == 403 ? (res.error.isNotEmpty ? res.error : 'Account not approved yet')
-            : res.error, AppColors.red);
+        showSnack(context, res.error.isNotEmpty ? res.error : 'Could not update', tone: Tone.error);
       }
       return;
     }
-    setState(() => _available = val);
+    showSnack(context, val ? '✅ You are Online' : 'You are Offline',
+        tone: val ? Tone.success : Tone.neutral);
     LocationService.instance.online = val;
     if (!val) {
       _closeIncoming(dismiss: false);
@@ -408,6 +477,21 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<void> _logout() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Log out?'),
+        content: const Text('You will go offline and stop receiving job alerts.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size(96, 44), backgroundColor: AppColors.red),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Log out')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted || _demo) return;
     _jobsTimer?.cancel();
     _activeTimer?.cancel();
     _profileTimer?.cancel();
@@ -420,727 +504,313 @@ class _DashboardScreenState extends State<DashboardScreen>
         context, MaterialPageRoute(builder: (_) => const LoginScreen()), (_) => false);
   }
 
-  // ── History ────────────────────────────────────────────────
-  Future<void> _loadHistory() async {
-    setState(() { _historyLoading = true; _historyError = ''; });
-    final res = await ProviderApiService.getBookingHistory();
-    if (!mounted) return;
+  void _openReviews() => Navigator.push(context, MaterialPageRoute(
+      builder: (_) => RatingsScreen(providerId: _pid, rating: toDouble(_profile?['rating']))));
+
+  void _selectTab(int i) {
+    if (i == _tab) return;
+    HapticFeedback.selectionClick();
+    final prev = _tab;
     setState(() {
-      _historyLoading = false;
-      if (res.ok) {
-        _history = res.list;
-      } else if (!res.unauthorized) {
-        _historyError = res.error;
-      }
+      _tab = i;
+      _visited.add(i);
+      if (i == 1) _earningsTick++;
+      if (i == 2) _servicesTick++;
     });
+    if (prev == 2 && !_demo) {
+      // prices may have changed → refresh the "saved price" sources
+      _loadPriceSources();
+      _loadProfile();
+    }
+    if (i == 0 && !_demo) _loadActive();
   }
 
-  void _snack(String msg, Color color) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-          content: Text(msg), backgroundColor: color, behavior: SnackBarBehavior.floating));
+  int _topUpTick = 0;
+  void _goTopUp() {
+    setState(() => _topUpTick++);
+    _selectTab(1);
   }
 
   // ── UI ─────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _tab,
-        onTap: (i) {
-          setState(() => _tab = i);
-          if (i == 1) _loadHistory();
-          if (i == 2 && _approved) _fetchOpenJobs();
-        },
-        selectedItemColor: AppColors.teal,
-        unselectedItemColor: AppColors.muted,
-        backgroundColor: Colors.white,
-        type: BottomNavigationBarType.fixed,
-        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
-        items: [
-          const BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Overview'),
-          const BottomNavigationBarItem(icon: Icon(Icons.receipt_long_rounded), label: 'Bookings'),
-          BottomNavigationBarItem(
-            icon: Stack(clipBehavior: Clip.none, children: [
-              const Icon(Icons.work_outline_rounded),
-              if (_openJobs.isNotEmpty)
-                Positioned(
-                  right: -2, top: -2,
-                  child: Container(
-                    width: 9, height: 9,
-                    decoration: const BoxDecoration(color: AppColors.red, shape: BoxShape.circle),
+    final body = _loading && _profile == null
+        ? const Center(child: CircularProgressIndicator())
+        : IndexedStack(index: _tab, children: [
+            _jobsTab(),
+            _visited.contains(1)
+                ? EarningsScreen(
+                    providerId: _pid,
+                    embedded: true,
+                    refreshTick: _earningsTick,
+                    topUpTick: _topUpTick,
+                    profile: _profile,
+                    demo: widget.debugEarnings)
+                : const SizedBox.shrink(),
+            _visited.contains(2)
+                ? ServicesScreen(
+                    providerId: _pid,
+                    embedded: true,
+                    refreshTick: _servicesTick,
+                    demo: widget.debugServices)
+                : const SizedBox.shrink(),
+            _visited.contains(3)
+                ? ProfileTab(
+                    providerId: _pid,
+                    profile: _profile ?? const {},
+                    demo: _demo,
+                    onChanged: (p) {
+                      setState(() => _profile = p);
+                      if (!_demo) _loadProfile();
+                    },
+                    onOpenReviews: _openReviews,
+                    onLogout: _logout,
+                  )
+                : const SizedBox.shrink(),
+          ]);
+
+    return PopScope(
+      canPop: _tab == 0 && _incoming == null,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        if (_incoming != null) {
+          _closeIncoming(dismiss: true);
+        } else if (_tab != 0) {
+          _selectTab(0);
+        }
+      },
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: AppTheme.overlay,
+        child: Stack(children: [
+          Scaffold(
+            body: body,
+            bottomNavigationBar: NavigationBar(
+              selectedIndex: _tab,
+              onDestinationSelected: _selectTab,
+              destinations: [
+                NavigationDestination(
+                  icon: Badge(
+                    isLabelVisible: _active != null || (_available && _openJobs.isNotEmpty),
+                    smallSize: 8,
+                    backgroundColor: AppColors.brand,
+                    child: const Icon(Icons.work_outline_rounded),
                   ),
+                  selectedIcon: const Icon(Icons.work_rounded),
+                  label: 'Jobs',
                 ),
-            ]),
-            label: 'Open Jobs',
+                const NavigationDestination(
+                  icon: Icon(Icons.account_balance_wallet_outlined),
+                  selectedIcon: Icon(Icons.account_balance_wallet_rounded),
+                  label: 'Earnings',
+                ),
+                const NavigationDestination(
+                  icon: Icon(Icons.home_repair_service_outlined),
+                  selectedIcon: Icon(Icons.home_repair_service_rounded),
+                  label: 'Services',
+                ),
+                const NavigationDestination(
+                  icon: Icon(Icons.person_outline_rounded),
+                  selectedIcon: Icon(Icons.person_rounded),
+                  label: 'Profile',
+                ),
+              ],
+            ),
           ),
-          const BottomNavigationBarItem(icon: Icon(Icons.person_rounded), label: 'Profile'),
-        ],
+          if (_incoming != null) _incomingOverlay(),
+        ]),
       ),
-      body: _loading && _profile == null
-          ? const Center(child: CircularProgressIndicator(color: AppColors.teal))
-          : Stack(children: [
-              IndexedStack(index: _tab, children: [
-                _buildOverview(),
-                _buildBookings(),
-                OpenJobsScreen(
-                  jobs: _openJobs,
-                  online: _available,
-                  approved: _approved,
-                  loading: _jobsFetching,
-                  error: _openError,
-                  busyIds: _acceptingIds,
-                  onRefresh: () async {
-                    if (_approved) await _fetchOpenJobs();
-                  },
-                  onAccept: _accept,
-                ),
-                _buildProfile(),
-              ]),
-              if (_incoming != null) _buildIncomingAlert(),
-            ]),
     );
   }
 
-  // ── OVERVIEW ───────────────────────────────────────────────
-  Widget _buildOverview() {
+  Widget _incomingOverlay() {
+    final job = _incoming!;
+    final busy = _acceptingIds.contains(str(job['id']));
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black.withOpacity(0.55),
+        child: Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.92),
+              child: NewJobCard(
+                job: job,
+                secondsLeft: _countdown,
+                totalSeconds: _alertSeconds,
+                savedPrice: _incomingSaved,
+                priceController: _priceCtrl,
+                busy: busy,
+                onAccept: _acceptIncoming,
+                onSkip: () => _closeIncoming(dismiss: true),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── JOBS TAB ───────────────────────────────────────────────
+  Widget _jobsTab() {
+    final t = Theme.of(context).textTheme;
     final name = str(_profile?['name'], 'Provider');
     final photo = photoUrl(_profile?['photo']);
-    final available = toInt(_balance?['available']);
+    final city = str(_profile?['city']);
     final due = toInt(_balance?['commission_due']);
     final rating = toDouble(_profile?['rating']);
 
-    return RefreshIndicator(
-      onRefresh: _refreshAll,
-      color: AppColors.teal,
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          SliverAppBar(
-            expandedHeight: 150,
-            pinned: true,
-            automaticallyImplyLeading: false,
-            backgroundColor: AppColors.teal,
-            actions: [
-              IconButton(
-                  tooltip: 'Support',
-                  icon: const Icon(Icons.support_agent_rounded, color: Colors.white),
-                  onPressed: _support),
-              IconButton(icon: const Icon(Icons.logout, color: Colors.white), onPressed: _logout),
-            ],
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                      colors: [Color(0xFF0A2E36), AppColors.teal],
-                      begin: Alignment.topLeft, end: Alignment.bottomRight),
-                ),
-                child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 100, 16),
-                    child: Row(children: [
-                      _avatar(name, photo, 30),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Colors.white)),
-                            Text(str(_profile?['email']), style: const TextStyle(fontSize: 11, color: Colors.white60)),
-                            const SizedBox(height: 3),
-                            GestureDetector(
-                              onTap: _openReviews,
-                              child: Text(_ratingText,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white)),
-                            ),
-                            const SizedBox(height: 4),
-                            _statusPill(),
-                          ],
-                        ),
-                      ),
-                    ]),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          SliverPadding(
-            padding: const EdgeInsets.all(16),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate([
-                if (!_approved) ...[
-                  _notice(Icons.info_outline_rounded, AppColors.yellow,
-                      'Your account is ${str(_profile?['status'], 'pending')}. You can go online once approved.'),
-                  const SizedBox(height: 12),
-                ],
-                if (due > 0) ...[
-                  _duesCard(due),
-                  const SizedBox(height: 12),
-                ],
-                if (_active != null) ...[
-                  _currentJobCard(_active!),
-                  const SizedBox(height: 12),
-                ],
-                _availabilityCard(),
-                const SizedBox(height: 12),
-                _earningsCard(available),
-                const SizedBox(height: 12),
-                Row(children: [
-                  _statTile('Jobs Done', '${toInt(_profile?['completed_bookings'])}', Icons.work_rounded, AppColors.teal),
-                  const SizedBox(width: 10),
-                  _statTile('Rating', rating > 0 ? rating.toStringAsFixed(1) : '–', Icons.star_rounded, AppColors.yellow,
-                      onTap: _openReviews),
-                  const SizedBox(width: 10),
-                  _statTile('Reviews', '${toInt(_profile?['review_count'])}', Icons.reviews_rounded, AppColors.brand,
-                      onTap: _openReviews),
-                ]),
-                if (_available && _openJobs.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  _tapCard(Icons.notifications_active_rounded, AppColors.brand,
-                      '${_openJobs.length} open job${_openJobs.length == 1 ? '' : 's'} near you',
-                      'Tap to view', () => setState(() => _tab = 2)),
-                ],
-                const SizedBox(height: 12),
-                _tapCard(Icons.miscellaneous_services_rounded, const Color(0xFF8B5CF6),
-                    'My Services', 'Choose services and set your prices', _openServices),
-                const SizedBox(height: 12),
-                _tapCard(Icons.star_rounded, AppColors.yellow,
-                    'My Ratings', _ratingText, _openReviews),
-                const SizedBox(height: 12),
-                _tapCard(Icons.support_agent_rounded, const Color(0xFF25D366),
-                    'Need help?', supportConfigNow.hasWhatsapp
-                        ? 'Chat with support on WhatsApp'
-                        : 'Email HamaraService support', _support),
-                const SizedBox(height: 20),
-              ]),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _statusPill() {
-    final approved = _approved;
-    final color = approved ? AppColors.green : AppColors.yellow;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-          color: color.withOpacity(0.25),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color)),
-      child: Text(approved ? 'Approved' : str(_profile?['status'], 'pending').toUpperCase(),
-          style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: color)),
-    );
-  }
-
-  Widget _duesCard(int due) => GestureDetector(
-        onTap: () async {
-          await Navigator.push(context, MaterialPageRoute(
-              builder: (_) => EarningsScreen(providerId: _pid, openTopUp: true)));
-          _loadBalance();
-          _loadActive();
-        },
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppColors.red.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: AppColors.red.withOpacity(0.4)),
-          ),
-          child: Row(children: [
-            const Icon(Icons.warning_amber_rounded, color: AppColors.red),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Commission due: ₹$due',
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.red)),
-                const Text('Add money to your wallet to keep receiving jobs',
-                    style: TextStyle(fontSize: 12, color: AppColors.ink2)),
-              ]),
-            ),
-            const Icon(Icons.chevron_right, color: AppColors.red),
-          ]),
-        ),
-      );
-
-  Widget _currentJobCard(Map<String, dynamic> b) {
-    final status = str(b['status']);
-    final unpaid = status == 'completed' && str(b['payment_status']) != 'paid';
-    final label = unpaid ? 'Awaiting payment' : _statusLabel(status);
-    return ScaleTransition(
-      scale: _pulseAnim,
-      child: GestureDetector(
-        onTap: () => _openBooking(str(b['id']), initial: b),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(colors: [AppColors.brand, Color(0xFFF59E0B)]),
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [BoxShadow(color: AppColors.brand.withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4))],
-          ),
-          child: Row(children: [
-            const Icon(Icons.assignment_turned_in_rounded, color: Colors.white, size: 30),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('CURRENT JOB',
-                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white70, letterSpacing: 1)),
-                Text(str(b['svc_name'], 'Service'),
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
-                Text(label, style: const TextStyle(fontSize: 12, color: Colors.white)),
-                if (str(b['slot_date']).isNotEmpty || str(b['slot_time']).isNotEmpty)
-                  Text('🗓 ${slotWhen(b['slot_date'], b['slot_time'])}',
-                      style: const TextStyle(fontSize: 11, color: Colors.white)),
-                if (status == 'active' && str(b['started_at']).isNotEmpty)
-                  Text('▶️ Work started at ${istTime(b['started_at'])}',
-                      style: const TextStyle(fontSize: 11, color: Colors.white)),
-                if (status == 'completed' && str(b['started_at']).isNotEmpty)
-                  Text(_workTimesLine(b), style: const TextStyle(fontSize: 11, color: Colors.white)),
-              ]),
-            ),
-            const Text('Open', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-            const Icon(Icons.chevron_right, color: Colors.white),
-          ]),
-        ),
-      ),
-    );
-  }
-
-  /// "▶️ 9:05 AM → ⏹️ 10:30 AM · ⏱️ 1 h 25 min"
-  String _workTimesLine(Map<String, dynamic> b) {
-    final st = str(b['started_at']), done = str(b['completed_at']);
-    final dur = istDuration(st, done);
-    return '▶️ ${istTime(st)}${done.isNotEmpty ? ' → ⏹️ ${istTime(done)}' : ''}'
-        '${dur.isNotEmpty ? ' · ⏱️ $dur' : ''}';
-  }
-
-  Widget _availabilityCard() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      decoration: BoxDecoration(
-        color: _available ? AppColors.green.withOpacity(0.08) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _available ? AppColors.green.withOpacity(0.4) : AppColors.line),
-      ),
-      child: Row(children: [
-        Icon(_available ? Icons.wifi_tethering_rounded : Icons.wifi_tethering_off_rounded,
-            color: _available ? AppColors.green : AppColors.muted, size: 26),
-        const SizedBox(width: 14),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(_available ? 'You are Online' : 'You are Offline',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800,
-                    color: _available ? AppColors.green : AppColors.ink)),
-            Text(_available ? 'Receiving job alerts while the app is open'
-                    : 'Go online to receive job alerts',
-                style: const TextStyle(fontSize: 11, color: AppColors.muted)),
-          ]),
-        ),
-        _toggling
-            ? const SizedBox(width: 24, height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.teal))
-            : Switch(
-                value: _available,
-                onChanged: _approved ? _toggleAvailability : null,
-                activeColor: AppColors.green),
-      ]),
-    );
-  }
-
-  Widget _earningsCard(int available) => GestureDetector(
-        onTap: () async {
-          await Navigator.push(context,
-              MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)));
-          _loadBalance();
-        },
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(colors: [Color(0xFF1B5E20), Color(0xFF388E3C)]),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(children: [
-            const Icon(Icons.account_balance_wallet_rounded, color: Colors.white, size: 30),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Available Balance',
-                    style: TextStyle(fontSize: 12, color: Colors.white70, fontWeight: FontWeight.w600)),
-                Text('₹$available',
-                    style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w900, color: Colors.white)),
-                Text('Total earned ₹${toInt(_balance?['total_earned'] ?? _profile?['total_earned'])} · Tap for details',
-                    style: const TextStyle(fontSize: 11, color: Colors.white60)),
-              ]),
-            ),
-            const Icon(Icons.arrow_forward_rounded, color: Colors.white),
-          ]),
-        ),
-      );
-
-  // ── BOOKINGS (history) ─────────────────────────────────────
-  Widget _buildBookings() {
-    bool isOpen(Map<String, dynamic> b) {
-      final s = str(b['status']);
-      return _engagedStatuses.contains(s) ||
-          (s == 'completed' && str(b['payment_status']) != 'paid');
-    }
-    final open = _history.where(isOpen).toList();
-    final done = _history.where((b) => str(b['status']) == 'completed' && !isOpen(b)).toList();
-    final cancelled = _history.where((b) => str(b['status']) == 'cancelled').toList();
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('My Bookings'),
-          automaticallyImplyLeading: false,
-          backgroundColor: AppColors.teal,
-          bottom: TabBar(
-            indicatorColor: AppColors.brand,
-            labelColor: Colors.white,
-            unselectedLabelColor: Colors.white70,
-            tabs: [
-              Tab(text: 'Active (${open.length})'),
-              Tab(text: 'Completed (${done.length})'),
-              Tab(text: 'Cancelled'),
-            ],
-          ),
-        ),
-        body: TabBarView(children: [
-          _bookingList(open, 'No active bookings'),
-          _bookingList(done, 'No completed bookings yet'),
-          _bookingList(cancelled, 'No cancelled bookings'),
-        ]),
-      ),
-    );
-  }
-
-  Widget _bookingList(List<Map<String, dynamic>> list, String emptyMsg) {
-    return RefreshIndicator(
-      onRefresh: _loadHistory,
-      color: AppColors.teal,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (_historyError.isNotEmpty) _notice(Icons.error_outline, AppColors.red, _historyError),
-          if (_historyLoading && _history.isEmpty)
-            const Padding(
-              padding: EdgeInsets.only(top: 60),
-              child: Center(child: CircularProgressIndicator(color: AppColors.teal)),
-            )
-          else if (list.isEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 60),
-              child: Column(children: [
-                const Icon(Icons.receipt_long_rounded, size: 56, color: AppColors.muted),
-                const SizedBox(height: 12),
-                Text(emptyMsg, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.muted)),
-              ]),
-            )
-          else
-            ...list.map(_bookingCard),
-        ],
-      ),
-    );
-  }
-
-  Widget _bookingCard(Map<String, dynamic> b) {
-    final status = str(b['status']);
-    final paid = str(b['payment_status']) == 'paid';
-    final color = _statusColor(status, paid);
-    final price = toInt(b['amount']) > 0
-        ? toInt(b['amount'])
-        : toInt(b['confirmed_price']) > 0 ? toInt(b['confirmed_price']) : toInt(b['quoted_price']);
-    final label = status == 'completed' ? (paid ? 'Paid' : 'Awaiting payment') : _statusLabel(status);
-    return GestureDetector(
-      onTap: status == 'cancelled' ? null : () => _openBooking(str(b['id']), initial: b),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: color.withOpacity(0.2)),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)],
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(
-              child: Text(str(b['svc_name'], 'Service'),
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: BorderRadius.circular(20)),
-              child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: color)),
-            ),
-          ]),
-          const SizedBox(height: 6),
-          if (str(b['other_party']).isNotEmpty)
-            _line(Icons.person_rounded, str(b['other_party'])),
-          _line(Icons.calendar_today_rounded,
-              '${slotWhen(b['slot_date'], b['slot_time'])}${price > 0 ? ' · ₹$price' : ''}'),
-          if (status == 'completed' && str(b['started_at']).isNotEmpty)
-            _line(Icons.timer_outlined, _workTimesLine(b)),
-          if (str(b['address']).isNotEmpty) _line(Icons.location_on_rounded, str(b['address'])),
-          if (status == 'completed' && toInt(b['provider_earns']) > 0)
-            _line(Icons.account_balance_wallet_rounded, 'You earned ₹${toInt(b['provider_earns'])}'),
-          if (status == 'cancelled' && str(b['cancel_reason']).isNotEmpty)
-            _line(Icons.info_outline_rounded, str(b['cancel_reason'])),
-        ]),
-      ),
-    );
-  }
-
-  Widget _line(IconData icon, String text) => Padding(
-        padding: const EdgeInsets.only(top: 3),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Icon(icon, size: 13, color: AppColors.muted),
-          const SizedBox(width: 6),
-          Expanded(child: Text(text, style: const TextStyle(fontSize: 12, color: AppColors.ink2))),
-        ]),
-      );
-
-  // ── PROFILE ────────────────────────────────────────────────
-  Widget _buildProfile() {
-    final name = str(_profile?['name'], 'Provider');
-    final photo = photoUrl(_profile?['photo']);
-    final rating = toDouble(_profile?['rating']);
-    return CustomScrollView(slivers: [
-      SliverAppBar(
-        expandedHeight: 200,
-        pinned: true,
-        backgroundColor: AppColors.teal,
-        automaticallyImplyLeading: false,
-        actions: [IconButton(icon: const Icon(Icons.logout, color: Colors.white), onPressed: _logout)],
-        flexibleSpace: FlexibleSpaceBar(
-          background: Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                  colors: [Color(0xFF0A2E36), AppColors.teal],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight),
-            ),
-            child: SafeArea(
-              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                _avatar(name, photo, 44),
-                const SizedBox(height: 8),
-                Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
-                Text(str(_profile?['email']), style: const TextStyle(fontSize: 12, color: Colors.white70)),
-              ]),
-            ),
-          ),
-        ),
-      ),
-      SliverPadding(
-        padding: const EdgeInsets.all(16),
-        sliver: SliverList(
-          delegate: SliverChildListDelegate([
-            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              _statusPill(),
-              const SizedBox(width: 10),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final r = await Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => ProfileEditScreen(providerId: _pid, providerData: _profile)));
-                  if (r == true) _loadProfile();
-                },
-                icon: const Icon(Icons.edit_rounded, size: 14, color: AppColors.teal),
-                label: const Text('Edit', style: TextStyle(color: AppColors.teal, fontSize: 12, fontWeight: FontWeight.w700)),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: AppColors.teal),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                ),
-              ),
+    return Scaffold(
+      appBar: AppBar(
+        titleSpacing: 16,
+        title: Row(children: [
+          Avatar(name: name, photo: photo, radius: 20, bg: Colors.white24, fg: Colors.white),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: t.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+              Text([_pid, if (city.isNotEmpty) city].join(' · '),
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: t.bodySmall?.copyWith(color: Colors.white70)),
             ]),
-            const SizedBox(height: 16),
+          ),
+        ]),
+        actions: [
+          IconButton(
+            tooltip: 'WhatsApp support',
+            icon: const Icon(Icons.support_agent_rounded),
+            onPressed: () => openSupport(context, providerId: _pid, extra: 'Provider ID $_pid.'),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await _refreshAll();
+          await _fetchOpenJobs();
+        },
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          children: [
+            _availabilityCard(),
+            if (!_approved) ...[
+              const SizedBox(height: 12),
+              Notice('Your account is ${str(_profile?['status'], 'pending')}. You can go online once approved.',
+                  tone: Tone.warning),
+            ],
+            if (due > 0) ...[
+              const SizedBox(height: 12),
+              Notice('Commission due on cash jobs: ₹$due. If dues grow too large you cannot accept new jobs.',
+                  tone: Tone.error,
+                  icon: Icons.warning_amber_rounded,
+                  action: Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _goTopUp,
+                      icon: const Icon(Icons.add_card_rounded, size: 18),
+                      label: const Text('Add money to wallet'),
+                    ),
+                  )),
+            ],
+            const SizedBox(height: 12),
             Row(children: [
-              _statTile('Jobs Done', '${toInt(_profile?['completed_bookings'])}', Icons.work_rounded, AppColors.teal),
+              Expanded(child: StatTile(
+                  value: '${toInt(_profile?['total_bookings'])}',
+                  label: 'Jobs done', icon: Icons.task_alt_rounded)),
               const SizedBox(width: 10),
-              _statTile('Rating', rating > 0 ? rating.toStringAsFixed(1) : '–', Icons.star_rounded, AppColors.yellow,
-                  onTap: _openReviews),
+              Expanded(child: StatTile(
+                  value: money(_profile?['total_earned']),
+                  label: 'Earned', icon: Icons.currency_rupee_rounded, color: AppColors.green)),
               const SizedBox(width: 10),
-              _statTile('Earned', '₹${toInt(_profile?['total_earned'])}', Icons.currency_rupee_rounded, AppColors.green),
+              Expanded(child: StatTile(
+                  value: rating > 0 ? rating.toStringAsFixed(1) : '—',
+                  label: 'Rating', icon: Icons.star_rounded, color: const Color(0xFFF5A623),
+                  onTap: _openReviews)),
             ]),
-            const SizedBox(height: 16),
-            _infoCard(Icons.phone_rounded, 'Phone', str(_profile?['phone'], 'Not set')),
-            const SizedBox(height: 10),
-            _infoCard(Icons.location_city_rounded, 'City', str(_profile?['city'], 'Not set')),
-            const SizedBox(height: 10),
-            _locationCard(),
-            const SizedBox(height: 10),
-            _infoCard(Icons.work_history_rounded, 'Experience', str(_profile?['experience'], 'Not set')),
-            const SizedBox(height: 10),
-            _infoCard(Icons.badge_rounded, 'Provider ID', _pid),
-            const SizedBox(height: 16),
-            _menuTile('Earnings and Withdrawals', Icons.account_balance_wallet_rounded, AppColors.green,
-                () => Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)))),
-            const SizedBox(height: 10),
-            _menuTile('My Ratings and Reviews', Icons.star_rounded, AppColors.yellow, _openReviews),
-            const SizedBox(height: 10),
-            _menuTile('My Services', Icons.build_rounded, AppColors.teal, _openServices),
-            const SizedBox(height: 10),
-            _menuTile('Help and Support', Icons.headset_mic_rounded, AppColors.muted,
-                () => Navigator.push(context, MaterialPageRoute(
-                    builder: (_) => SupportScreen(
-                        providerName: str(_profile?['name']),
-                        providerEmail: str(_profile?['email']),
-                        providerId: _pid)))),
-            const SizedBox(height: 16),
-            OutlinedButton.icon(
-              onPressed: _logout,
-              icon: const Icon(Icons.logout, color: AppColors.red, size: 18),
-              label: const Text('Sign Out',
-                  style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700, fontSize: 15)),
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 50),
-                side: const BorderSide(color: AppColors.red),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              ),
-            ),
-            const SizedBox(height: 32),
-          ]),
-        ),
-      ),
-    ]);
-  }
-
-  // ── INCOMING ALERT ─────────────────────────────────────────
-  Widget _buildIncomingAlert() {
-    final bk = _incoming!;
-    final id = str(bk['id']);
-    final busy = _acceptingIds.contains(id);
-    final est = toInt(bk['est_price']);
-    final dist = toDoubleOrNull(bk['distance_km']);
-    final area = [str(bk['landmark']), str(bk['address']), str(bk['city'])]
-        .where((s) => s.isNotEmpty).join(', ');
-    final summary = parseSummary(bk['summary']);
-    return Container(
-      color: Colors.black.withOpacity(0.75),
-      child: Center(
-        child: ScaleTransition(
-          scale: _pulseAnim,
-          child: Container(
-            margin: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 40)],
-            ),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0xFF0A2E36), AppColors.teal]),
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                ),
-                child: Row(children: [
-                  const Icon(Icons.notifications_active_rounded, color: Colors.white, size: 28),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('New Job Alert!',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
-                      Text('Send your quote before it expires',
-                          style: TextStyle(fontSize: 11, color: Colors.white70)),
-                    ]),
-                  ),
-                  Container(
-                    width: 48, height: 48,
-                    decoration: BoxDecoration(
-                      color: _countdown <= 10 ? Colors.red.withOpacity(0.85) : AppColors.brand,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
+            const SectionTitle('Active job'),
+            if (_active != null)
+              ActiveJobCard(
+                booking: _active!,
+                quoteDeadline: _quoteDeadline,
+                onOpen: () => _openBooking(str(_active!['id']), initial: _active),
+                onAddMoney: _goTopUp,
+              )
+            else
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
+                  child: Row(children: [
+                    const IconTile(Icons.work_history_outlined, color: AppColors.muted),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Text('No active job — stay online for alerts',
+                          style: t.bodyMedium?.copyWith(color: AppColors.muted)),
                     ),
-                    child: Center(
-                      child: Text('$_countdown',
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white)),
-                    ),
-                  ),
-                ]),
-              ),
-              Flexible(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(children: [
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(12)),
-                      child: Column(children: [
-                        _alertRow(Icons.home_repair_service_rounded, 'Service', str(bk['svc_name'], 'Service'), AppColors.teal),
-                        if (est > 0) ...[
-                          const Divider(height: 16, color: AppColors.line),
-                          _alertRow(Icons.currency_rupee_rounded, 'Price', 'Customer estimate ₹$est', AppColors.green),
-                        ],
-                        const Divider(height: 16, color: AppColors.line),
-                        _alertRow(Icons.calendar_today_rounded, 'When',
-                            slotWhen(bk['slot_date'], bk['slot_time']),
-                            AppColors.brand),
-                        if (area.isNotEmpty) ...[
-                          const Divider(height: 16, color: AppColors.line),
-                          _alertRow(Icons.location_on_rounded, 'Area', area, AppColors.red),
-                        ],
-                        if (dist != null) ...[
-                          const Divider(height: 16, color: AppColors.line),
-                          _alertRow(Icons.near_me_rounded, 'Distance', '${dist.toStringAsFixed(1)} km away', AppColors.muted),
-                        ],
-                      ]),
-                    ),
-                    if (summary.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 6, runSpacing: 6,
-                        children: summary.map((s) => Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: AppColors.tealSoft,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: AppColors.teal.withOpacity(0.3)),
-                          ),
-                          child: Text(s, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
-                        )).toList(),
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: busy ? null : () => _closeIncoming(dismiss: true),
-                          icon: const Icon(Icons.close, color: AppColors.red, size: 18),
-                          label: const Text('Decline',
-                              style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size(double.infinity, 48),
-                            side: const BorderSide(color: AppColors.red),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: busy ? null : () => _accept(bk),
-                          icon: const Icon(Icons.check_rounded, color: Colors.white, size: 18),
-                          label: const Text('Accept',
-                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.green,
-                            minimumSize: const Size(double.infinity, 48),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                        ),
-                      ),
-                    ]),
                   ]),
                 ),
               ),
+            if (_active == null && _approved) ..._openJobsSection(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _openJobsSection() {
+    if (!_available) return const [];
+    return [
+      SectionTitle('New jobs near you (${_openJobs.length})'),
+      if (_openError.isNotEmpty) Notice(_openError, tone: Tone.error, margin: const EdgeInsets.only(bottom: 10)),
+      if (_openJobs.isEmpty)
+        const Card(
+          child: EmptyState(
+            icon: Icons.notifications_active_outlined,
+            title: 'Waiting for new jobs',
+            subtitle: 'Keep the app open — you will hear an alert as soon as a customer near you books.',
+          ),
+        )
+      else
+        ..._openJobs.map(_openJobTile),
+    ];
+  }
+
+  Widget _openJobTile(Map<String, dynamic> j) {
+    final t = Theme.of(context).textTheme;
+    final place = jobPlace(j);
+    final slot = slotWhen(j['slot_date'], j['slot_time']);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => _showIncoming(j, alert: false),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+            child: Row(children: [
+              Container(
+                width: 44, height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(12)),
+                child: Text(jobIcon(j), style: const TextStyle(fontSize: 22)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(str(j['svc_name'], 'Service'), style: t.titleSmall),
+                  if (slot.isNotEmpty)
+                    Text(slot, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.bodySmall),
+                  if (place.isNotEmpty)
+                    Text(place, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.bodySmall),
+                ]),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonal(
+                onPressed: () => _showIncoming(j, alert: false),
+                style: FilledButton.styleFrom(minimumSize: const Size(72, 40), padding: const EdgeInsets.symmetric(horizontal: 14)),
+                child: const Text('Quote'),
+              ),
             ]),
           ),
         ),
@@ -1148,211 +818,53 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── helpers ────────────────────────────────────────────────
-  Widget _avatar(String name, String photo, double r) => CircleAvatar(
-        radius: r,
-        backgroundColor: AppColors.brand,
-        backgroundImage: photo.isNotEmpty ? NetworkImage(photo) : null,
-        child: photo.isEmpty
-            ? Text(name.isNotEmpty ? name[0].toUpperCase() : 'P',
-                style: TextStyle(fontSize: r * 0.75, color: Colors.white, fontWeight: FontWeight.w800))
-            : null,
-      );
-
-  Widget _notice(IconData icon, Color color, String text) => Container(
-        margin: const EdgeInsets.only(bottom: 4),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: color.withOpacity(0.3)),
-        ),
-        child: Row(children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 10),
-          Expanded(child: Text(text, style: const TextStyle(fontSize: 13, color: AppColors.ink2))),
-        ]),
-      );
-
-  Widget _tapCard(IconData icon, Color color, String title, String sub, VoidCallback onTap) =>
-      GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withOpacity(0.3)),
-          ),
-          child: Row(children: [
-            Icon(icon, color: color, size: 22),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                Text(sub, style: const TextStyle(fontSize: 11, color: AppColors.muted)),
-              ]),
-            ),
-            Icon(Icons.chevron_right_rounded, color: color),
-          ]),
-        ),
-      );
-
-  Widget _statTile(String label, String value, IconData icon, Color color,
-          {VoidCallback? onTap}) =>
-      Expanded(
-        child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)],
-          ),
-          child: Column(children: [
-            Icon(icon, color: color, size: 24),
-            const SizedBox(height: 6),
-            Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: color)),
-            Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted, fontWeight: FontWeight.w600)),
-          ]),
-        ),
-        ),
-      );
-
-  Widget _locationCard() {
-    final pinned = _pinnedLoc;
-    final km = toInt(_profile?['radius_km'], 5);
-    final addr = str(_profile?['address']);
-    return GestureDetector(
-      onTap: _savingLoc ? null : _pinServiceArea,
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)],
-        ),
-        child: Row(children: [
-          Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
-            child: const Icon(Icons.radar_rounded, color: AppColors.teal, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Service location & range',
-                  style: TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
-              Text('${pinned ? '📌 Pinned location' : '📡 Live location'} · range $km km',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
-              if (addr.isNotEmpty)
-                Text(addr, maxLines: 2, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-              const SizedBox(height: 2),
-              Text(pinned ? 'Tap to change on the map' : 'Tap to pin your work location on the map',
-                  style: const TextStyle(fontSize: 11, color: AppColors.teal, fontWeight: FontWeight.w700)),
-            ]),
-          ),
-          _savingLoc
-              ? const SizedBox(width: 20, height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.teal))
-              : const Icon(Icons.map_rounded, color: AppColors.teal),
-        ]),
+  Widget _availabilityCard() {
+    final on = _available;
+    final t = Theme.of(context).textTheme;
+    return Card(
+      color: on ? AppColors.greenSoft : Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: on ? AppColors.green.withOpacity(0.45) : AppColors.line),
       ),
-    );
-  }
-
-  Widget _infoCard(IconData icon, String label, String value) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)],
-        ),
-        child: Row(children: [
-          Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, color: AppColors.teal, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
-              Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.ink)),
-            ]),
-          ),
-        ]),
-      );
-
-  Widget _menuTile(String label, IconData icon, Color color, VoidCallback onTap) => GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)],
-          ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _approved && !_toggling ? () => _toggleAvailability(!on) : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
           child: Row(children: [
             Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-              child: Icon(icon, color: color, size: 20),
+              width: 48, height: 48,
+              decoration: BoxDecoration(
+                color: on ? AppColors.green : const Color(0xFFE3EAEC),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.power_settings_new_rounded,
+                  color: on ? Colors.white : AppColors.muted, size: 26),
             ),
             const SizedBox(width: 14),
-            Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink, fontSize: 14))),
-            const Icon(Icons.chevron_right, color: AppColors.muted),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(on ? 'You are Online ✓' : 'You are Offline',
+                    style: t.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700, color: on ? const Color(0xFF0F6D33) : AppColors.ink)),
+                const SizedBox(height: 2),
+                Text(on ? 'Receiving job alerts near you' : 'Go online to receive jobs',
+                    style: t.bodyMedium?.copyWith(color: AppColors.muted)),
+              ]),
+            ),
+            _toggling
+                ? const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
+                  )
+                : Switch(
+                    value: on,
+                    onChanged: _approved ? _toggleAvailability : null,
+                  ),
           ]),
         ),
-      );
-
-  Widget _alertRow(IconData icon, String label, String value, Color color) => Row(children: [
-        Container(
-          width: 32, height: 32,
-          decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-          child: Icon(icon, color: color, size: 16),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted, fontWeight: FontWeight.w600)),
-            Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink)),
-          ]),
-        ),
-      ]);
-
-  Color _statusColor(String s, bool paid) {
-    switch (s) {
-      case 'price_quoted':
-      case 'negotiating':
-      case 'negotiation_final':
-        return AppColors.yellow;
-      case 'confirmed':
-        return AppColors.teal;
-      case 'active':
-        return AppColors.brand;
-      case 'completed':
-        return paid ? AppColors.green : AppColors.yellow;
-      case 'cancelled':
-        return AppColors.red;
-      default:
-        return AppColors.muted;
-    }
-  }
-
-  String _statusLabel(String s) {
-    switch (s) {
-      case 'searching': return 'Searching';
-      case 'price_quoted': return 'Quote sent';
-      case 'negotiating': return 'Customer negotiating';
-      case 'negotiation_final': return 'Final offer sent';
-      case 'confirmed': return 'Confirmed';
-      case 'active': return 'In progress';
-      case 'completed': return 'Completed';
-      case 'cancelled': return 'Cancelled';
-      default: return s;
-    }
+      ),
+    );
   }
 }

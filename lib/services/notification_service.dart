@@ -208,7 +208,7 @@ class NotificationService {
           MaterialPageRoute(
               builder: (_) => DashboardScreen(
                   providerId: pid,
-                  initialTab: event == 'new_booking' ? 2 : 0)),
+                  initialTab: 0)), // Jobs tab (new-job alert + list)
           (_) => false);
       return;
     }

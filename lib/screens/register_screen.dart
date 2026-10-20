@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../services/provider_api_service.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
@@ -7,6 +9,8 @@ import '../services/hs_catalog.dart';
 import '../utils/support_contact.dart';
 import 'login_screen.dart';
 import 'map_picker_screen.dart';
+import 'pending_approval_screen.dart';
+import '../widgets/ui.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String prefillEmail;
@@ -33,7 +37,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _idNumCtrl     = TextEditingController();
   String _gender     = 'Male';
   String _experience = '1-2 years';
-  String _idType     = 'Aadhaar Card';
+  String _idType     = 'Aadhaar';
+  File? _photo;      // optional, uploaded after the automatic login
   bool _showPwd      = false;
 
   // Step 2 - Services
@@ -54,6 +59,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
   bool _submitting = false;
   String _error = '';
   String _generatedId = '';
+
+  // Areas you serve (required, like the website)
+  final List<String> _areas = [];
+  final _areaCtrl = TextEditingController();
+  final _addrCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -95,7 +105,23 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _nameCtrl.dispose(); _phoneCtrl.dispose(); _emailCtrl.dispose();
     _whatsappCtrl.dispose(); _pwdCtrl.dispose(); _confirmPwdCtrl.dispose();
     _bioCtrl.dispose(); _idNumCtrl.dispose();
+    _areaCtrl.dispose(); _addrCtrl.dispose();
     super.dispose();
+  }
+
+  void _addArea() {
+    final a = _areaCtrl.text.trim();
+    if (a.isEmpty) return;
+    setState(() {
+      if (!_areas.any((x) => x.toLowerCase() == a.toLowerCase())) _areas.add(a);
+      _areaCtrl.clear();
+    });
+  }
+
+  Future<void> _pickPhoto() async {
+    final img = await ImagePicker().pickImage(
+        source: ImageSource.gallery, imageQuality: 80, maxWidth: 600, maxHeight: 600);
+    if (img != null && mounted) setState(() => _photo = File(img.path));
   }
 
   bool _validateStep1() {
@@ -107,7 +133,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_emailCtrl.text.trim())) { setState(() => _error = 'Enter a valid email address'); return false; }
     if (_pwdCtrl.text.length < 8) { setState(() => _error = 'Password must be at least 8 characters'); return false; }
     if (_pwdCtrl.text != _confirmPwdCtrl.text) { setState(() => _error = 'Passwords do not match'); return false; }
-    if (_idNumCtrl.text.trim().isEmpty) { setState(() => _error = 'Enter your ID proof number'); return false; }
     setState(() => _error = '');
     return true;
   }
@@ -121,7 +146,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   bool _validateStep3() {
-    if (_lat == null || _lng == null) { setState(() => _error = 'Detect your location or pin it on the map'); return false; }
+    if (_addrCtrl.text.trim().isEmpty && _address.isEmpty) { setState(() => _error = 'Enter your address'); return false; }
+    if (_lat == null || _lng == null) { setState(() => _error = 'Location not captured yet — tap the location card'); return false; }
+    if (_areaCtrl.text.trim().isNotEmpty) _addArea();
+    if (_areas.isEmpty) { setState(() => _error = 'Add at least one area you serve'); return false; }
     setState(() => _error = '');
     return true;
   }
@@ -213,6 +241,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           : '${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}';
       _city = city;
       _detectingLocation = false;
+      if (_addrCtrl.text.trim().isEmpty && addr.isNotEmpty) _addrCtrl.text = addr;
     });
   }
 
@@ -233,6 +262,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _address = r.address.isNotEmpty
           ? r.address
           : '${r.lat.toStringAsFixed(4)}, ${r.lng.toStringAsFixed(4)}';
+      if (_addrCtrl.text.trim().isEmpty && r.address.isNotEmpty) _addrCtrl.text = r.address;
       _error = '';
     });
   }
@@ -264,14 +294,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
       'bio':        _bioCtrl.text.trim(),
       'id_type':    _idType,
       'id_number':  _idNumCtrl.text.trim(),
-      'address':    _address,
+      'address':    _addrCtrl.text.trim().isNotEmpty ? _addrCtrl.text.trim() : _address,
       'city':       _city,
       'lat':        _lat ?? 0.0,
       'lng':        _lng ?? 0.0,
       'radius_km':  _radius,
       if (_pinned) 'base_lat': _lat,
       if (_pinned) 'base_lng': _lng,
-      'areas':      <String>[],
+      'areas':      _areas,
       'services':   services,
     });
     if (!mounted) return;
@@ -280,6 +310,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
     final id = '${res.map?['id'] ?? ''}';
+    // Website: log in automatically (pending providers get a token), upload
+    // the photo, then show the "Application Under Review" screen.
+    final lr = await ProviderApiService.login(_emailCtrl.text.trim().toLowerCase(), _pwdCtrl.text);
+    if (lr.ok && _photo != null) {
+      try { await ProviderApiService.uploadPhoto(_photo!); } catch (_) {}
+    }
+    if (!mounted) return;
+    if (lr.ok) {
+      showSnack(context, '✅ Registered! Waiting for approval', tone: Tone.success);
+      Navigator.pushAndRemoveUntil(context, MaterialPageRoute(
+          builder: (_) => PendingApprovalScreen(
+              name: _nameCtrl.text.trim(), email: _emailCtrl.text.trim().toLowerCase(), submitted: true)),
+          (_) => false);
+      return;
+    }
     setState(() { _submitting = false; _generatedId = id.isNotEmpty ? id : 'Submitted'; });
   }
 
@@ -287,10 +332,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Widget build(BuildContext context) {
     if (_generatedId.isNotEmpty) return _buildSuccessScreen();
 
+    return PopScope(
+      canPop: _currentStep == 0,
+      onPopInvoked: (didPop) { if (!didPop) _prevStep(); },
+      child: _buildForm());
+  }
+
+  Widget _buildForm() {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
-        title: Text('Register — Step ${_currentStep + 1} of 3'),
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(const ['Your Details', 'Your Services', 'Location & Area'][_currentStep]),
+          Text('Step ${_currentStep + 1} of 3',
+              style: const TextStyle(fontSize: 12.5, color: Colors.white70, fontWeight: FontWeight.w400)),
+        ]),
         backgroundColor: AppColors.teal,
       ),
       body: Column(
@@ -361,7 +417,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   child: _submitting
                       ? const SizedBox(width: 22, height: 22,
                           child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white)))
-                      : Text(_currentStep < 2 ? 'Next →' : 'Submit Registration',
+                      : Text(_currentStep < 2 ? 'Continue →' : 'Submit Application ✓',
                           style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 ),
               ),
@@ -379,6 +435,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const Text('Personal Information', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
         const Text('Tell us about yourself', style: TextStyle(fontSize: 13, color: AppColors.muted)),
         const SizedBox(height: 20),
+        Center(
+          child: InkWell(
+            onTap: _pickPhoto,
+            customBorder: const CircleBorder(),
+            child: CircleAvatar(
+              radius: 44,
+              backgroundColor: AppColors.tealSoft,
+              backgroundImage: _photo != null ? FileImage(_photo!) : null,
+              child: _photo == null
+                  ? const Icon(Icons.add_a_photo_outlined, color: AppColors.teal, size: 30)
+                  : null,
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Center(
+          child: Text('Add your photo (recommended)', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+        ),
+        const SizedBox(height: 20),
 
         _field('FULL NAME *', _nameCtrl, 'Your full name', Icons.person_rounded),
         const SizedBox(height: 14),
@@ -390,13 +465,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const SizedBox(height: 14),
 
         // Gender
-        _dropdownField('GENDER', _gender, ['Male', 'Female', 'Other'],
+        _dropdownField('GENDER', _gender, ['Male', 'Female'],
           (v) => setState(() => _gender = v!)),
         const SizedBox(height: 14),
 
         // Experience
         _dropdownField('EXPERIENCE *', _experience,
-          ['Less than 1 year', '1-2 years', '3-5 years', '5-10 years', '10+ years'],
+          ['0-1 years', '1-2 years', '3-5 years', '5+ years'],
           (v) => setState(() => _experience = v!)),
         const SizedBox(height: 14),
 
@@ -443,11 +518,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const SizedBox(height: 14),
 
         // ID Proof
-        _dropdownField('ID PROOF TYPE *', _idType,
-          ['Aadhaar Card', 'PAN Card', 'Voter ID', 'Driving License', 'Passport'],
+        _dropdownField('ID TYPE', _idType,
+          ['Aadhaar', 'PAN', 'Voter ID', 'Driving License'],
           (v) => setState(() => _idType = v!)),
         const SizedBox(height: 14),
-        _field('ID NUMBER *', _idNumCtrl, 'Enter ID number', Icons.badge_rounded),
+        _field('ID NUMBER', _idNumCtrl, 'Enter ID number', Icons.badge_rounded),
         const SizedBox(height: 20),
       ]),
     );
@@ -654,6 +729,37 @@ class _RegisterScreenState extends State<RegisterScreen> {
           ),
         ),
 
+        const SizedBox(height: 20),
+        TextField(
+          controller: _addrCtrl,
+          maxLines: 2,
+          decoration: const InputDecoration(labelText: 'Full Address *', alignLabelWithHint: true),
+        ),
+        const SizedBox(height: 20),
+        const Text('Areas You Serve *', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
+        const SizedBox(height: 4),
+        const Text('Add the localities where you want jobs — customers in these areas will find you',
+            style: TextStyle(fontSize: 12, color: AppColors.muted)),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _areaCtrl,
+          textCapitalization: TextCapitalization.words,
+          onSubmitted: (_) => _addArea(),
+          decoration: InputDecoration(
+            labelText: 'Area name',
+            hintText: 'e.g. Gajuwaka, Sheelanagar…',
+            prefixIcon: const Icon(Icons.search_rounded),
+            suffixIcon: IconButton(icon: const Icon(Icons.add_circle_rounded), onPressed: _addArea),
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (_areas.isEmpty)
+          const Text('No areas added yet', style: TextStyle(fontSize: 12, color: AppColors.muted))
+        else
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (var i = 0; i < _areas.length; i++)
+              InputChip(label: Text(_areas[i]), onDeleted: () => setState(() => _areas.removeAt(i))),
+          ]),
         const SizedBox(height: 24),
 
         // Summary
@@ -673,6 +779,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             _summaryRow('Services', '${_selectedServices.length} of ${HSCatalog.services.length} selected'),
             _summaryRow('City', _city.isNotEmpty ? _city : '—'),
             _summaryRow('Range', '$_radius km${_pinned ? ' · pinned on map' : ''}'),
+            _summaryRow('Areas', _areas.isEmpty ? '—' : _areas.join(', ')),
           ]),
         ),
 

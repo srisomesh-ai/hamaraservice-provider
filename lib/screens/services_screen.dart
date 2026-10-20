@@ -4,15 +4,29 @@ import '../services/hs_catalog.dart';
 import '../services/provider_api_service.dart';
 import '../utils/parse.dart';
 import '../utils/theme.dart';
+import '../widgets/ui.dart';
 
 /// My Services — two groups: "✅ Active services" on top and
 /// "➕ Available to add" below. Tapping a row switches the service on/off and
 /// saves instantly (providers.php?action=services with that one service).
 /// Active services show whether a price range is set; the price sheet saves
 /// the range + optional option prices (providers.php?action=save_option_prices).
+/// Test-only sample data for screenshots (no network when set).
+class ServicesDemo {
+  final Map<String, bool> enabled;
+  final Map<String, List<int>> ranges; // svcId → [min, max]
+  const ServicesDemo({required this.enabled, this.ranges = const {}});
+}
+
 class ServicesScreen extends StatefulWidget {
   final String providerId;
-  const ServicesScreen({super.key, required this.providerId});
+  /// Shown as a bottom-navigation tab (no back arrow).
+  final bool embedded;
+  /// Bumped by the shell each time the tab is selected → reload.
+  final int refreshTick;
+  final ServicesDemo? demo;
+  const ServicesScreen(
+      {super.key, required this.providerId, this.embedded = false, this.refreshTick = 0, this.demo});
   @override
   State<ServicesScreen> createState() => _State();
 }
@@ -48,11 +62,24 @@ class _State extends State<ServicesScreen> {
   @override
   void initState() {
     super.initState();
+    final d = widget.demo;
+    if (d != null) {
+      _enabled.addAll(d.enabled);
+      d.ranges.forEach((k, v) => _ranges[k] = _Range(v[0], v[1]));
+      _loading = false;
+      return;
+    }
     _load();
   }
 
-  Future<void> _load() async {
-    if (mounted) setState(() => _loading = true);
+  @override
+  void didUpdateWidget(ServicesScreen old) {
+    super.didUpdateWidget(old);
+    if (widget.demo == null && old.refreshTick != widget.refreshTick && !_loading) _load(quiet: true);
+  }
+
+  Future<void> _load({bool quiet = false}) async {
+    if (mounted && !quiet) setState(() => _loading = true);
 
     // 1. My services: enabled flag + price range
     try {
@@ -68,12 +95,7 @@ class _State extends State<ServicesScreen> {
       _loadFailed = false;
     } catch (e) {
       _loadFailed = true;
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Could not load your services: $e'),
-          backgroundColor: AppColors.red,
-        ));
-      }
+      if (mounted) showSnack(context, 'Could not load your services: $e', tone: Tone.error);
     }
 
     // 2. Per-option prices — {svcId: {key: price}}
@@ -119,15 +141,9 @@ class _State extends State<ServicesScreen> {
     if (mounted) setState(() => _loading = false);
   }
 
-  void _snack(String msg, Color color) {
+  void _snack(String msg, {Tone tone = Tone.neutral}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-          content: Text(msg),
-          backgroundColor: color,
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 2)));
+    showSnack(context, msg, tone: tone);
   }
 
   bool _priced(String id) => (_ranges[id]?.min ?? 0) > 0;
@@ -140,8 +156,9 @@ class _State extends State<ServicesScreen> {
 
   /// Switch on/off and save instantly; revert on failure.
   Future<void> _toggle(HSService svc) async {
+    if (widget.demo != null) return;
     if (_loadFailed) {
-      _snack('Your services did not load. Retrying…', AppColors.red);
+      _snack('Your services did not load. Retrying…', tone: Tone.error);
       _load();
       return;
     }
@@ -159,20 +176,22 @@ class _State extends State<ServicesScreen> {
     if (!res.ok) {
       setState(() => _enabled[svc.id] = !on);
       if (!res.unauthorized) {
-        _snack(res.error.isNotEmpty ? res.error : 'Could not save', AppColors.red);
+        _snack(res.error.isNotEmpty ? res.error : 'Could not save', tone: Tone.error);
       }
       return;
     }
     _snack(
         '${on ? '● ' : '○ '}${svc.name} is now ${on ? 'Active' : 'Inactive'}'
         '${on && !_priced(svc.id) ? ' — set your price' : ''}',
-        on ? AppColors.green : AppColors.muted);
+        tone: on ? Tone.success : Tone.neutral);
   }
 
   void _openPrices(HSService svc) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      showDragHandle: false,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _PriceEditorSheet(
         svc: svc,
@@ -197,7 +216,7 @@ class _State extends State<ServicesScreen> {
       _ranges[svc.id] = _Range(toInt(d['min_price'], min), toInt(d['max_price'], max));
       _enabled[svc.id] = true; // saving prices also activates the service
     });
-    _snack('✅ ${svc.name} prices saved', AppColors.green);
+    _snack('✅ Prices saved', tone: Tone.success);
     return null;
   }
 
@@ -209,177 +228,156 @@ class _State extends State<ServicesScreen> {
     final active = filtered.where((s) => _enabled[s.id] == true).toList();
     final avail = filtered.where((s) => _enabled[s.id] != true).toList();
     final totalActive = HSCatalog.services.where((s) => _enabled[s.id] == true).length;
+    final unpriced = HSCatalog.services.where((s) => _enabled[s.id] == true && !_priced(s.id)).length;
 
     return Scaffold(
-      backgroundColor: AppColors.bg,
       appBar: AppBar(
-        backgroundColor: AppColors.teal,
-        foregroundColor: Colors.white,
-        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('My Services', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17)),
-          Text('$totalActive active',
-              style: const TextStyle(fontSize: 12, color: Colors.white70)),
-        ]),
+        automaticallyImplyLeading: !widget.embedded,
+        title: const Text('My Services'),
+        actions: [
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Text('$totalActive active',
+                  style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w500)),
+            ),
+          ),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(56),
+          child: Container(
+            color: Colors.white,
+            height: 56,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              itemCount: _cats.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (_, i) {
+                final c = _cats[i];
+                return FilterChip(
+                  label: Text(c),
+                  selected: c == _cat,
+                  showCheckmark: false,
+                  visualDensity: VisualDensity.compact,
+                  onSelected: (_) => setState(() => _cat = c),
+                );
+              },
+            ),
+          ),
+        ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.teal))
-          : Column(children: [
-              Container(
-                color: Colors.white,
-                height: 44,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  itemCount: _cats.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (_, i) {
-                    final c = _cats[i];
-                    final sel = c == _cat;
-                    return GestureDetector(
-                      onTap: () => setState(() => _cat = c),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: sel ? AppColors.teal : AppColors.bg,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: sel ? AppColors.teal : AppColors.line),
-                        ),
-                        child: Text(c,
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: sel ? Colors.white : AppColors.ink2)),
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                children: [
+                  Text(
+                      'Tap a service to switch it on/off — changes save instantly. '
+                      'Customers only see your active services with a price.',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.muted)),
+                  if (unpriced > 0) ...[
+                    const SizedBox(height: 12),
+                    Notice('$unpriced active service${unpriced == 1 ? '' : 's'} without a price — tap "Set price".',
+                        tone: Tone.warning, icon: Icons.sell_outlined),
+                  ],
+                  SectionTitle('Active services (${active.length})'),
+                  if (active.isEmpty)
+                    const Card(
+                      child: Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text('No active services yet — add from the list below.',
+                            style: TextStyle(fontSize: 14, color: AppColors.muted)),
                       ),
-                    );
-                  },
-                ),
+                    )
+                  else
+                    _group(active),
+                  SectionTitle('Available to add (${avail.length})'),
+                  _group(avail),
+                ],
               ),
-              const Divider(height: 1),
-              Expanded(
-                child: RefreshIndicator(
-                  onRefresh: _load,
-                  color: AppColors.teal,
-                  child: ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 10),
-                        child: Text(
-                            'Tap a service to switch it on/off — changes save instantly. '
-                            'Customers only see your active services with a price.',
-                            style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
-                      ),
-                      _section('✅ Active services (${active.length})'),
-                      if (active.isEmpty)
-                        Container(
-                          padding: const EdgeInsets.all(14),
-                          margin: const EdgeInsets.only(bottom: 10),
-                          decoration: BoxDecoration(
-                              color: Colors.white, borderRadius: BorderRadius.circular(14)),
-                          child: const Text('No active services yet — add from the list below.',
-                              style: TextStyle(fontSize: 13, color: AppColors.muted)),
-                        ),
-                      ...active.map(_row),
-                      const SizedBox(height: 8),
-                      _section('➕ Available to add (${avail.length})'),
-                      ...avail.map(_row),
-                      const SizedBox(height: 24),
-                    ],
-                  ),
-                ),
-              ),
-            ]),
+            ),
     );
   }
 
-  Widget _section(String t) => Padding(
-        padding: const EdgeInsets.fromLTRB(2, 6, 2, 8),
-        child: Text(t,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
+  Widget _group(List<HSService> list) => Card(
+        clipBehavior: Clip.antiAlias,
+        child: Column(children: [
+          for (var i = 0; i < list.length; i++) ...[
+            if (i > 0) const Divider(indent: 72),
+            _row(list[i]),
+          ],
+        ]),
       );
 
   Widget _pill(String text, Color bg, Color fg) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(99)),
-        child: Text(text, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: fg)),
+        child: Text(text, style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
       );
 
   Widget _row(HSService svc) {
     final on = _enabled[svc.id] == true;
     final priced = on && _priced(svc.id);
     final busy = _busy.contains(svc.id);
-    return Opacity(
-      opacity: on ? 1 : 0.9,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: on ? AppColors.teal : AppColors.line, width: on ? 2 : 1),
-        ),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: busy ? null : () => _toggle(svc),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(children: [
-              Container(
-                width: 44, height: 44,
-                decoration: BoxDecoration(
-                    color: on ? AppColors.teal.withOpacity(0.1) : AppColors.bg,
-                    borderRadius: BorderRadius.circular(12)),
-                child: Center(child: Text(svc.icon, style: const TextStyle(fontSize: 22))),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(svc.name,
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
-                  const SizedBox(height: 4),
-                  Wrap(spacing: 6, runSpacing: 4, children: [
-                    on
-                        ? _pill('● Active', _activeBg, _activeFg)
-                        : _pill('○ Inactive', _inactiveBg, _inactiveFg),
-                    if (on)
-                      priced
-                          ? _pill('✓ Price set ${_priceText(svc.id)}', _pricedBg, Colors.white)
-                          : _pill('⚠ Set your price', _warnBg, _warnFg),
-                  ]),
-                ]),
-              ),
-              const SizedBox(width: 8),
-              if (busy)
-                const SizedBox(width: 22, height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.teal))
-              else if (on)
-                ElevatedButton(
-                  onPressed: () => _openPrices(svc),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: priced ? _pricedBg : AppColors.brand,
-                    minimumSize: const Size(72, 36),
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    return InkWell(
+      onTap: busy ? null : () => _toggle(svc),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        child: Row(children: [
+          Container(
+            width: 44, height: 44,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: on ? AppColors.tealSoft : const Color(0xFFF1F4F5),
+                borderRadius: BorderRadius.circular(12)),
+            child: Text(svc.icon, style: const TextStyle(fontSize: 22)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(svc.name,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: on ? AppColors.ink : AppColors.ink2)),
+              const SizedBox(height: 5),
+              Wrap(spacing: 6, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                on
+                    ? _pill('● Active', _activeBg, _activeFg)
+                    : _pill('○ Inactive', _inactiveBg, _inactiveFg),
+                if (on)
+                  priced
+                      ? _pill('✓ Price set ${_priceText(svc.id)}', _pricedBg, Colors.white)
+                      : _pill('⚠ Set your price', _warnBg, _warnFg),
+              ]),
+              if (on)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: TextButton.icon(
+                    onPressed: () => _openPrices(svc),
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(0, 34),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      foregroundColor: priced ? AppColors.teal : AppColors.brand,
+                      textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(fontSize: 13.5),
+                    ),
+                    icon: Icon(priced ? Icons.edit_outlined : Icons.sell_outlined, size: 17),
+                    label: Text(priced ? 'Edit price' : 'Set price'),
                   ),
-                  child: Text(priced ? '✎ Edit ₹' : '₹ Set',
-                      style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
-                )
-              else
-                ElevatedButton(
-                  onPressed: () => _toggle(svc),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.teal,
-                    minimumSize: const Size(72, 36),
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                  child: const Text('+ Add',
-                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
                 ),
             ]),
           ),
-        ),
+          const SizedBox(width: 4),
+          busy
+              ? const Padding(
+                  padding: EdgeInsets.all(14),
+                  child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
+                )
+              : Switch(value: on, onChanged: (_) => _toggle(svc)),
+        ]),
       ),
     );
   }
@@ -489,7 +487,7 @@ class _PriceEditorSheetState extends State<_PriceEditorSheet> {
           child: Container(
             decoration: const BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Center(
                 child: Container(
