@@ -41,8 +41,11 @@ jobs:
 
       - name: Set up release signing
         run: |
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
-            echo "$KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            # Only the keystore and its password are required; alias defaults to
+            # "upload" and the key password to the keystore password (PKCS12).
+            KEY_ALIAS="${KEY_ALIAS:-upload}"; KEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 --decode > android/app/upload-keystore.jks
             {
               echo "storePassword=$KEYSTORE_PASSWORD"
               echo "keyPassword=$KEY_PASSWORD"
