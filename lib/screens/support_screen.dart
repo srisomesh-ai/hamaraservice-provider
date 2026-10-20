@@ -32,6 +32,16 @@ class _SupportScreenState extends State<SupportScreen> {
     {'key': 'other',       'icon': '📝', 'label': 'Other'},
   ];
 
+  SupportConfig _cfg = supportConfigNow;
+
+  @override
+  void initState() {
+    super.initState();
+    loadSupportConfig().then((c) {
+      if (mounted) setState(() => _cfg = c);
+    });
+  }
+
   Future<void> _submitRequest() async {
     final msg = _msgCtrl.text.trim();
     if (msg.isEmpty) {
@@ -43,44 +53,32 @@ class _SupportScreenState extends State<SupportScreen> {
     setState(() => _submitting = true);
     final type = _types.firstWhere((t) => t['key'] == _selectedType,
         orElse: () => _types.last)['label'] as String;
-    final uri = supportMailto(
-      subject: 'Provider support: $type${widget.providerId.isNotEmpty ? ' (${widget.providerId})' : ''}',
-      body: '$msg\n\n---\nProvider: ${widget.providerName}\n'
-          'Email: ${widget.providerEmail}\nProvider ID: ${widget.providerId}\n',
-    );
-    bool opened = false;
-    try {
-      opened = await launchUrl(uri);
-    } catch (_) {}
+    final text = 'Hi HamaraService support, I am a provider'
+        '${widget.providerId.isNotEmpty ? ' (ID: ${widget.providerId})' : ''}.\n'
+        'Request: $type\n\n$msg\n\n---\nProvider: ${widget.providerName}\n'
+        'Email: ${widget.providerEmail}\nProvider ID: ${widget.providerId}\n';
+    final opened = await openSupport(context,
+        providerId: widget.providerId, message: text);
     if (!mounted) return;
     setState(() { _submitting = false; _submitted = opened; });
-    if (!opened) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('No email app found. Please write to $kSupportEmail'),
-        backgroundColor: AppColors.red));
-    }
   }
 
-  Future<void> _open(Uri uri, {bool external = false}) async {
+  Future<void> _whatsappSupport() =>
+      openSupport(context, providerId: widget.providerId);
+
+  Future<void> _emailSupport() async {
     bool ok = false;
     try {
-      ok = await launchUrl(uri,
-          mode: external ? LaunchMode.externalApplication : LaunchMode.platformDefault);
+      ok = await launchUrl(supportMailto(
+          subject: 'Provider support${widget.providerId.isNotEmpty ? ' (${widget.providerId})' : ''}',
+          body: supportMessage(providerId: widget.providerId)));
     } catch (_) {}
     if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Could not open. Please write to $kSupportEmail'),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('No email app found. Please write to ${_cfg.email}'),
         backgroundColor: AppColors.red));
     }
   }
-
-  void _callSupport() => _open(Uri.parse('tel:+91$kSupportPhone'));
-  void _whatsappSupport() => _open(
-      Uri.parse('https://wa.me/91$kSupportPhone?text=${Uri.encodeComponent('Hi, I need help with my provider account')}'),
-      external: true);
-  void _emailSupport() => _open(supportMailto(
-      subject: 'Provider support${widget.providerId.isNotEmpty ? ' (${widget.providerId})' : ''}',
-      body: ''));
 
   @override
   void dispose() { _msgCtrl.dispose(); super.dispose(); }
@@ -104,13 +102,11 @@ class _SupportScreenState extends State<SupportScreen> {
               color: AppColors.muted, letterSpacing: 0.8)),
             const SizedBox(height: 10),
             Row(children: [
-              if (hasSupportPhone) ...[
-                _contactBtn('📞', 'Call', AppColors.teal, _callSupport),
-                const SizedBox(width: 10),
-                _contactBtn('💬', 'WhatsApp', const Color(0xFF25D366), _whatsappSupport),
+              if (_cfg.hasWhatsapp) ...[
+                _contactBtn('💬', 'WhatsApp support', const Color(0xFF25D366), _whatsappSupport),
                 const SizedBox(width: 10),
               ],
-              _contactBtn('📧', 'Email $kSupportEmail', AppColors.brand, _emailSupport),
+              _contactBtn('📧', 'Email ${_cfg.email}', AppColors.brand, _emailSupport),
             ]),
 
             const SizedBox(height: 24),
@@ -131,10 +127,12 @@ class _SupportScreenState extends State<SupportScreen> {
                 child: Column(children: [
                   const Text('✅', style: TextStyle(fontSize: 48)),
                   const SizedBox(height: 12),
-                  const Text('Email app opened',
+                  Text(_cfg.hasWhatsapp ? 'WhatsApp opened' : 'Email app opened',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.green)),
                   const SizedBox(height: 6),
-                  const Text('Send the email from your mail app. We usually reply within 24 hours.',
+                  Text(_cfg.hasWhatsapp
+                      ? 'Send the message in WhatsApp. We usually reply within 24 hours.'
+                      : 'Send the email from your mail app. We usually reply within 24 hours.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 13, color: AppColors.muted)),
                   const SizedBox(height: 16),
@@ -232,7 +230,7 @@ class _SupportScreenState extends State<SupportScreen> {
                           ? const SizedBox(width: 22, height: 22,
                               child: CircularProgressIndicator(strokeWidth: 2.5,
                                 valueColor: AlwaysStoppedAnimation(Colors.white)))
-                          : const Text('Send via Email',
+                          : Text(_cfg.hasWhatsapp ? 'Send via WhatsApp' : 'Send via Email',
                               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                     ),
                   ),

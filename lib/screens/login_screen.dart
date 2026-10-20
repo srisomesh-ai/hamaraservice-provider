@@ -51,16 +51,14 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (!res.ok) {
-      // Unknown email? Offer registration (never prefill the password).
-      bool noAccount = false;
-      if (!res.networkError && res.status < 500) {
-        noAccount = (await ProviderApiService.checkEmailExists(email)) == false;
-      }
-      if (!mounted) return;
+      // 404 NOT_REGISTERED → unknown email: offer registration (the email is
+      // carried over, never the password). Anything else (e.g. 400 "Incorrect
+      // password. Please try again.") → show the server's text as is.
+      final noAccount = res.status == 404 || res.error.startsWith('NOT_REGISTERED');
       setState(() {
         _loading = false;
         _noAccount = noAccount;
-        _error = noAccount ? 'No account found for $email.' : res.error;
+        _error = noAccount ? 'No provider account found for this email.' : res.error;
       });
       return;
     }
@@ -187,7 +185,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             width: double.infinity,
                             child: OutlinedButton.icon(
                               icon: const Icon(Icons.person_add_rounded, size: 18, color: AppColors.brand),
-                              label: const Text('No account found — Register?',
+                              label: const Text('Register as provider',
                                 style: TextStyle(color: AppColors.brand, fontWeight: FontWeight.w700)),
                               onPressed: () => Navigator.push(context, MaterialPageRoute(
                                 builder: (_) => RegisterScreen(

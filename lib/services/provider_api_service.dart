@@ -291,15 +291,39 @@ class ProviderApiService {
     if (!res.ok) throw ApiException(res.error, res.status);
   }
 
-  /// Save per-option prices for a service
-  /// prices: {groupKey_optionKey: price} e.g. {'sweep_studio': 300}
-  static Future<void> saveServiceOptionPrices(
-      String svcId, Map<String, int> prices) async {
-    final res = await post('providers.php',
-        {'svc_id': svcId, 'option_prices': prices},
-        params: {'action': 'save_option_prices'});
-    if (!res.ok) throw ApiException(res.error, res.status);
-  }
+  /// Switch ONE service on/off (saved instantly). min/max 0 keep the
+  /// provider's saved price range on the server.
+  static Future<ApiResult> setServiceEnabled(
+          {required String svcId,
+          required String name,
+          required String icon,
+          required String cat,
+          required bool enabled}) =>
+      post('providers.php', {
+        'services': [
+          {
+            'svc_id': svcId,
+            'svc_name': name,
+            'svc_icon': icon,
+            'svc_cat': cat,
+            'enabled': enabled ? 1 : 0,
+            'min_price': 0,
+            'max_price': 0,
+          }
+        ]
+      }, params: {'action': 'services'});
+
+  /// Save the provider's price range (min/max shown to customers) and the
+  /// optional per-option prices {groupKey_optionKey: price} for a service.
+  /// Also enables the service. Returns data {min_price, max_price}.
+  static Future<ApiResult> saveServicePrices(String svcId,
+          {required Map<String, int> prices, int minPrice = 0, int maxPrice = 0}) =>
+      post('providers.php', {
+        'svc_id': svcId,
+        'prices': prices,
+        'min_price': minPrice,
+        'max_price': maxPrice,
+      }, params: {'action': 'save_option_prices'});
 
   /// Per-option prices for all services
   static Future<Map<String, dynamic>> getServiceOptionPrices() async {
@@ -368,6 +392,28 @@ class ProviderApiService {
 
   static Future<ApiResult> getPayoutHistory() async =>
       get('payouts.php', params: await _mine('history'));
+
+  /// Wallet top-up step 1 → {order_id, amount (paise), currency, key_id}.
+  static Future<ApiResult> topupOrder(int amountRupees) =>
+      post('payouts.php', {'amount': amountRupees},
+          params: {'action': 'topup_order'});
+
+  /// Wallet top-up step 2 — verify the Razorpay payment and credit the wallet.
+  static Future<ApiResult> topupConfirm(
+          {required String orderId,
+          required String paymentId,
+          required String signature}) =>
+      post('payouts.php', {
+        'razorpay_order_id': orderId,
+        'razorpay_payment_id': paymentId,
+        'razorpay_signature': signature,
+      }, params: {'action': 'topup_confirm'});
+
+  // ── SITE SETTINGS (public) ───────────────────────────────
+
+  /// {support_whatsapp, support_email, ...}
+  static Future<ApiResult> getSiteConfig() =>
+      get('site.php', params: {'action': 'config'});
 
   // ── REVIEWS ──────────────────────────────────────────────
 

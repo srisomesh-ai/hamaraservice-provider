@@ -128,7 +128,7 @@ class OpenJobsScreen extends StatelessWidget {
         const SizedBox(height: 8),
         if (est > 0) _row(Icons.currency_rupee_rounded, 'Customer estimate ₹$est'),
         _row(Icons.calendar_today_rounded,
-            '${fmtDate(b['slot_date'])}${str(b['slot_time']).isNotEmpty ? ' · ${str(b['slot_time'])}' : ''}'),
+            slotWhen(b['slot_date'], b['slot_time'])),
         if (area.isNotEmpty) _row(Icons.location_on_rounded, area),
         if (summary.isNotEmpty) _row(Icons.list_alt_rounded, summary.join(' · ')),
         const SizedBox(height: 10),

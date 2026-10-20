@@ -6,11 +6,13 @@ import '../services/location_service.dart';
 import '../services/notification_service.dart';
 import '../services/provider_api_service.dart';
 import '../utils/parse.dart';
+import '../utils/support_contact.dart';
 import '../utils/theme.dart';
 import '../widgets/accept_job.dart';
 import 'active_booking_screen.dart';
 import 'earnings_screen.dart';
 import 'login_screen.dart';
+import 'map_picker_screen.dart';
 import 'open_jobs_screen.dart';
 import 'profile_edit_screen.dart';
 import 'ratings_screen.dart';
@@ -39,6 +41,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _foreground = true;
   Map<String, dynamic>? _profile;
   Map<String, dynamic>? _balance;
+  Timer? _profileTimer; // rating / earnings stay current (every 60 s)
+  bool _savingLoc = false;
 
   // Job discovery (ONE poller)
   Timer? _jobsTimer;
@@ -98,6 +102,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     NotificationService.appReady = true;
     WidgetsBinding.instance.addPostFrameCallback((_) => NotificationService.consumePending());
     _startActivePolling();
+    _startProfilePolling();
+    loadSupportConfig();
     if (_tab == 1) _loadHistory();
   }
 
@@ -106,6 +112,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     WidgetsBinding.instance.removeObserver(this);
     _jobsTimer?.cancel();
     _activeTimer?.cancel();
+    _profileTimer?.cancel();
     _countdownTimer?.cancel();
     _stopAlert();
     _audio.dispose();
@@ -121,11 +128,14 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (fg) {
       _refreshAll();
       _startActivePolling();
+      _startProfilePolling();
     } else {
       _jobsTimer?.cancel();
       _jobsTimer = null;
       _activeTimer?.cancel();
       _activeTimer = null;
+      _profileTimer?.cancel();
+      _profileTimer = null;
       _stopAlert();
     }
     _syncJobPoller();
@@ -145,6 +155,71 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (!_toggling) _available = toBool(p['available']);
     });
     LocationService.instance.online = _available && _approved;
+  }
+
+  void _startProfilePolling() {
+    _profileTimer?.cancel();
+    _profileTimer = Timer.periodic(const Duration(seconds: 60), (_) => _loadProfile());
+  }
+
+  /// "⭐ 4.8 (12 reviews) · view" / "⭐ New provider — no reviews yet"
+  String get _ratingText {
+    final rt = toDouble(_profile?['rating']);
+    final n = toInt(_profile?['review_count']);
+    return rt > 0
+        ? '⭐ ${rt.toStringAsFixed(1)} ($n review${n == 1 ? '' : 's'}) · view'
+        : '⭐ New provider — no reviews yet';
+  }
+
+  void _openReviews() => Navigator.push(context, MaterialPageRoute(
+      builder: (_) => RatingsScreen(providerId: _pid, rating: toDouble(_profile?['rating']))));
+
+  void _support() => openSupport(context, providerId: _pid);
+
+  Future<void> _openServices() async {
+    await Navigator.push(context,
+        MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
+    if (mounted) _loadProfile();
+  }
+
+  // ── Service location & range (map pin) ─────────────────────
+  bool get _pinnedLoc =>
+      toDouble(_profile?['base_lat']) != 0 && toDouble(_profile?['base_lng']) != 0;
+
+  Future<void> _pinServiceArea() async {
+    if (_savingLoc) return;
+    final p = _profile ?? {};
+    double? pick(String a, String b) {
+      final v = toDouble(p[a]);
+      return v != 0 ? v : (toDouble(p[b]) != 0 ? toDouble(p[b]) : null);
+    }
+    final r = await MapPickerScreen.open(context,
+        lat: pick('base_lat', 'lat'),
+        lng: pick('base_lng', 'lng'),
+        radiusKm: toInt(p['radius_km'], 5),
+        title: 'Your service location & range',
+        confirmText: 'Save location & range');
+    if (r == null || !mounted) return;
+    final body = <String, dynamic>{
+      'base_lat': r.lat,
+      'base_lng': r.lng,
+      'radius_km': r.radiusKm,
+      if (r.address.isNotEmpty) 'address': r.address,
+      if (r.city.isNotEmpty) 'city': r.city,
+    };
+    setState(() => _savingLoc = true);
+    final res = await ProviderApiService.updateProfile(body);
+    if (!mounted) return;
+    setState(() => _savingLoc = false);
+    if (!res.ok) {
+      if (!res.unauthorized) _snack(res.error, AppColors.red);
+      return;
+    }
+    final updated = {...?_profile, ...body};
+    setState(() => _profile = updated);
+    await ProviderApiService.cacheProvider(updated);
+    _snack('✅ Location & ${r.radiusKm} km range saved', AppColors.green);
+    _loadProfile();
   }
 
   Future<void> _loadBalance() async {
@@ -335,6 +410,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _logout() async {
     _jobsTimer?.cancel();
     _activeTimer?.cancel();
+    _profileTimer?.cancel();
     _closeIncoming(dismiss: false);
     LocationService.instance.stopAll();
     NotificationService.appReady = false;
@@ -449,6 +525,10 @@ class _DashboardScreenState extends State<DashboardScreen>
             automaticallyImplyLeading: false,
             backgroundColor: AppColors.teal,
             actions: [
+              IconButton(
+                  tooltip: 'Support',
+                  icon: const Icon(Icons.support_agent_rounded, color: Colors.white),
+                  onPressed: _support),
               IconButton(icon: const Icon(Icons.logout, color: Colors.white), onPressed: _logout),
             ],
             flexibleSpace: FlexibleSpaceBar(
@@ -460,7 +540,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 ),
                 child: SafeArea(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 60, 16),
+                    padding: const EdgeInsets.fromLTRB(20, 8, 100, 16),
                     child: Row(children: [
                       _avatar(name, photo, 30),
                       const SizedBox(width: 14),
@@ -471,6 +551,14 @@ class _DashboardScreenState extends State<DashboardScreen>
                           children: [
                             Text(name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Colors.white)),
                             Text(str(_profile?['email']), style: const TextStyle(fontSize: 11, color: Colors.white60)),
+                            const SizedBox(height: 3),
+                            GestureDetector(
+                              onTap: _openReviews,
+                              child: Text(_ratingText,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white)),
+                            ),
                             const SizedBox(height: 4),
                             _statusPill(),
                           ],
@@ -506,9 +594,11 @@ class _DashboardScreenState extends State<DashboardScreen>
                 Row(children: [
                   _statTile('Jobs Done', '${toInt(_profile?['completed_bookings'])}', Icons.work_rounded, AppColors.teal),
                   const SizedBox(width: 10),
-                  _statTile('Rating', rating > 0 ? rating.toStringAsFixed(1) : '–', Icons.star_rounded, AppColors.yellow),
+                  _statTile('Rating', rating > 0 ? rating.toStringAsFixed(1) : '–', Icons.star_rounded, AppColors.yellow,
+                      onTap: _openReviews),
                   const SizedBox(width: 10),
-                  _statTile('Reviews', '${toInt(_profile?['review_count'])}', Icons.reviews_rounded, AppColors.brand),
+                  _statTile('Reviews', '${toInt(_profile?['review_count'])}', Icons.reviews_rounded, AppColors.brand,
+                      onTap: _openReviews),
                 ]),
                 if (_available && _openJobs.isNotEmpty) ...[
                   const SizedBox(height: 12),
@@ -518,11 +608,15 @@ class _DashboardScreenState extends State<DashboardScreen>
                 ],
                 const SizedBox(height: 12),
                 _tapCard(Icons.miscellaneous_services_rounded, const Color(0xFF8B5CF6),
-                    'My Services', 'Choose services and set your prices', () async {
-                  final r = await Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-                  if (r == true) _loadProfile();
-                }),
+                    'My Services', 'Choose services and set your prices', _openServices),
+                const SizedBox(height: 12),
+                _tapCard(Icons.star_rounded, AppColors.yellow,
+                    'My Ratings', _ratingText, _openReviews),
+                const SizedBox(height: 12),
+                _tapCard(Icons.support_agent_rounded, const Color(0xFF25D366),
+                    'Need help?', supportConfigNow.hasWhatsapp
+                        ? 'Chat with support on WhatsApp'
+                        : 'Email HamaraService support', _support),
                 const SizedBox(height: 20),
               ]),
             ),
@@ -547,8 +641,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Widget _duesCard(int due) => GestureDetector(
-        onTap: () => Navigator.push(context,
-            MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid))),
+        onTap: () async {
+          await Navigator.push(context, MaterialPageRoute(
+              builder: (_) => EarningsScreen(providerId: _pid, openTopUp: true)));
+          _loadBalance();
+          _loadActive();
+        },
         child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -563,7 +661,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Commission due: ₹$due',
                     style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.red)),
-                const Text('Pay dues to keep receiving jobs',
+                const Text('Add money to your wallet to keep receiving jobs',
                     style: TextStyle(fontSize: 12, color: AppColors.ink2)),
               ]),
             ),
@@ -597,6 +695,14 @@ class _DashboardScreenState extends State<DashboardScreen>
                 Text(str(b['svc_name'], 'Service'),
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
                 Text(label, style: const TextStyle(fontSize: 12, color: Colors.white)),
+                if (str(b['slot_date']).isNotEmpty || str(b['slot_time']).isNotEmpty)
+                  Text('🗓 ${slotWhen(b['slot_date'], b['slot_time'])}',
+                      style: const TextStyle(fontSize: 11, color: Colors.white)),
+                if (status == 'active' && str(b['started_at']).isNotEmpty)
+                  Text('▶️ Work started at ${istTime(b['started_at'])}',
+                      style: const TextStyle(fontSize: 11, color: Colors.white)),
+                if (status == 'completed' && str(b['started_at']).isNotEmpty)
+                  Text(_workTimesLine(b), style: const TextStyle(fontSize: 11, color: Colors.white)),
               ]),
             ),
             const Text('Open', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
@@ -605,6 +711,14 @@ class _DashboardScreenState extends State<DashboardScreen>
         ),
       ),
     );
+  }
+
+  /// "▶️ 9:05 AM → ⏹️ 10:30 AM · ⏱️ 1 h 25 min"
+  String _workTimesLine(Map<String, dynamic> b) {
+    final st = str(b['started_at']), done = str(b['completed_at']);
+    final dur = istDuration(st, done);
+    return '▶️ ${istTime(st)}${done.isNotEmpty ? ' → ⏹️ ${istTime(done)}' : ''}'
+        '${dur.isNotEmpty ? ' · ⏱️ $dur' : ''}';
   }
 
   Widget _availabilityCard() {
@@ -772,7 +886,9 @@ class _DashboardScreenState extends State<DashboardScreen>
           if (str(b['other_party']).isNotEmpty)
             _line(Icons.person_rounded, str(b['other_party'])),
           _line(Icons.calendar_today_rounded,
-              '${fmtDate(b['slot_date'])} ${str(b['slot_time'])}${price > 0 ? ' · ₹$price' : ''}'),
+              '${slotWhen(b['slot_date'], b['slot_time'])}${price > 0 ? ' · ₹$price' : ''}'),
+          if (status == 'completed' && str(b['started_at']).isNotEmpty)
+            _line(Icons.timer_outlined, _workTimesLine(b)),
           if (str(b['address']).isNotEmpty) _line(Icons.location_on_rounded, str(b['address'])),
           if (status == 'completed' && toInt(b['provider_earns']) > 0)
             _line(Icons.account_balance_wallet_rounded, 'You earned ₹${toInt(b['provider_earns'])}'),
@@ -848,7 +964,8 @@ class _DashboardScreenState extends State<DashboardScreen>
             Row(children: [
               _statTile('Jobs Done', '${toInt(_profile?['completed_bookings'])}', Icons.work_rounded, AppColors.teal),
               const SizedBox(width: 10),
-              _statTile('Rating', rating > 0 ? rating.toStringAsFixed(1) : '–', Icons.star_rounded, AppColors.yellow),
+              _statTile('Rating', rating > 0 ? rating.toStringAsFixed(1) : '–', Icons.star_rounded, AppColors.yellow,
+                  onTap: _openReviews),
               const SizedBox(width: 10),
               _statTile('Earned', '₹${toInt(_profile?['total_earned'])}', Icons.currency_rupee_rounded, AppColors.green),
             ]),
@@ -857,7 +974,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             const SizedBox(height: 10),
             _infoCard(Icons.location_city_rounded, 'City', str(_profile?['city'], 'Not set')),
             const SizedBox(height: 10),
-            _infoCard(Icons.radar_rounded, 'Service radius', '${toInt(_profile?['radius_km'], 10)} km'),
+            _locationCard(),
             const SizedBox(height: 10),
             _infoCard(Icons.work_history_rounded, 'Experience', str(_profile?['experience'], 'Not set')),
             const SizedBox(height: 10),
@@ -866,14 +983,9 @@ class _DashboardScreenState extends State<DashboardScreen>
             _menuTile('Earnings and Withdrawals', Icons.account_balance_wallet_rounded, AppColors.green,
                 () => Navigator.push(context, MaterialPageRoute(builder: (_) => EarningsScreen(providerId: _pid)))),
             const SizedBox(height: 10),
-            _menuTile('My Ratings and Reviews', Icons.star_rounded, AppColors.yellow,
-                () => Navigator.push(context, MaterialPageRoute(builder: (_) => RatingsScreen(providerId: _pid)))),
+            _menuTile('My Ratings and Reviews', Icons.star_rounded, AppColors.yellow, _openReviews),
             const SizedBox(height: 10),
-            _menuTile('My Services', Icons.build_rounded, AppColors.teal, () async {
-              final r = await Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => ServicesScreen(providerId: _pid)));
-              if (r == true) _loadProfile();
-            }),
+            _menuTile('My Services', Icons.build_rounded, AppColors.teal, _openServices),
             const SizedBox(height: 10),
             _menuTile('Help and Support', Icons.headset_mic_rounded, AppColors.muted,
                 () => Navigator.push(context, MaterialPageRoute(
@@ -969,7 +1081,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                         ],
                         const Divider(height: 16, color: AppColors.line),
                         _alertRow(Icons.calendar_today_rounded, 'When',
-                            '${fmtDate(bk['slot_date'])}${str(bk['slot_time']).isNotEmpty ? ' at ${str(bk['slot_time'])}' : ''}',
+                            slotWhen(bk['slot_date'], bk['slot_time']),
                             AppColors.brand),
                         if (area.isNotEmpty) ...[
                           const Divider(height: 16, color: AppColors.line),
@@ -1086,7 +1198,11 @@ class _DashboardScreenState extends State<DashboardScreen>
         ),
       );
 
-  Widget _statTile(String label, String value, IconData icon, Color color) => Expanded(
+  Widget _statTile(String label, String value, IconData icon, Color color,
+          {VoidCallback? onTap}) =>
+      Expanded(
+        child: GestureDetector(
+        onTap: onTap,
         child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -1101,7 +1217,51 @@ class _DashboardScreenState extends State<DashboardScreen>
             Text(label, style: const TextStyle(fontSize: 10, color: AppColors.muted, fontWeight: FontWeight.w600)),
           ]),
         ),
+        ),
       );
+
+  Widget _locationCard() {
+    final pinned = _pinnedLoc;
+    final km = toInt(_profile?['radius_km'], 5);
+    final addr = str(_profile?['address']);
+    return GestureDetector(
+      onTap: _savingLoc ? null : _pinServiceArea,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)],
+        ),
+        child: Row(children: [
+          Container(
+            width: 36, height: 36,
+            decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
+            child: const Icon(Icons.radar_rounded, color: AppColors.teal, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Service location & range',
+                  style: TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
+              Text('${pinned ? '📌 Pinned location' : '📡 Live location'} · range $km km',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
+              if (addr.isNotEmpty)
+                Text(addr, maxLines: 2, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+              const SizedBox(height: 2),
+              Text(pinned ? 'Tap to change on the map' : 'Tap to pin your work location on the map',
+                  style: const TextStyle(fontSize: 11, color: AppColors.teal, fontWeight: FontWeight.w700)),
+            ]),
+          ),
+          _savingLoc
+              ? const SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.teal))
+              : const Icon(Icons.map_rounded, color: AppColors.teal),
+        ]),
+      ),
+    );
+  }
 
   Widget _infoCard(IconData icon, String label, String value) => Container(
         padding: const EdgeInsets.all(14),

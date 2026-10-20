@@ -8,6 +8,7 @@ import '../services/provider_api_service.dart';
 import '../utils/parse.dart';
 import '../utils/theme.dart';
 import 'dashboard_screen.dart';
+import 'earnings_screen.dart';
 
 /// One booking, driven entirely by polling bookings.php?action=get&id=
 /// (every 4 s while visible) and the backend status machine:
@@ -37,8 +38,13 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
 
   Timer? _pollTimer;
   Timer? _clock;
-  final _otpCtrl = TextEditingController();
+  // OTP inputs live in State for the whole screen: polling never recreates or
+  // clears them, so whatever the provider is typing survives every refresh.
+  final _startOtpCtrl = TextEditingController();
+  final _doneOtpCtrl = TextEditingController();
   String _otpError = '';
+  String _renderKey = '';      // visible booking fields; rebuild only when it changes
+  DateTime? _quoteDeadline;    // customer must confirm the quote before this
 
   String get _id => widget.bookingId;
   String get _status => str(_bk['status']);
@@ -55,7 +61,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     });
     _startPolling();
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _status == 'active') setState(() {});
+      if (mounted && (_status == 'active' || _quoteDeadline != null)) setState(() {});
     });
   }
 
@@ -64,7 +70,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     WidgetsBinding.instance.removeObserver(this);
     _pollTimer?.cancel();
     _clock?.cancel();
-    _otpCtrl.dispose();
+    _startOtpCtrl.dispose();
+    _doneOtpCtrl.dispose();
     LocationService.instance.onJob = false;
     super.dispose();
   }
@@ -107,16 +114,30 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
       if (status == 'taken' || status == 'searching' ||
           (pid.isNotEmpty && _myId.isNotEmpty && pid != _myId)) {
         _setGone(status == 'searching'
-            ? 'This job is no longer assigned to you (released or the customer chose another provider).'
+            ? 'This job is no longer assigned to you (the quote time ran out, it was released, or the customer chose another provider).'
             : 'Another provider took this job.');
         return;
       }
-      setState(() {
-        _bk = data;
-        _loaded = true;
-        _pollError = '';
-        if (toInt(data['review_requested']) == 1) _reviewRequested = true;
-      });
+      // Quote window: recomputed from the server on every poll.
+      final quoteLive = (status == 'price_quoted' || status == 'negotiation_final') &&
+          data['quote_expires_in'] != null;
+      _quoteDeadline = quoteLive
+          ? DateTime.now().add(Duration(seconds: toInt(data['quote_expires_in'])))
+          : null;
+      final key = _keyOf(data);
+      final changed = key != _renderKey || !_loaded || _pollError.isNotEmpty;
+      final prevStatus = _status;
+      _bk = data;
+      if (toInt(data['review_requested']) == 1) _reviewRequested = true;
+      if (changed) {
+        setState(() {
+          _renderKey = key;
+          _loaded = true;
+          _pollError = '';
+          // A real status change ends the previous step's OTP error.
+          if (prevStatus != status) _otpError = '';
+        });
+      }
       LocationService.instance.onJob = status == 'confirmed' || status == 'active';
       if (status == 'cancelled') _pollTimer?.cancel();
       if (status == 'completed' && _paid) {
@@ -129,10 +150,28 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     }
   }
 
+  /// Fields that change what this screen shows. Polls that return the same
+  /// values do not rebuild anything.
+  String _keyOf(Map<String, dynamic> b) => [
+        b['id'], b['status'], b['payment_status'], b['payment_method'],
+        b['completion_otp_requested'], b['quoted_price'], b['counter_price'],
+        b['final_price'], b['confirmed_price'], b['amount'], b['started_at'],
+        b['completed_at'], b['rating'], b['review'], b['review_requested'],
+        b['cash_allowed'], b['commission_amt'], b['provider_earns'],
+        b['contact_phone'], b['customer_phone'], b['address'], b['slot_date'],
+        b['slot_time'], b['cancel_reason'],
+      ].join('|');
+
+  /// The booking is no longer ours (taken / released / quote expired):
+  /// leave the job screen with a message.
   void _setGone(String msg) {
     _pollTimer?.cancel();
+    _quoteDeadline = null;
     LocationService.instance.onJob = false;
-    if (mounted) setState(() { _gone = msg; _loaded = true; });
+    if (!mounted) return;
+    setState(() { _gone = msg; _loaded = true; });
+    _snack(msg, AppColors.muted);
+    _exit();
   }
 
   // ── Actions ────────────────────────────────────────────────
@@ -140,7 +179,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
   /// Runs an API action once (no double submit), shows server errors,
   /// refreshes the booking on success.
   Future<ApiResult?> _run(Future<ApiResult> Function() call,
-      {String? success}) async {
+      {String? success, bool refresh = true}) async {
     if (_busy) return null;
     setState(() { _busy = true; _hint = ''; });
     HapticFeedback.lightImpact();
@@ -149,10 +188,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     setState(() => _busy = false);
     if (res.unauthorized) return res;
     if (!res.ok) {
-      _snack(res.error, AppColors.red);
+      // 402 CASH_NOT_ALLOWED: … → show the text after the prefix
+      _snack(res.error.replaceFirst(RegExp(r'^CASH_NOT_ALLOWED:\s*'), ''), AppColors.red);
+      if (res.status == 402) await _poll(); // refresh cash_allowed
     } else {
       if (success != null) _snack(success, AppColors.green);
-      await _poll();
+      if (refresh) await _poll();
     }
     return res;
   }
@@ -194,8 +235,10 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
         'The job goes back to other providers. This cannot be undone.', label,
         color: AppColors.red);
     if (!ok) return;
-    final res = await _run(() => ProviderApiService.releaseBooking(_id));
+    final res = await _run(() => ProviderApiService.releaseBooking(_id), refresh: false);
     if (res != null && res.ok && mounted) {
+      _gone = 'released';
+      _pollTimer?.cancel();
       _snack('You released this job.', AppColors.muted);
       _exit();
     }
@@ -253,7 +296,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
   }
 
   Future<void> _verifyStartOtp() async {
-    final otp = _otpCtrl.text.trim();
+    final otp = _startOtpCtrl.text.trim();
     if (otp.length < 4) { setState(() => _otpError = 'Enter the 4-digit OTP'); return; }
     setState(() => _otpError = '');
     final res = await _run(() => ProviderApiService.verifyStartOtp(_id, otp),
@@ -261,7 +304,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     if (res != null && !res.ok && mounted) {
       setState(() => _otpError = res.error);
     }
-    if (res != null && res.ok) _otpCtrl.clear();
+    if (res != null && res.ok) _startOtpCtrl.clear();
   }
 
   Future<void> _requestCompletionOtp() async {
@@ -277,7 +320,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
   }
 
   Future<void> _complete() async {
-    final otp = _otpCtrl.text.trim();
+    final otp = _doneOtpCtrl.text.trim();
     if (otp.length < 4) { setState(() => _otpError = 'Enter the 4-digit completion OTP'); return; }
     setState(() => _otpError = '');
     final res = await _run(() => ProviderApiService.completeBooking(_id, otp),
@@ -291,7 +334,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
               ? 'Enter the completion OTP'
               : e);
     } else {
-      _otpCtrl.clear();
+      _doneOtpCtrl.clear();
     }
   }
 
@@ -299,7 +342,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     final amt = toInt(_bk['amount']);
     final ok = await _confirm('Confirm cash received',
         'Confirm you received ₹$amt in cash from the customer. '
-        'The platform commission (₹${toInt(_bk['commission_amt'])}) will be added to your dues.',
+        'The platform fee (₹${toInt(_bk['commission_amt'])}) will be deducted from your wallet balance.',
         'Yes, received', color: AppColors.green);
     if (!ok) return;
     await _run(() => ProviderApiService.cashCollected(_id),
@@ -334,6 +377,12 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       _snack('Could not open Maps', AppColors.red);
     }
+  }
+
+  Future<void> _addMoney() async {
+    await Navigator.push(context, MaterialPageRoute(
+        builder: (_) => EarningsScreen(providerId: _myId, openTopUp: true)));
+    if (mounted) _poll();
   }
 
   void _exit() {
@@ -391,6 +440,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
       case 'price_quoted':
         return _section([
           _waiting('Waiting for customer to accept ₹${toInt(_bk['quoted_price'])}'),
+          _quoteLeft(),
           const SizedBox(height: 12),
           _outlined('Withdraw', Icons.undo_rounded, AppColors.red, () => _release()),
         ]);
@@ -415,6 +465,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
       case 'negotiation_final':
         return _section([
           _waiting('Final offer ₹${toInt(_bk['final_price'])} sent. Waiting for the customer to confirm.'),
+          _quoteLeft(),
           const SizedBox(height: 12),
           _outlined('Withdraw', Icons.undo_rounded, AppColors.red, () => _release()),
         ]);
@@ -428,7 +479,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
           const Text('Ask the customer for the 4-digit code shown in their app.',
               style: TextStyle(fontSize: 12, color: AppColors.muted)),
           const SizedBox(height: 10),
-          _otpField(),
+          _otpField(_startOtpCtrl),
           const SizedBox(height: 10),
           _primary('Verify & start job', Icons.play_arrow_rounded, AppColors.teal, _verifyStartOtp),
           const SizedBox(height: 10),
@@ -439,6 +490,11 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
         final requested = toInt(_bk['completion_otp_requested']) == 1;
         return _section([
           _jobTimer(),
+          if (str(_bk['started_at']).isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('▶️ Work started at ${istTime(_bk['started_at'])}',
+                style: const TextStyle(fontSize: 13, color: AppColors.ink2)),
+          ],
           const SizedBox(height: 12),
           _customerBlock(compact: true),
           const SizedBox(height: 16),
@@ -451,7 +507,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
             const Text('The code was sent to the customer\'s app.',
                 style: TextStyle(fontSize: 12, color: AppColors.muted)),
             const SizedBox(height: 10),
-            _otpField(),
+            _otpField(_doneOtpCtrl),
             const SizedBox(height: 10),
             _primary('Complete job', Icons.check_circle_rounded, AppColors.green, _complete),
             TextButton(
@@ -484,11 +540,23 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
       Text('₹$amt', style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: AppColors.green)),
       const SizedBox(height: 8),
       _moneyRows(),
+      _workTimes(),
       const SizedBox(height: 14),
-      _primary('Customer paid cash — confirm ₹$amt received', Icons.payments_rounded,
-          AppColors.green, _cashCollected),
-      const SizedBox(height: 10),
-      _waiting('Or wait — if the customer pays online in the app, this screen updates automatically.'),
+      if (toInt(_bk['cash_allowed'], 1) == 1) ...[
+        _primary('Customer paid cash — confirm ₹$amt received', Icons.payments_rounded,
+            AppColors.green, _cashCollected),
+        const SizedBox(height: 10),
+        _waiting('Or wait — if the customer pays online in the app, this screen updates automatically.'),
+      ] else ...[
+        _banner('💳 Online payment only — your wallet balance is less than the platform fee '
+            '₹${toInt(_bk['commission_amt'])} for this job, so cash can\'t be accepted. '
+            'Ask the customer to pay online in their app, or add money to your wallet.',
+            AppColors.red),
+        _primary('Add money to wallet', Icons.account_balance_wallet_rounded,
+            AppColors.teal, _addMoney),
+        const SizedBox(height: 10),
+        _waiting('Waiting for the customer to pay online — this screen updates automatically.'),
+      ],
     ]);
   }
 
@@ -505,10 +573,11 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
       const SizedBox(height: 10),
       Text('You earned ₹${toInt(_bk['provider_earns'])}',
           style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900, color: AppColors.ink)),
-      Text(cash ? 'Paid in cash — commission added to your dues' : 'Paid online — added to your wallet',
+      Text(cash ? 'Paid in cash — platform fee deducted from your wallet' : 'Paid online — added to your wallet',
           style: const TextStyle(fontSize: 12, color: AppColors.muted)),
       const SizedBox(height: 10),
       _moneyRows(),
+      _workTimes(),
       const SizedBox(height: 14),
       if (hasRating)
         _banner('Customer rated you ${toInt(_bk['rating'])}★'
@@ -528,8 +597,43 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
         _kv('You earn', '₹${toInt(_bk['provider_earns'])}', bold: true),
       ]);
 
+  /// "Customer has m:ss left to confirm" / "⌛ Time up — job will be released"
+  Widget _quoteLeft() {
+    final dl = _quoteDeadline;
+    if (dl == null) return const SizedBox.shrink();
+    var left = (dl.difference(DateTime.now()).inMilliseconds / 1000).round();
+    if (left < 0) left = 0;
+    final t = left > 0
+        ? 'Customer has ${left ~/ 60}:${(left % 60).toString().padLeft(2, '0')} left to confirm'
+        : '⌛ Time up — job will be released';
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(t,
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFFB45309))),
+    );
+  }
+
+  /// Started / closed / duration for a completed job.
+  Widget _workTimes() {
+    final st = str(_bk['started_at']), done = str(_bk['completed_at']);
+    if (st.isEmpty && done.isEmpty) return const SizedBox.shrink();
+    final dur = istDuration(st, done);
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: const Color(0xFFF5F8F9), borderRadius: BorderRadius.circular(10)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (st.isNotEmpty)
+          Text('▶️ Started: ${istTime(st)}', style: const TextStyle(fontSize: 12.5, color: AppColors.ink2)),
+        if (done.isNotEmpty)
+          Text('⏹️ Closed: ${istTime(done)}${dur.isNotEmpty ? ' · ⏱️ $dur' : ''}',
+              style: const TextStyle(fontSize: 12.5, color: AppColors.ink2)),
+      ]),
+    );
+  }
+
   Widget _jobTimer() {
-    final started = parseDateTime(_bk['started_at']);
+    final started = parseIst(_bk['started_at']);
     var d = started == null ? Duration.zero : DateTime.now().difference(started);
     if (d.isNegative) d = Duration.zero;
     String two(int n) => n.toString().padLeft(2, '0');
@@ -628,8 +732,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     return _section([
       _row(Icons.home_repair_service_rounded, str(_bk['svc_name'], 'Service')),
       if (price > 0) _row(Icons.currency_rupee_rounded, '₹$price'),
-      _row(Icons.calendar_today_rounded,
-          '${fmtDate(_bk['slot_date'])}${str(_bk['slot_time']).isNotEmpty ? ' · ${str(_bk['slot_time'])}' : ''}'),
+      _row(Icons.calendar_today_rounded, slotWhen(_bk['slot_date'], _bk['slot_time'])),
       if (area.isNotEmpty) _row(Icons.location_on_rounded, area),
       if (dist != null) _row(Icons.near_me_rounded, '${dist.toStringAsFixed(1)} km away'),
       if (notes.isNotEmpty) _row(Icons.sticky_note_2_rounded, notes),
@@ -698,8 +801,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
         child: Text(text, style: TextStyle(fontSize: 13, color: color, fontWeight: FontWeight.w700)),
       );
 
-  Widget _otpField() => TextField(
-        controller: _otpCtrl,
+  Widget _otpField(TextEditingController ctrl) => TextField(
+        controller: ctrl,
         keyboardType: TextInputType.number,
         maxLength: 6,
         textAlign: TextAlign.center,

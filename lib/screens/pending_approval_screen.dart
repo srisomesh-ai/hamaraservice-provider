@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../services/notification_service.dart';
 import '../services/provider_api_service.dart';
 import '../utils/support_contact.dart';
@@ -24,6 +23,7 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
   @override
   void initState() {
     super.initState();
+    loadSupportConfig().then((_) { if (mounted) setState(() {}); });
     // So the "account approved" push reaches this device.
     NotificationService.registerToken();
   }
@@ -54,7 +54,7 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => LoginScreen(message: 'Account $status. Contact $kSupportEmail')),
+          MaterialPageRoute(builder: (_) => LoginScreen(message: 'Account $status. Contact ${supportConfigNow.email}')),
           (_) => false);
     }
   }
@@ -72,14 +72,12 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
   }
 
   Future<void> _contactSupport() async {
-    final uri = supportMailto(
-      subject: 'Provider Account Query - ${widget.email}',
-      body: 'Hi HamaraService Team,\n\nI registered as a provider with email: '
-          '${widget.email}\n\nPlease help me with my application.\n\nThank you.',
-    );
-    if (!await launchUrl(uri)) {
-      if (mounted) _snack('No email app found. Write to $kSupportEmail', AppColors.red);
-    }
+    final cached = await ProviderApiService.getCachedProvider();
+    if (!mounted) return;
+    final id = '${cached?['id'] ?? ''}';
+    await openSupport(context,
+        providerId: id,
+        extra: 'My application (${widget.email}) is pending approval.');
   }
 
   @override
@@ -137,7 +135,7 @@ class _PendingApprovalScreenState extends State<PendingApprovalScreen> {
                   Text('Registered with: ${widget.email}',
                     style: const TextStyle(fontSize: 13, color: AppColors.ink2)),
                 const SizedBox(height: 8),
-                const Text('For support: $kSupportEmail',
+                Text('For support: ${supportConfigNow.email}',
                   style: TextStyle(fontSize: 12, color: AppColors.muted)),
                 const SizedBox(height: 24),
                 SizedBox(

@@ -3,10 +3,14 @@ import '../services/provider_api_service.dart';
 import '../utils/parse.dart';
 import '../utils/theme.dart';
 
-/// Own reviews: reviews.php?action=provider (id omitted → the logged-in provider).
+/// Own reviews: reviews.php?action=provider&id=<own id>.
+/// Shows the average (profile `rating`, else computed), a 5★…1★ breakdown
+/// and every review (stars, date, customer, service, comment).
 class RatingsScreen extends StatefulWidget {
   final String providerId;
-  const RatingsScreen({super.key, required this.providerId});
+  /// Average from the provider profile (0 = unknown → computed from the list).
+  final double rating;
+  const RatingsScreen({super.key, required this.providerId, this.rating = 0});
   @override
   State<RatingsScreen> createState() => _RatingsScreenState();
 }
@@ -16,6 +20,7 @@ class _RatingsScreenState extends State<RatingsScreen> {
   String _error = '';
   List<Map<String, dynamic>> _reviews = [];
   double _avg = 0;
+  final List<int> _counts = List.filled(6, 0); // index 1..5
 
   @override
   void initState() {
@@ -35,7 +40,14 @@ class _RatingsScreenState extends State<RatingsScreen> {
     final total = list.fold<double>(0, (s, r) => s + toDouble(r['rating']));
     setState(() {
       _reviews = list;
-      _avg = list.isEmpty ? 0 : total / list.length;
+      _counts.fillRange(0, 6, 0);
+      for (final r in list) {
+        final k = toInt(r['rating']);
+        if (k >= 1 && k <= 5) _counts[k]++;
+      }
+      _avg = widget.rating > 0
+          ? widget.rating
+          : list.isEmpty ? 0 : total / list.length;
       _loading = false;
     });
   }
@@ -44,7 +56,7 @@ class _RatingsScreenState extends State<RatingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(title: const Text('My Ratings'), backgroundColor: AppColors.teal),
+      appBar: AppBar(title: const Text('My Ratings & Reviews'), backgroundColor: AppColors.teal),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppColors.teal))
           : RefreshIndicator(
@@ -64,23 +76,24 @@ class _RatingsScreenState extends State<RatingsScreen> {
                       child: Text(_error,
                           style: const TextStyle(color: AppColors.red, fontWeight: FontWeight.w600)),
                     ),
+                  if (_error.isEmpty) ...[
+                    _summary(),
+                    const SizedBox(height: 16),
+                  ],
                   if (_reviews.isEmpty && _error.isEmpty)
                     const Padding(
-                      padding: EdgeInsets.only(top: 80),
+                      padding: EdgeInsets.only(top: 24),
                       child: Column(children: [
                         Icon(Icons.star_outline_rounded, size: 64, color: AppColors.yellow),
                         SizedBox(height: 16),
                         Text('No reviews yet',
                             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.muted)),
                         SizedBox(height: 8),
-                        Text('Complete bookings to get reviews', style: TextStyle(color: AppColors.muted)),
+                        Text('Finish jobs and ask customers to rate you.',
+                            textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted)),
                       ]),
                     ),
-                  if (_reviews.isNotEmpty) ...[
-                    _summary(),
-                    const SizedBox(height: 16),
-                    ..._reviews.map(_reviewCard),
-                  ],
+                  ..._reviews.map(_reviewCard),
                   const SizedBox(height: 20),
                 ],
               ),
@@ -88,28 +101,72 @@ class _RatingsScreenState extends State<RatingsScreen> {
     );
   }
 
-  Widget _summary() => Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-              colors: [Color(0xFF0D3D47), AppColors.teal],
-              begin: Alignment.topLeft, end: Alignment.bottomRight),
-          borderRadius: BorderRadius.circular(20),
+  Widget _summary() {
+    final n = _reviews.length;
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+            colors: [Color(0xFF0D3D47), AppColors.teal],
+            begin: Alignment.topLeft, end: Alignment.bottomRight),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(children: [
+        SizedBox(
+          width: 104,
+          child: Column(children: [
+            Text(_avg > 0 ? _avg.toStringAsFixed(1) : '—',
+                style: const TextStyle(fontSize: 44, fontWeight: FontWeight.w900, color: Colors.white)),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(5, (i) => Icon(
+                  i < _avg.round() ? Icons.star_rounded : Icons.star_outline_rounded,
+                  color: AppColors.yellow, size: 16)),
+            ),
+            const SizedBox(height: 4),
+            Text('$n review${n == 1 ? '' : 's'}',
+                style: const TextStyle(fontSize: 12, color: Colors.white70)),
+          ]),
         ),
-        child: Column(children: [
-          Text(_avg.toStringAsFixed(1),
-              style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w900, color: Colors.white)),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(5, (i) => Icon(
-                i < _avg.round() ? Icons.star_rounded : Icons.star_outline_rounded,
-                color: AppColors.yellow, size: 28)),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(children: [
+            for (var st = 5; st >= 1; st--) _bar(st, n),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _bar(int star, int total) {
+    final c = _counts[star];
+    final frac = total == 0 ? 0.0 : c / total;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(children: [
+        SizedBox(
+          width: 24,
+          child: Text('$star★', style: const TextStyle(fontSize: 11.5, color: Colors.white)),
+        ),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(9),
+            child: LinearProgressIndicator(
+              value: frac,
+              minHeight: 7,
+              backgroundColor: Colors.white24,
+              valueColor: const AlwaysStoppedAnimation(Color(0xFFF5A623)),
+            ),
           ),
-          const SizedBox(height: 4),
-          Text('${_reviews.length} review${_reviews.length == 1 ? '' : 's'}',
-              style: const TextStyle(fontSize: 13, color: Colors.white70)),
-        ]),
-      );
+        ),
+        SizedBox(
+          width: 26,
+          child: Text('$c', textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 11.5, color: Colors.white)),
+        ),
+      ]),
+    );
+  }
 
   Widget _reviewCard(Map<String, dynamic> r) {
     final rating = toInt(r['rating']).clamp(0, 5);

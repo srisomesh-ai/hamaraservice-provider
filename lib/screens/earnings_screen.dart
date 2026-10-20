@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 import '../services/provider_api_service.dart';
 import '../utils/parse.dart';
-import '../utils/support_contact.dart';
 import '../utils/theme.dart';
 
-/// Wallet: payouts.php?action=balance, payout history, completed jobs and
-/// withdrawal requests (payouts.php?action=request).
+/// Wallet: payouts.php?action=balance, payout history, completed jobs,
+/// withdrawal requests (payouts.php?action=request) and wallet top-up via
+/// Razorpay (payouts.php?action=topup_order → Checkout → topup_confirm).
 class EarningsScreen extends StatefulWidget {
   final String providerId;
-  const EarningsScreen({super.key, required this.providerId});
+  /// Scroll to / highlight the "Add money to wallet" card on open.
+  final bool openTopUp;
+  const EarningsScreen({super.key, required this.providerId, this.openTopUp = false});
   @override
   State<EarningsScreen> createState() => _EarningsScreenState();
 }
@@ -23,10 +27,132 @@ class _EarningsScreenState extends State<EarningsScreen> {
   int get _available => toInt(_balance['available']);
   int get _due => toInt(_balance['commission_due']);
 
+  // Wallet top-up
+  final _topUpCtrl = TextEditingController();
+  final _topUpKey = GlobalKey();
+  final _listCtrl = ScrollController();
+  Razorpay? _rzp;
+  bool _toppingUp = false;
+  int _topUpAmount = 0; // amount of the checkout in progress (₹)
+  String _orderId = '';
+
   @override
   void initState() {
     super.initState();
+    try {
+      _rzp = Razorpay()
+        ..on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaySuccess)
+        ..on(Razorpay.EVENT_PAYMENT_ERROR, _onPayError)
+        ..on(Razorpay.EVENT_EXTERNAL_WALLET, _onExternalWallet);
+    } catch (e) {
+      debugPrint('Razorpay init failed: $e');
+    }
+    _load().then((_) {
+      if (widget.openTopUp) {
+        if (_due > 0 && _topUpCtrl.text.isEmpty) {
+          _topUpCtrl.text = '${_due < 100 ? 100 : _due}';
+        }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final ctx = _topUpKey.currentContext;
+          if (ctx != null) {
+            Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 350));
+          }
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    try { _rzp?.clear(); } catch (_) {}
+    _topUpCtrl.dispose();
+    _listCtrl.dispose();
+    super.dispose();
+  }
+
+  void _snack(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(msg), backgroundColor: color,
+          behavior: SnackBarBehavior.floating));
+  }
+
+  Future<void> _startTopUp() async {
+    if (_toppingUp) return;
+    final amount = int.tryParse(_topUpCtrl.text.trim()) ?? 0;
+    if (amount < 100) { _snack('Minimum top-up is ₹100', AppColors.red); return; }
+    if (_rzp == null) { _snack('Payments are not available on this device', AppColors.red); return; }
+    FocusScope.of(context).unfocus();
+    setState(() => _toppingUp = true);
+    final res = await ProviderApiService.topupOrder(amount);
+    if (!mounted) return;
+    if (!res.ok) {
+      setState(() => _toppingUp = false);
+      if (!res.unauthorized) _snack(res.error.isNotEmpty ? res.error : 'Could not start payment', AppColors.red);
+      return;
+    }
+    final o = res.map ?? {};
+    final me = await ProviderApiService.getCachedProvider() ?? {};
+    _topUpAmount = amount;
+    _orderId = str(o['order_id']);
+    try {
+      _rzp!.open({
+        'key': str(o['key_id']),
+        'amount': toInt(o['amount'], amount * 100),
+        'currency': str(o['currency'], 'INR'),
+        'order_id': str(o['order_id']),
+        'name': 'HamaraService',
+        'description': 'Provider wallet top-up',
+        'prefill': {
+          'name': str(me['name']),
+          'email': str(me['email']),
+          'contact': str(me['phone']),
+        },
+        'theme': {'color': '#0F4C5C'},
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _toppingUp = false);
+      _snack('Could not open the payment page: $e', AppColors.red);
+    }
+  }
+
+  Future<void> _onPaySuccess(PaymentSuccessResponse r) async {
+    final res = await ProviderApiService.topupConfirm(
+      orderId: (r.orderId ?? '').isNotEmpty ? r.orderId! : _orderId,
+      paymentId: r.paymentId ?? '',
+      signature: r.signature ?? '',
+    );
+    if (!mounted) return;
+    setState(() => _toppingUp = false);
+    if (res.ok) {
+      _topUpCtrl.clear();
+      _snack('✅ ₹$_topUpAmount added to your wallet', AppColors.green);
+    } else if (!res.unauthorized) {
+      _snack(res.error.isNotEmpty ? res.error : 'Verification pending — your wallet will update shortly',
+          AppColors.yellow);
+    }
     _load();
+  }
+
+  void _onPayError(PaymentFailureResponse r) {
+    if (!mounted) return;
+    setState(() => _toppingUp = false);
+    final cancelled = r.code == Razorpay.PAYMENT_CANCELLED;
+    final msg = (r.message ?? '').trim();
+    _snack(cancelled
+        ? 'Payment cancelled'
+        : 'Payment failed: ${msg.isNotEmpty && !msg.startsWith('{') ? msg : 'please try again'}',
+        cancelled ? AppColors.muted : AppColors.red);
+  }
+
+  void _onExternalWallet(ExternalWalletResponse r) {
+    if (!mounted) return;
+    setState(() => _toppingUp = false);
+    _snack('Complete the payment in ${r.walletName ?? 'your wallet app'}. '
+        'Your balance updates once it is confirmed.', AppColors.teal);
+    Future.delayed(const Duration(seconds: 8), () { if (mounted) _load(); });
   }
 
   Future<void> _load() async {
@@ -70,22 +196,13 @@ class _EarningsScreenState extends State<EarningsScreen> {
     });
   }
 
+  /// Pay dues = add money to the wallet (prefilled with the amount owed).
   void _payDues() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Pay commission dues', style: TextStyle(fontWeight: FontWeight.w800)),
-        content: Text(
-          'You owe ₹$_due in platform commission from cash jobs. '
-          'Earnings from online-paid jobs are adjusted against dues automatically. '
-          'To pay now, contact support at $kSupportEmail.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
-        ],
-      ),
-    );
+    _topUpCtrl.text = '${_due < 100 ? 100 : _due}';
+    final ctx = _topUpKey.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 350));
+    }
   }
 
   @override
@@ -99,12 +216,15 @@ class _EarningsScreenState extends State<EarningsScreen> {
               onRefresh: _load,
               color: AppColors.teal,
               child: ListView(
+                controller: _listCtrl,
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.all(16),
                 children: [
                   if (_error.isNotEmpty) _note(_error, AppColors.red),
                   if (_due > 0) _duesCard(),
                   _balanceCard(),
+                  const SizedBox(height: 12),
+                  _topUpCard(),
                   const SizedBox(height: 12),
                   Row(children: [
                     _stat('Total earned', '₹${toInt(_balance['total_earned'])}', AppColors.green),
@@ -114,8 +234,9 @@ class _EarningsScreenState extends State<EarningsScreen> {
                     _stat('In process', '₹${toInt(_balance['in_process'])}', AppColors.yellow),
                   ]),
                   const SizedBox(height: 12),
-                  _note('Online-paid jobs add your share to the wallet. Cash jobs add the '
-                      'platform commission to your dues. Withdrawals are processed by admin.',
+                  _note('Online-paid jobs add your share to the wallet. Cash jobs deduct the '
+                      'platform fee from your wallet — cash is only allowed while your wallet '
+                      'covers that fee. Withdrawals are processed by admin.',
                       AppColors.teal),
                   if (_payouts.isNotEmpty) ...[
                     const SizedBox(height: 8),
@@ -167,7 +288,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
               side: const BorderSide(color: AppColors.red),
               minimumSize: const Size(140, 40),
             ),
-            child: const Text('How to pay', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
+            child: const Text('Add money to wallet', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
           ),
         ]),
       );
@@ -203,6 +324,71 @@ class _EarningsScreenState extends State<EarningsScreen> {
           ),
         ]),
       );
+
+  Widget _topUpCard() {
+    final cur = int.tryParse(_topUpCtrl.text.trim()) ?? 0;
+    return Container(
+      key: _topUpKey,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.teal.withOpacity(0.25)),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Row(children: [
+          Icon(Icons.add_card_rounded, color: AppColors.teal),
+          SizedBox(width: 8),
+          Text('Add money to wallet',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
+        ]),
+        const SizedBox(height: 4),
+        const Text('Keep enough balance to cover the platform fee so customers can pay you in cash.',
+            style: TextStyle(fontSize: 12, color: AppColors.muted)),
+        const SizedBox(height: 12),
+        Wrap(spacing: 8, children: [200, 500, 1000].map((a) {
+          final sel = cur == a;
+          return ChoiceChip(
+            label: Text('₹$a'),
+            selected: sel,
+            selectedColor: AppColors.tealSoft,
+            labelStyle: TextStyle(
+                fontWeight: FontWeight.w700, color: sel ? AppColors.teal : AppColors.ink2),
+            onSelected: _toppingUp ? null : (_) => setState(() => _topUpCtrl.text = '$a'),
+          );
+        }).toList()),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _topUpCtrl,
+          enabled: !_toppingUp,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            labelText: 'Amount (min ₹100)',
+            prefixText: '₹ ',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ElevatedButton.icon(
+          onPressed: _toppingUp ? null : _startTopUp,
+          icon: _toppingUp
+              ? const SizedBox(width: 18, height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.account_balance_wallet_rounded, color: Colors.white, size: 18),
+          label: Text(cur >= 100 ? 'Add ₹$cur to wallet' : 'Add money to wallet',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.teal,
+            minimumSize: const Size(double.infinity, 48),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+      ]),
+    );
+  }
 
   Widget _payoutTile(Map<String, dynamic> w) {
     final status = str(w['status'], 'pending');

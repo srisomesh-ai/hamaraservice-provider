@@ -6,6 +6,7 @@ import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
 import '../utils/support_contact.dart';
 import 'login_screen.dart';
+import 'map_picker_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String prefillEmail;
@@ -47,6 +48,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String _city = '';
   bool _detectingLocation = false;
   int _radius = 5; // default 5km radius
+  bool _pinned = false; // set on the map → sent as base_lat/base_lng
+  int _locSeq = 0;      // bumps on every location source; stale GPS fixes are dropped
 
   bool _submitting = false;
   String _error = '';
@@ -118,7 +121,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   bool _validateStep3() {
-    if (_lat == null || _lng == null) { setState(() => _error = 'Tap "Detect" to set your service location'); return false; }
+    if (_lat == null || _lng == null) { setState(() => _error = 'Detect your location or pin it on the map'); return false; }
     setState(() => _error = '');
     return true;
   }
@@ -149,11 +152,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _detectLocation() async {
+    final seq = ++_locSeq;
     setState(() { _detectingLocation = true; _error = ''; });
 
     // 1. Location services + permission
     if (!await Geolocator.isLocationServiceEnabled()) {
-      if (!mounted) return;
+      if (!mounted || seq != _locSeq) return;
       setState(() { _detectingLocation = false; _error = 'Turn on Location (GPS) and tap Detect again'; });
       await Geolocator.openLocationSettings();
       return;
@@ -163,7 +167,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       permission = await Geolocator.requestPermission();
     }
     if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-      if (!mounted) return;
+      if (!mounted || seq != _locSeq) return;
       setState(() { _detectingLocation = false; _error = 'Location permission is needed to find jobs near you. Allow it in Settings.'; });
       if (permission == LocationPermission.deniedForever) await Geolocator.openAppSettings();
       return;
@@ -178,7 +182,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       try { pos = await Geolocator.getLastKnownPosition(); } catch (_) {}
     }
     if (pos == null) {
-      if (!mounted) return;
+      if (!mounted || seq != _locSeq) return;
       setState(() { _detectingLocation = false; _error = 'Could not get your location. Move near a window and tap Detect again.'; });
       return;
     }
@@ -198,8 +202,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
             : (p.subAdministrativeArea ?? '');
       }
     } catch (_) {}
-    if (!mounted) return;
+    // A map pin chosen while GPS was still searching wins over this late fix.
+    if (!mounted || seq != _locSeq) return;
     setState(() {
+      _pinned = false;
       _lat = pos!.latitude;
       _lng = pos.longitude;
       _address = addr.isNotEmpty
@@ -207,6 +213,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
           : '${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}';
       _city = city;
       _detectingLocation = false;
+    });
+  }
+
+  Future<void> _pinOnMap() async {
+    final r = await MapPickerScreen.open(context,
+        lat: _lat, lng: _lng, radiusKm: _radius,
+        title: 'Where do you work from?',
+        confirmText: 'Use this location & range');
+    if (r == null || !mounted) return;
+    _locSeq++; // drop any GPS fix still in flight
+    setState(() {
+      _pinned = true;
+      _detectingLocation = false;
+      _lat = r.lat;
+      _lng = r.lng;
+      _radius = r.radiusKm;
+      if (r.city.isNotEmpty) _city = r.city;
+      _address = r.address.isNotEmpty
+          ? r.address
+          : '${r.lat.toStringAsFixed(4)}, ${r.lng.toStringAsFixed(4)}';
+      _error = '';
     });
   }
 
@@ -242,6 +269,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       'lat':        _lat ?? 0.0,
       'lng':        _lng ?? 0.0,
       'radius_km':  _radius,
+      if (_pinned) 'base_lat': _lat,
+      if (_pinned) 'base_lng': _lng,
       'areas':      <String>[],
       'services':   services,
     });
@@ -599,13 +628,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
               const SizedBox(width: 14),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_lat != null ? 'Location Detected!' : 'Detect My Location',
+                Text(_lat != null ? (_pinned ? '📌 Location pinned · $_radius km range' : 'Location Detected!') : 'Detect My Location',
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
                     color: _lat != null ? AppColors.green : AppColors.teal)),
                 Text(_lat != null ? _address : 'Tap to detect using GPS',
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, color: AppColors.muted)),
               ])),
             ]),
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // Map pin + range
+        OutlinedButton.icon(
+          onPressed: _pinOnMap,
+          icon: const Icon(Icons.map_rounded, color: AppColors.teal, size: 20),
+          label: Text(_pinned ? 'Change location & range on map' : 'Adjust location & range on map',
+              style: const TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 48),
+            side: const BorderSide(color: AppColors.teal),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           ),
         ),
 
@@ -627,6 +672,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             _summaryRow('Email', _emailCtrl.text),
             _summaryRow('Services', '${_selectedServices.length} of ${HSCatalog.services.length} selected'),
             _summaryRow('City', _city.isNotEmpty ? _city : '—'),
+            _summaryRow('Range', '$_radius km${_pinned ? ' · pinned on map' : ''}'),
           ]),
         ),
 
@@ -701,13 +747,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   border: Border.all(color: AppColors.brand.withOpacity(0.3)),
                 ),
                 child: Column(children: [
-                  const Text('For faster approval, contact Admin', style: TextStyle(fontSize: 12, color: AppColors.muted)),
-                  const SizedBox(height: 6),
-                  if (hasSupportPhone) ...[
-                    const Text('📞 $kSupportPhone', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.brand)),
-                    const Text('Call or WhatsApp', style: TextStyle(fontSize: 12, color: AppColors.muted)),
-                  ] else
-                    const Text(kSupportEmail, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.brand)),
+                  const Text('For faster approval, contact support', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    onPressed: () => openSupport(context,
+                        providerId: _generatedId == 'Submitted' ? '' : _generatedId,
+                        extra: 'I just registered (${_emailCtrl.text.trim()}) and am waiting for approval.'),
+                    icon: const Icon(Icons.support_agent_rounded, size: 18, color: Colors.white),
+                    label: const Text('Contact support',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.brand,
+                      minimumSize: const Size(200, 44),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
                 ]),
               ),
 

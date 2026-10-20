@@ -6,8 +6,19 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
-    <!-- url_launcher (Android 11+ package visibility): dialer, email, maps/browser -->
+    <!-- url_launcher (Android 11+ package visibility): dialer, email, maps/browser,
+         WhatsApp support (https://wa.me/… opens WhatsApp); UPI apps for Razorpay -->
     <queries>
+        <package android:name="com.whatsapp"/>
+        <package android:name="com.whatsapp.w4b"/>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="whatsapp"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="upi" android:host="pay"/>
+        </intent>
         <intent>
             <action android:name="android.intent.action.DIAL"/>
             <data android:scheme="tel"/>
