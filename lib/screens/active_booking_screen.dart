@@ -1,760 +1,862 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
-import 'package:firebase_database/firebase_database.dart';
-import '../services/provider_api_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../services/location_service.dart';
+import '../services/provider_api_service.dart';
+import '../utils/parse.dart';
 import '../utils/theme.dart';
 import 'dashboard_screen.dart';
+import 'earnings_screen.dart';
+import '../widgets/active_job_card.dart';
+import '../widgets/new_job_card.dart';
+import '../widgets/ui.dart';
 
+/// One booking, driven entirely by polling bookings.php?action=get&id=
+/// (every 4 s while visible) and the backend status machine:
+/// price_quoted → negotiating → negotiation_final → confirmed → active →
+/// completed (payment pending → paid) | cancelled | released/taken.
 class ActiveBookingScreen extends StatefulWidget {
-  final String bookingKey;
-  final Map<String, dynamic> booking;
-  final String providerId;
-  const ActiveBookingScreen({
-    super.key,
-    required this.bookingKey,
-    required this.booking,
-    required this.providerId,
-  });
+  final String bookingId;
+  /// Optional row we already have (shown until the first poll returns).
+  final Map<String, dynamic>? initial;
+  /// Test-only: show [initial] without polling the server (screenshots).
+  final bool demo;
+  const ActiveBookingScreen({super.key, required this.bookingId, this.initial, this.demo = false});
+
   @override
   State<ActiveBookingScreen> createState() => _ActiveBookingScreenState();
 }
 
-class _ActiveBookingScreenState extends State<ActiveBookingScreen> {
-  String _status = 'accepted';
-  bool _loading = false;
-  bool _showOtpEntry = false;
-  Map<String,dynamic> _liveBooking = {};
-  bool _negotiationHandled = false;
-  final List<TextEditingController> _otpCtrls = List.generate(4, (_) => TextEditingController());
-  final List<FocusNode> _otpFocus = List.generate(4, (_) => FocusNode());
+class _ActiveBookingScreenState extends State<ActiveBookingScreen>
+    with WidgetsBindingObserver {
+  Map<String, dynamic> _bk = {};
+  bool _loaded = false;
+  bool _busy = false;          // an action is in flight → disable buttons
+  bool _polling = false;
+  String _pollError = '';
+  String _gone = '';           // non-empty → booking is no longer ours
+  String _myId = '';
+  String _hint = '';           // inline info under action buttons
+  bool _reviewRequested = false;
+
+  Timer? _pollTimer;
+  Timer? _clock;
+  // OTP inputs live in State for the whole screen: polling never recreates or
+  // clears them, so whatever the provider is typing survives every refresh.
+  final _startOtpCtrl = TextEditingController();
+  final _doneOtpCtrl = TextEditingController();
   String _otpError = '';
-  StreamSubscription? _statusWatcher;
+  String _renderKey = '';      // visible booking fields; rebuild only when it changes
+  DateTime? _quoteDeadline;    // customer must confirm the quote before this
+
+  String get _id => widget.bookingId;
+  String get _status => str(_bk['status']);
+  bool get _paid => str(_bk['payment_status']) == 'paid';
 
   @override
   void initState() {
     super.initState();
-    _status = widget.booking['status'] ?? 'accepted';
-    _watchStatus();
+    WidgetsBinding.instance.addObserver(this);
+    if (widget.initial != null) _bk = Map<String, dynamic>.from(widget.initial!);
+    if (widget.demo) {
+      _loaded = true;
+      if (str(_bk['status']) == 'price_quoted' || str(_bk['status']) == 'negotiation_final') {
+        _quoteDeadline = DateTime.now().add(Duration(seconds: toInt(_bk['quote_expires_in'])));
+      }
+      return;
+    }
+    SharedPreferences.getInstance().then((p) {
+      _myId = p.getString('provider_id') ?? '';
+      _poll();
+    });
+    _startPolling();
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && (_status == 'active' || _quoteDeadline != null)) setState(() {});
+    });
   }
 
   @override
   void dispose() {
-    _statusWatcher?.cancel();
-    for (final c in _otpCtrls) c.dispose();
-    for (final f in _otpFocus) f.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _pollTimer?.cancel();
+    _clock?.cancel();
+    _startOtpCtrl.dispose();
+    _doneOtpCtrl.dispose();
+    if (!widget.demo) LocationService.instance.onJob = false;
     super.dispose();
   }
 
-  void _watchStatus() {
-    _statusWatcher = Stream.periodic(const Duration(seconds: 3))
-        .asyncMap((_) => ProviderApiService.getBooking(widget.bookingKey))
-        .listen((data) {
-      if (data == null || !mounted) return;
-      final status = data['status']?.toString() ?? '';
-      if (status.isNotEmpty) setState(() { _status = status; _liveBooking = data; });
-
-      // Customer negotiating — show negotiation dialog to provider
-      if (status == 'negotiating' && !_negotiationHandled) {
-        _negotiationHandled = true;
-        final counter = (data['counterPrice'] as num?)?.toInt();
-        final custName = data['customerName']?.toString() ?? 'Customer';
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _showNegotiationDialog(counter, custName, data);
-        });
-      }
-
-      // Customer paid — show success snackbar
-      if (status == 'completed') {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('🎉 Payment received! Job completed.'),
-          backgroundColor: AppColors.green,
-          duration: Duration(seconds: 4)));
-      }
-    });
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPolling();
+      _poll();
+    } else if (state == AppLifecycleState.paused) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    }
   }
 
-  // ── Negotiation dialog shown to provider when customer counters ──────────
-  void _showNegotiationDialog(int? counterPrice, String custName, Map<String,dynamic> bk) {
-    final finalCtrl = TextEditingController();
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) => _poll());
+  }
 
-    showDialog(
+  Future<void> _poll() async {
+    if (_polling || _gone.isNotEmpty || widget.demo) return;
+    _polling = true;
+    try {
+      final res = await ProviderApiService.getBooking(_id);
+      if (!mounted) return;
+      if (res.unauthorized) return;
+      if (!res.ok) {
+        if (res.status == 404) {
+          _setGone('This booking no longer exists.');
+        } else {
+          setState(() => _pollError = res.error);
+        }
+        return;
+      }
+      final data = res.map ?? {};
+      final status = str(data['status']);
+      final pid = str(data['provider_id']);
+      // Unassigned providers only get {id, status:'searching'|'taken'}
+      if (status == 'taken' || status == 'searching' ||
+          (pid.isNotEmpty && _myId.isNotEmpty && pid != _myId)) {
+        _setGone(status == 'searching'
+            ? 'This job is no longer assigned to you (the quote time ran out, it was released, or the customer chose another provider).'
+            : 'Another provider took this job.');
+        return;
+      }
+      // Quote window: recomputed from the server on every poll.
+      final quoteLive = (status == 'price_quoted' || status == 'negotiation_final') &&
+          data['quote_expires_in'] != null;
+      _quoteDeadline = quoteLive
+          ? DateTime.now().add(Duration(seconds: toInt(data['quote_expires_in'])))
+          : null;
+      final key = _keyOf(data);
+      final changed = key != _renderKey || !_loaded || _pollError.isNotEmpty;
+      final prevStatus = _status;
+      _bk = data;
+      if (toInt(data['review_requested']) == 1) _reviewRequested = true;
+      if (changed) {
+        setState(() {
+          _renderKey = key;
+          _loaded = true;
+          _pollError = '';
+          // A real status change ends the previous step's OTP error.
+          if (prevStatus != status) _otpError = '';
+        });
+      }
+      LocationService.instance.onJob = status == 'confirmed' || status == 'active';
+      if (status == 'cancelled') _pollTimer?.cancel();
+      if (status == 'completed' && _paid) {
+        // Nothing more will change server-side except a review; slow down.
+        _pollTimer?.cancel();
+        _pollTimer = null;
+      }
+    } finally {
+      _polling = false;
+    }
+  }
+
+  /// Fields that change what this screen shows. Polls that return the same
+  /// values do not rebuild anything.
+  String _keyOf(Map<String, dynamic> b) => [
+        b['id'], b['status'], b['payment_status'], b['payment_method'],
+        b['completion_otp_requested'], b['quoted_price'], b['counter_price'],
+        b['final_price'], b['confirmed_price'], b['amount'], b['started_at'],
+        b['completed_at'], b['rating'], b['review'], b['review_requested'],
+        b['cash_allowed'], b['commission_amt'], b['provider_earns'],
+        b['contact_phone'], b['customer_phone'], b['address'], b['slot_date'],
+        b['slot_time'], b['cancel_reason'],
+      ].join('|');
+
+  /// The booking is no longer ours (taken / released / quote expired):
+  /// leave the job screen with a message.
+  void _setGone(String msg) {
+    _pollTimer?.cancel();
+    _quoteDeadline = null;
+    LocationService.instance.onJob = false;
+    if (!mounted) return;
+    setState(() { _gone = msg; _loaded = true; });
+    _snack(msg, AppColors.muted);
+    _exit();
+  }
+
+  // ── Actions ────────────────────────────────────────────────
+
+  /// Runs an API action once (no double submit), shows server errors,
+  /// refreshes the booking on success.
+  Future<ApiResult?> _run(Future<ApiResult> Function() call,
+      {String? success, bool refresh = true}) async {
+    if (_busy) return null;
+    setState(() { _busy = true; _hint = ''; });
+    HapticFeedback.lightImpact();
+    final res = await call();
+    if (!mounted) return res;
+    setState(() => _busy = false);
+    if (res.unauthorized) return res;
+    if (!res.ok) {
+      // 402 CASH_NOT_ALLOWED: … → show the text after the prefix
+      final e = res.error == 'PAYMENT_PENDING'
+          ? 'Wait for the customer to pay before requesting a review'
+          : res.error.replaceFirst(RegExp(r'^CASH_NOT_ALLOWED:\s*'), '');
+      if (!e.startsWith('TOO_EARLY')) _snack(e, AppColors.red);
+      if (res.status == 402) await _poll(); // refresh cash_allowed
+    } else {
+      if (success != null) _snack(success, AppColors.green);
+      if (refresh) await _poll();
+    }
+    return res;
+  }
+
+  void _snack(String msg, Color color) {
+    if (!mounted) return;
+    showSnack(context, msg,
+        tone: color == AppColors.red
+            ? Tone.error
+            : color == AppColors.green
+                ? Tone.success
+                : color == AppColors.yellow
+                    ? Tone.warning
+                    : Tone.neutral);
+  }
+
+  Future<bool> _confirm(String title, String body, String yes,
+      {Color color = AppColors.teal}) async {
+    final r = await showDialog<bool>(
       context: context,
-      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Row(children: [
-            Icon(Icons.handshake_rounded, color: AppColors.brand, size: 24),
-            SizedBox(width: 8),
-            Text('Price Negotiation', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
-          ]),
-          const SizedBox(height: 4),
-          Text(custName, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-        ]),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          // Show customer's counter if they sent one
-          if (counterPrice != null && counterPrice > 0) ...[
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.brand.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.brand.withOpacity(0.3))),
-              child: Column(children: [
-                const Text('CUSTOMER COUNTER OFFER',
-                  style: TextStyle(fontSize:10, fontWeight:FontWeight.w800,
-                    color:AppColors.muted, letterSpacing:.5)),
-                const SizedBox(height:6),
-                Text('₹$counterPrice',
-                  style: const TextStyle(fontSize:32, fontWeight:FontWeight.w900, color:AppColors.brand)),
-              ])),
-            const SizedBox(height:14),
-          ] else ...[
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.yellow.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12)),
-              child: const Row(children: [
-                Icon(Icons.info_outline_rounded, color: AppColors.yellow, size: 18),
-                SizedBox(width: 8),
-                Expanded(child: Text('Customer wants to negotiate the price.',
-                  style: TextStyle(fontSize:12, color:AppColors.ink))),
-              ])),
-            const SizedBox(height:14),
-          ],
-          // Final offer input
-          TextField(
-            controller: finalCtrl,
-            keyboardType: TextInputType.number,
-            decoration: InputDecoration(
-              labelText: 'Your final offer (₹)',
-              prefixText: '₹ ',
-              hintText: counterPrice != null ? 'e.g. ${counterPrice + 10}' : 'Enter final price',
-              helperText: 'This is your ONE final offer — choose wisely',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: AppColors.teal, width: 2))),
-          ),
-        ]),
+        title: Text(title),
+        content: Text(body),
         actions: [
-          // Decline — release job, customer searches another
           TextButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await _declineNegotiation();
-            },
-            child: const Text('Decline', style: TextStyle(color: AppColors.red))),
-          // Accept customer's counter price
-          if (counterPrice != null && counterPrice > 0)
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(ctx);
-                await _acceptCounterPrice(counterPrice);
-              },
-              child: Text('Accept ₹$counterPrice',
-                style: const TextStyle(color: AppColors.green, fontWeight: FontWeight.w700))),
-          // Send final offer
-          ElevatedButton(
-            onPressed: () async {
-              final fp = int.tryParse(finalCtrl.text.trim()) ?? 0;
-              if (fp <= 0) return;
-              Navigator.pop(ctx);
-              await _sendFinalOffer(fp);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.teal),
-            child: const Text('Send Final Offer',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700))),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: FilledButton.styleFrom(backgroundColor: color, minimumSize: const Size(96, 44)),
+              child: Text(yes)),
         ],
       ),
     );
+    return r == true;
   }
 
-  // Provider accepts customer's counter price
-  Future<void> _acceptCounterPrice(int price) async {
-    try {
-      await ProviderApiService.acceptCounter(widget.bookingKey);
-      // Notify customer
-      await _notifyCustomer(
-        event: 'price_confirmed',
-        title: 'Price Accepted! ✅',
-        body:  'Provider accepted ₹$price. Booking confirmed!',
-        extra: {'confirmedPrice': price.toString()},
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Accepted ₹$price — booking confirmed!'),
-          backgroundColor: AppColors.green));
-      }
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
+  Future<void> _release() async {
+    final ok = await _confirm('Give up this job?',
+        'It will go back to other providers.', 'Give up',
+        color: AppColors.red);
+    if (!ok) return;
+    final res = await _run(() => ProviderApiService.releaseBooking(_id), refresh: false);
+    if (res != null && res.ok && mounted) {
+      _gone = 'released';
+      _pollTimer?.cancel();
+      _snack('Job released', AppColors.muted);
+      _exit();
     }
   }
 
-  // Provider sends final offer (one time only)
-  Future<void> _sendFinalOffer(int finalPrice) async {
-    try {
-      await ProviderApiService.sendFinalOffer(widget.bookingKey, finalPrice);
-      // Notify customer
-      await _notifyCustomer(
-        event: 'negotiation_final',
-        title: "Provider's Final Offer 💰",
-        body:  "Provider's final price: ₹$finalPrice. Accept or search another provider.",
-        extra: {'finalPrice': finalPrice.toString()},
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Final offer ₹$finalPrice sent to customer'),
-          backgroundColor: AppColors.teal));
-      }
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
-    }
-  }
-
-  // Provider declines negotiation — release job for another provider
-  Future<void> _declineNegotiation() async {
-    try {
-      await ProviderApiService.cancelBooking(widget.bookingKey);
-      // Notify customer to search another
-      await _notifyCustomer(
-        event: 'provider_declined',
-        title: 'Provider Declined',
-        body:  'The provider declined negotiation. Searching for another provider...',
-        extra: {},
-      );
-      if (mounted) Navigator.pop(context);
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.red));
-    }
-  }
-
-  // Helper — notify customer via FCM
-  Future<void> _notifyCustomer({
-    required String event,
-    required String title,
-    required String body,
-    required Map<String,String> extra,
-  }) async {
-    try {
-      final custId = (_liveBooking['customerId'] ?? widget.booking['customerId'])?.toString() ?? '';
-      if (custId.isEmpty) return;
-      final custProfile = await ProviderApiService.getBooking(widget.bookingKey);
-      final token = custProfile?['customer_fcm_token']?.toString() ?? '';
-      if (token.isEmpty) return;
-      await http.post(
-        Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'event':    event,
-          'fcmToken': token,
-          'data':     {'title': title, 'body': body, ...extra},
-        }),
-      );
-    } catch (_) {}
-  }
-
-  Future<void> _updateStatus(String newStatus) async {
-    setState(() => _loading = true);
-    // Status update handled by MySQL API actions
-    setState(() { _status = newStatus; _loading = false; });
-  }
-
-  Future<void> _initiateOTP() async {
-    setState(() => _loading = true);
-    final otp = (1000 + Random().nextInt(9000)).toString();
-
-    // customerId MUST be written — customer listener filters by this field
-    final custId = widget.booking['customerId']?.toString() ?? '';
-    // OTP generated and stored by MySQL verify_otp API
-
-    // Notify customer — OTP required (push notification)
-    try {
-      final custId = widget.booking['customerId']?.toString() ?? '';
-      if (custId.isNotEmpty) {
-        final fcmToken = ''; // FCM sent by MySQL API
-        if (fcmToken.isNotEmpty) {
-          await http.post(
-            Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'event': 'otp_requested',
-              'fcmToken': fcmToken,
-              'data': {
-                'otp': otp,
-                'service': widget.booking['service']?.toString() ?? '',
-              },
-            }),
-          );
-        }
-      }
-    } catch (_) {}
-    // OTP status stored in MySQL
-
-    setState(() { _status = 'otp_sent'; _showOtpEntry = true; _loading = false; });
-  }
-
-  Future<void> _verifyOTP() async {
-    final entered = _otpCtrls.map((c) => c.text).join('');
-    if (entered.length < 4) {
-      setState(() => _otpError = 'Please enter all 4 digits');
-      return;
-    }
-    // Verify OTP via MySQL API
-    final otpResult = await ProviderApiService.verifyOtp(widget.bookingKey, entered);
-    final correctOtp = otpResult != null ? entered : '';
-
-    if (entered != correctOtp) {
-      setState(() => _otpError = 'Incorrect OTP. Ask customer to check their app.');
-      HapticFeedback.heavyImpact();
-      for (final c in _otpCtrls) c.clear();
-      _otpFocus[0].requestFocus();
-      return;
-    }
-
-    setState(() { _loading = true; _otpError = ''; });
-
-    // OTP verified — MySQL API already updated booking status to payment_pending
-
-    // Provider stats updated by MySQL API
-
-    setState(() { _loading = false; _status = 'payment_pending'; });
-
-    if (mounted) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('OTP Verified! ✅', style: TextStyle(fontWeight: FontWeight.w800)),
-          content: const Text('Service verified! Waiting for customer to complete payment.'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                // Close dialog
-                Navigator.pop(context);
-                // Close OTP screen and go back to dashboard
-                if (mounted) Navigator.pop(context);
-              },
-              child: const Text('OK', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
-            ),
-          ],
-        ),
-      );
-    }
-  }
-
-  void _callCustomer() {
-    final phone = widget.booking['phone'] ?? '';
-    if (phone.isNotEmpty) launchUrl(Uri.parse('tel:$phone'));
-  }
-
-  void _openMaps() {
-    final lat = widget.booking['lat'];
-    final lng = widget.booking['lng'];
-
-    // Use GPS coordinates if available and valid
-    if (lat != null && lng != null) {
-      final latD = (lat is num) ? lat.toDouble() : double.tryParse(lat.toString()) ?? 0.0;
-      final lngD = (lng is num) ? lng.toDouble() : double.tryParse(lng.toString()) ?? 0.0;
-      if (latD != 0.0 && lngD != 0.0) {
-        launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$latD,$lngD&travelmode=driving'));
-        return;
-      }
-    }
-    // Fallback to address
-    final address = Uri.encodeComponent(widget.booking['address'] ?? '');
-    if (address.isNotEmpty) {
-      launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$address&travelmode=driving'));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bk = widget.booking;
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        title: const Text('Active Booking'),
-        backgroundColor: AppColors.teal,
-        automaticallyImplyLeading: false,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(children: [
-          // Status banner
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [Color(0xFF0D3D47), AppColors.teal],
-                begin: Alignment.topLeft, end: Alignment.bottomRight),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(children: [
-              const Text('🔧', style: TextStyle(fontSize: 32)),
-              const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(bk['service'] ?? 'Service',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
-                Text('Status: ${_statusLabel(_status)}',
-                  style: const TextStyle(fontSize: 12, color: Colors.white70)),
-              ])),
-              Text('₹${bk['price'] ?? bk['priceVal'] ?? 0}',
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white)),
-            ]),
-          ),
-
-          const SizedBox(height: 16),
-
-          // Customer details
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Customer Details',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
-              const SizedBox(height: 12),
-              _detailRow(Icons.person_rounded, 'Name', bk['customer'] ?? ''),
-              _detailRow(Icons.phone_rounded, 'Phone', bk['phone'] ?? ''),
-              _detailRow(Icons.calendar_today_rounded, 'Date & Time',
-                '${bk['date'] ?? ''} at ${bk['time'] ?? ''}'),
-              _detailRow(Icons.location_on_rounded, 'Address', bk['address'] ?? ''),
-              _detailRow(Icons.currency_rupee_rounded, 'Amount',
-                '₹${bk['price'] ?? bk['priceVal'] ?? 0}'),
-            ]),
-          ),
-
-          // Summary chips
-          if ((bk['summary'] as List?)?.isNotEmpty == true) ...[
+  Future<void> _sendFinalOffer() async {
+    final quote = toInt(_bk['quoted_price']);
+    final counter = toInt(_bk['counter_price']);
+    final ctrl = TextEditingController(text: quote > 0 ? '$quote' : '');
+    final v = await showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        String err = '';
+        return StatefulBuilder(builder: (ctx, setD) => AlertDialog(
+          title: const Text('Send final price'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Customer offered ₹$counter. Your quote was ₹$quote.\n'
+                'Your final price must not be above your quote.',
+                style: const TextStyle(fontSize: 13, color: AppColors.muted)),
             const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Selected Services',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                const SizedBox(height: 10),
-                Wrap(spacing: 6, runSpacing: 6,
-                  children: (bk['summary'] as List).map((s) {
-                    final parts = s.toString().split(' > ');
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(color: AppColors.tealSoft,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: AppColors.teal.withOpacity(0.3))),
-                      child: Text(parts.length > 1 ? parts.sublist(1).join(' › ') : s.toString(),
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.teal)),
-                    );
-                  }).toList()),
-              ]),
-            ),
-          ],
-
-          const SizedBox(height: 16),
-
-          // Call & Navigate buttons
-          Row(children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _callCustomer,
-                icon: const Icon(Icons.phone_rounded, color: AppColors.teal),
-                label: const Text('Call', style: TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 48),
-                  side: const BorderSide(color: AppColors.teal),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _openMaps,
-                icon: const Icon(Icons.navigation_rounded, color: AppColors.brand),
-                label: const Text('Navigate', style: TextStyle(color: AppColors.brand, fontWeight: FontWeight.w700)),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 48),
-                  side: const BorderSide(color: AppColors.brand),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                prefixText: '₹ ',
+                labelText: 'Your final price (₹)',
+                errorText: err.isEmpty ? null : err,
               ),
             ),
           ]),
-
-          const SizedBox(height: 16),
-
-          // Action buttons
-          // Price quoted — waiting for customer response
-          if (_status == 'price_quoted') ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.tealSoft,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.teal.withOpacity(0.3))),
-              child: const Row(children: [
-                Icon(Icons.hourglass_top_rounded, color: AppColors.teal, size: 20),
-                SizedBox(width: 10),
-                Expanded(child: Text('Waiting for customer to accept your price...',
-                  style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w600))),
-              ])),
-          ],
-
-          // Negotiating — waiting for dialog or watching
-          if (_status == 'negotiating') ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.brand.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.brand.withOpacity(0.3))),
-              child: Row(children: [
-                const Icon(Icons.handshake_rounded, color: AppColors.brand, size: 20),
-                const SizedBox(width: 10),
-                const Expanded(child: Text('Customer is negotiating the price...',
-                  style: TextStyle(fontSize: 13, color: AppColors.brand, fontWeight: FontWeight.w600))),
-                TextButton(
-                  onPressed: () {
-                    final counter = (_liveBooking['counterPrice'] as num?)?.toInt();
-                    final custName = _liveBooking['customerName']?.toString() ?? 'Customer';
-                    _showNegotiationDialog(counter, custName, _liveBooking);
-                  },
-                  child: const Text('Respond', style: TextStyle(fontWeight: FontWeight.w800))),
-              ])),
-          ],
-
-          // Final offer sent — waiting for customer
-          if (_status == 'negotiation_final') ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.yellow.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.yellow.withOpacity(0.4))),
-              child: Row(children: [
-                const Icon(Icons.price_check_rounded, color: AppColors.yellow, size: 20),
-                const SizedBox(width: 10),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Final offer sent',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                  Text('₹${(_liveBooking['finalPrice'] as num?)?.toInt() ?? 0} — waiting for customer to accept',
-                    style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-                ])),
-              ])),
-          ],
-
-          if (_status == 'accepted')
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _loading ? null : () => _updateStatus('active'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.brand,
-                  minimumSize: const Size(double.infinity, 52),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-                child: const Text('Start Service',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
-              ),
-            ),
-
-          if (_status == 'active')
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _loading ? null : _initiateOTP,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.green,
-                  minimumSize: const Size(double.infinity, 52),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-                child: _loading
-                    ? const SizedBox(width: 22, height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2.5,
-                          valueColor: AlwaysStoppedAnimation(Colors.white)))
-                    : const Text('Complete Job (Get OTP)',
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
-              ),
-            ),
-
-          // OTP entry
-          // Payment pending banner
-          if (_status == 'payment_pending') ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppColors.yellow.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.yellow.withOpacity(0.4))),
-              child: const Column(children: [
-                Row(children: [
-                  Icon(Icons.hourglass_top_rounded, color: AppColors.yellow, size: 22),
-                  SizedBox(width: 10),
-                  Expanded(child: Text('Awaiting Customer Payment',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.ink))),
-                ]),
-                SizedBox(height: 8),
-                Text('OTP verified! Waiting for customer to complete payment via the app. You will be notified when payment is done.',
-                  style: TextStyle(fontSize: 13, color: AppColors.muted, height: 1.4)),
-              ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+            FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size(96, 44)),
+              onPressed: () {
+                final n = int.tryParse(ctrl.text.trim()) ?? 0;
+                if (n <= 0) { setD(() => err = 'Invalid price'); return; }
+                if (quote > 0 && n > quote) { setD(() => err = 'Must be ≤ ₹$quote'); return; }
+                Navigator.pop(ctx, n);
+              },
+              child: const Text('Send'),
             ),
           ],
+        ));
+      },
+    );
+    ctrl.dispose();
+    if (v == null) return;
+    await _run(() => ProviderApiService.sendFinalOffer(_id, v),
+        success: 'Final offer sent');
+  }
 
-          if (_status == 'otp_sent' || _showOtpEntry) ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white, borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.green.withOpacity(0.3)),
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
-              ),
-              child: Column(children: [
-                const Icon(Icons.lock_rounded, color: AppColors.green, size: 36),
-                const SizedBox(height: 12),
-                const Text('Enter OTP from Customer',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                const SizedBox(height: 6),
-                Text('Ask ${bk['customer'] ?? 'customer'} to read you the 4-digit code from their app.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 13, color: AppColors.muted)),
-                const SizedBox(height: 20),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(4, (i) => Container(
-                    width: 60, height: 64,
-                    margin: const EdgeInsets.symmetric(horizontal: 6),
-                    child: TextField(
-                      controller: _otpCtrls[i],
-                      focusNode: _otpFocus[i],
-                      keyboardType: TextInputType.number,
-                      textAlign: TextAlign.center,
-                      maxLength: 1,
-                      style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
-                      decoration: InputDecoration(
-                        counterText: '',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: AppColors.line, width: 2),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: AppColors.green, width: 2),
-                        ),
-                      ),
-                      onChanged: (v) {
-                        if (v.isNotEmpty && i < 3) _otpFocus[i + 1].requestFocus();
-                        if (v.isEmpty && i > 0) _otpFocus[i - 1].requestFocus();
-                        final all = _otpCtrls.map((c) => c.text).join('');
-                        if (all.length == 4) _verifyOTP();
-                      },
-                    ),
-                  )),
-                ),
-                if (_otpError.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(color: const Color(0xFFFFF5F5),
-                      borderRadius: BorderRadius.circular(8), border: Border.all(color: AppColors.red)),
-                    child: Text(_otpError,
-                      style: const TextStyle(fontSize: 12, color: AppColors.red, fontWeight: FontWeight.w600)),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _loading ? null : _verifyOTP,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.green,
-                      minimumSize: const Size(double.infinity, 50),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: _loading
-                        ? const SizedBox(width: 22, height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2.5,
-                              valueColor: AlwaysStoppedAnimation(Colors.white)))
-                        : const Text('Verify OTP & Complete',
-                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                // Resend OTP button — in case customer didn't receive
-                SizedBox(
-                  width: double.infinity,
-                  child: TextButton.icon(
-                    onPressed: _loading ? null : () async {
-                      // Clear existing OTP fields
-                      for (final c in _otpCtrls) c.clear();
-                      setState(() { _otpError = ''; });
-                      // Regenerate OTP
-                      await _initiateOTP();
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('New OTP sent to customer ✅'),
-                            backgroundColor: AppColors.green,
-                            duration: Duration(seconds: 3),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.refresh_rounded, color: AppColors.teal, size: 18),
-                    label: const Text('Resend OTP to Customer',
-                      style: TextStyle(fontSize: 13, color: AppColors.teal, fontWeight: FontWeight.w700)),
-                  ),
-                ),
-              ]),
-            ),
-          ],
+  Future<void> _verifyStartOtp() async {
+    final otp = _startOtpCtrl.text.trim();
+    if (otp.length < 4) { setState(() => _otpError = 'Enter the OTP from the customer'); return; }
+    setState(() => _otpError = '');
+    final res = await _run(() => ProviderApiService.verifyStartOtp(_id, otp),
+        success: '✅ OTP verified — job started');
+    if (res != null && !res.ok && mounted) {
+      setState(() => _otpError = res.error.isNotEmpty ? res.error : 'Wrong OTP');
+    }
+    if (res != null && res.ok) _startOtpCtrl.clear();
+  }
 
-          const SizedBox(height: 20),
+  Future<void> _requestCompletionOtp() async {
+    final res = await _run(() => ProviderApiService.requestCompletionOtp(_id));
+    if (res == null || !mounted) return;
+    if (res.ok) {
+      _snack('🔑 Ask customer for the completion OTP now', AppColors.green);
+    } else if (res.error.startsWith('TOO_EARLY')) {
+      final mins = int.tryParse(res.error.split(':').last.trim()) ?? 0;
+      final msg = 'Too early to complete — please wait ${mins > 0 ? mins : 'a few'} more min';
+      _snack(msg, AppColors.yellow);
+      setState(() => _hint = msg);
+    }
+  }
+
+  Future<void> _complete() async {
+    final otp = _doneOtpCtrl.text.trim();
+    if (otp.length < 4) { setState(() => _otpError = 'Ask customer for the 4-digit completion OTP'); return; }
+    setState(() => _otpError = '');
+    final res = await _run(() => ProviderApiService.completeBooking(_id, otp),
+        success: '🎉 Job completed!');
+    if (res == null || !mounted) return;
+    if (!res.ok) {
+      final e = res.error;
+      setState(() => _otpError = e == 'COMPLETION_OTP_NOT_REQUESTED'
+          ? 'Request the completion OTP first'
+          : e == 'COMPLETION_OTP_REQUIRED'
+              ? 'Completion OTP required'
+              : (e.isNotEmpty ? e : 'Wrong OTP'));
+    } else {
+      _doneOtpCtrl.clear();
+      _showCompletedSheet();
+    }
+  }
+
+  Future<void> _cashCollected() async {
+    final ok = await _confirm('I collected cash',
+        'Confirm you received the full amount in cash from the customer? '
+        'The platform fee will be deducted from your wallet balance.',
+        'Confirm', color: AppColors.green);
+    if (!ok) return;
+    await _run(() => ProviderApiService.cashCollected(_id),
+        success: '💵 Cash payment recorded');
+  }
+
+  Future<void> _requestReview() async {
+    final res = await _run(() => ProviderApiService.requestReview(_id),
+        success: '⭐ Review request sent to customer');
+    if (res != null && res.ok && mounted) setState(() => _reviewRequested = true);
+  }
+
+  Future<void> _call() async {
+    final phone = str(_bk['contact_phone'], str(_bk['customer_phone']));
+    if (phone.isEmpty) { _snack('Customer phone not available', AppColors.red); return; }
+    if (!await launchUrl(Uri.parse('tel:$phone'))) {
+      _snack('Could not open the dialer', AppColors.red);
+    }
+  }
+
+  Future<void> _navigate() async {
+    final lat = toDoubleOrNull(_bk['lat']);
+    final lng = toDoubleOrNull(_bk['lng']);
+    final Uri uri;
+    if (lat != null && lng != null && lat != 0 && lng != 0) {
+      uri = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving');
+    } else {
+      final q = Uri.encodeComponent([str(_bk['address']), str(_bk['city'])]
+          .where((s) => s.isNotEmpty).join(', '));
+      uri = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$q');
+    }
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      _snack('Could not open Maps', AppColors.red);
+    }
+  }
+
+  Future<void> _addMoney() async {
+    if (widget.demo) return;
+    await Navigator.push(context, MaterialPageRoute(
+        builder: (_) => EarningsScreen(providerId: _myId, openTopUp: true)));
+    if (mounted) _poll();
+  }
+
+  /// Website showCompletedSheet().
+  void _showCompletedSheet() {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('🎉', style: TextStyle(fontSize: 44)),
+          const SizedBox(height: 6),
+          Text('Job Completed!', style: Theme.of(ctx).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          Text('The customer can now pay online. If they pay you in cash, tap “I collected cash”.',
+              textAlign: TextAlign.center, style: Theme.of(ctx).textTheme.bodyMedium),
+          const SizedBox(height: 6),
+          Text('Once the customer pays, you can ask for a review.',
+              textAlign: TextAlign.center, style: Theme.of(ctx).textTheme.bodySmall),
+          const SizedBox(height: 18),
+          BigButton('Done', outlined: true, onPressed: () => Navigator.pop(ctx)),
         ]),
       ),
     );
   }
 
-  Widget _detailRow(IconData icon, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(icon, size: 16, color: AppColors.teal),
-        const SizedBox(width: 10),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label,
-            style: const TextStyle(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w600)),
-          Text(value,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.ink)),
-        ])),
+  void _exit() {
+    final nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.popUntil((r) => r.isFirst);
+    } else {
+      nav.pushReplacement(MaterialPageRoute(
+          builder: (_) => DashboardScreen(providerId: _myId)));
+    }
+  }
+
+  // ── UI ─────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(str(_bk['svc_name'], 'Job')),
+          Text(_id, style: const TextStyle(fontSize: 12.5, color: Colors.white70, fontWeight: FontWeight.w400)),
+        ]),
+        actions: [
+          IconButton(
+              tooltip: 'Refresh',
+              icon: const Icon(Icons.refresh_rounded),
+              onPressed: _busy ? null : _poll),
+        ],
+      ),
+      body: !_loaded && _bk.isEmpty
+          ? const Center(child: CircularProgressIndicator())
+          : _gone.isNotEmpty
+              ? _endState(Icons.info_outline_rounded, AppColors.muted, 'Booking closed', _gone)
+              : RefreshIndicator(
+                  onRefresh: _poll,
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                    children: [
+                      if (_pollError.isNotEmpty)
+                        Notice(_pollError, tone: Tone.error, margin: const EdgeInsets.only(bottom: 12)),
+                      _headerCard(),
+                      const SizedBox(height: 12),
+                      _detailsCard(),
+                      const SizedBox(height: 12),
+                      _stateBody(),
+                      if (_hint.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Notice(_hint, tone: Tone.warning),
+                      ],
+                    ],
+                  ),
+                ),
+    );
+  }
+
+  Widget _headerCard() {
+    final t = Theme.of(context).textTheme;
+    final amount = bookingAmount(_bk);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            Container(
+              width: 52, height: 52,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(14)),
+              child: Text(jobIcon(_bk), style: const TextStyle(fontSize: 26)),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('₹$amount', style: t.headlineSmall?.copyWith(color: AppColors.teal2, fontWeight: FontWeight.w800)),
+                Text(_priceCaption(), style: t.bodySmall),
+              ]),
+            ),
+            StatusBadge(_status, paymentStatus: str(_bk['payment_status'])),
+          ]),
+          if (_status != 'cancelled') ...[
+            const SizedBox(height: 18),
+            JobStepper(status: _status, paid: _paid),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  String _priceCaption() {
+    switch (_status) {
+      case 'price_quoted': return 'Your quote';
+      case 'negotiating': return 'Your quote · customer is negotiating';
+      case 'negotiation_final': return 'Your final price';
+      case 'completed': return _paid ? 'Paid' : 'To collect';
+      default: return 'Agreed price';
+    }
+  }
+
+  Widget _detailsCard() {
+    final summary = parseSummary(_bk['summary']);
+    final name = str(_bk['contact_name'], str(_bk['customer_name'], 'Customer'));
+    final phone = str(_bk['contact_phone'], str(_bk['customer_phone']));
+    final area = [str(_bk['landmark']), str(_bk['address']), str(_bk['city'])]
+        .where((s) => s.isNotEmpty).join(', ');
+    final dist = toDoubleOrNull(_bk['distance_km']);
+    final notes = str(_bk['notes']);
+    final slot = slotWhen(_bk['slot_date'], _bk['slot_time']);
+    // Website navBtn(): only once the job is confirmed (heading to the customer).
+    final showNav = _status == 'confirmed';
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        ListTile(
+          contentPadding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+          leading: Avatar(name: name, radius: 22),
+          title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+          subtitle: Text(phone.isNotEmpty ? phone : 'Phone shown after the customer confirms'),
+          trailing: phone.isNotEmpty
+              ? IconButton.filledTonal(
+                  tooltip: 'Call customer',
+                  onPressed: _call,
+                  icon: const Icon(Icons.call_rounded))
+              : null,
+        ),
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (area.isNotEmpty) DetailLine(Icons.place_outlined, area),
+            if (dist != null) DetailLine(Icons.near_me_outlined, '${dist.toStringAsFixed(1)} km away'),
+            if (slot.isNotEmpty) DetailLine(Icons.schedule_rounded, slot),
+            if (notes.isNotEmpty) DetailLine(Icons.sticky_note_2_outlined, notes),
+            if (summary.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              SummaryChips(summary),
+            ],
+            if (showNav) ...[
+              const SizedBox(height: 14),
+              BigButton('Navigate to Customer', icon: Icons.navigation_rounded, onPressed: _navigate),
+            ],
+          ]),
+        ),
       ]),
     );
   }
 
-  String _statusLabel(String s) {
-    switch (s) {
-      case 'accepted': return 'Accepted — Ready to Start';
-      case 'active': return 'In Progress';
-      case 'otp_sent': return 'Waiting for OTP Verification';
-      case 'payment_pending': return '⏳ Awaiting Customer Payment';
-      case 'completed': return '✅ Completed — Payment Received';
-      default: return s;
+  Widget _section(List<Widget> children) => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+        ),
+      );
+
+  Widget _giveUp() => Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: BigButton('Give up this job',
+            outlined: true, color: AppColors.red, onPressed: _busy ? null : _release),
+      );
+
+  Widget _label(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Text(text,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(color: AppColors.ink2)),
+      );
+
+  Widget _stateBody() {
+    switch (_status) {
+      case 'price_quoted':
+        return _section([
+          Notice('Waiting for customer to confirm your price ₹${toInt(_bk['quoted_price'])}',
+              tone: Tone.info, icon: Icons.hourglass_top_rounded),
+          _quoteLeft(),
+          _giveUp(),
+        ]);
+
+      case 'negotiating':
+        final counter = toInt(_bk['counter_price']);
+        return _section([
+          Notice('Customer offered ₹$counter (your quote ₹${toInt(_bk['quoted_price'])})',
+              tone: Tone.warning, icon: Icons.forum_outlined),
+          const SizedBox(height: 14),
+          BigButton('Accept ₹$counter',
+              icon: Icons.check_rounded,
+              color: AppColors.green,
+              busy: _busy,
+              onPressed: () => _run(() => ProviderApiService.acceptCounter(_id), success: 'Accepted ✓')),
+          const SizedBox(height: 10),
+          BigButton('Send final price',
+              icon: Icons.price_change_outlined, outlined: true, onPressed: _busy ? null : _sendFinalOffer),
+          _giveUp(),
+        ]);
+
+      case 'negotiation_final':
+        return _section([
+          Notice('Final price ₹${toInt(_bk['final_price'])} sent — waiting for customer',
+              tone: Tone.info, icon: Icons.hourglass_top_rounded),
+          _quoteLeft(),
+          _giveUp(),
+        ]);
+
+      case 'confirmed':
+        return _section([
+          _cashRuleNotice(),
+          const Notice('Customer confirmed. Go to the customer and ask them for the Start OTP shown in their app.',
+              tone: Tone.success),
+          const SizedBox(height: 18),
+          _label('Start OTP (from customer)'),
+          OtpInput(controller: _startOtpCtrl, errorText: _otpError, enabled: !_busy),
+          const SizedBox(height: 18),
+          BigButton('Verify & Start Job', icon: Icons.key_rounded, busy: _busy, onPressed: _verifyStartOtp),
+          _giveUp(),
+        ]);
+
+      case 'active':
+        final requested = toInt(_bk['completion_otp_requested']) == 1;
+        return _section([
+          _jobTimer(),
+          if (str(_bk['started_at']).isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('▶️ Work started at ${istTime(_bk['started_at'])}',
+                style: Theme.of(context).textTheme.bodyMedium),
+          ],
+          const SizedBox(height: 12),
+          _cashRuleNotice(),
+          if (!requested) ...[
+            const Notice('Job in progress. When the work is finished, tap below — the customer will get a completion OTP.',
+                tone: Tone.info),
+            const SizedBox(height: 14),
+            BigButton('Work finished — request completion OTP',
+                icon: Icons.task_alt_rounded, color: AppColors.green, busy: _busy, onPressed: _requestCompletionOtp),
+          ] else ...[
+            const Notice('The customer has received the Completion OTP. Ask them for it and enter it here.',
+                tone: Tone.success),
+            const SizedBox(height: 18),
+            _label('Completion OTP (from customer)'),
+            OtpInput(controller: _doneOtpCtrl, errorText: _otpError, enabled: !_busy),
+            const SizedBox(height: 18),
+            BigButton('Verify & Complete Job',
+                icon: Icons.check_circle_rounded, color: AppColors.green, busy: _busy, onPressed: _complete),
+            const SizedBox(height: 10),
+            BigButton('Resend OTP to customer', outlined: true, onPressed: _busy ? null : _requestCompletionOtp),
+          ],
+        ]);
+
+      case 'completed':
+        return _paid ? _paidBody() : _paymentPendingBody();
+
+      case 'cancelled':
+        final reason = str(_bk['cancel_reason']);
+        return _endCard(Icons.cancel_outlined, AppColors.red, 'Booking Cancelled',
+            reason.isNotEmpty ? 'Reason: $reason' : 'This job was cancelled');
+
+      default:
+        return _section([Notice('Status: ${_status.replaceAll('_', ' ')}')]);
     }
   }
+
+  // Told before the work starts: cash is only possible when the wallet can
+  // cover the platform fee (it is deducted from the wallet on cash jobs).
+  Widget _cashRuleNotice() {
+    final fee = toInt(_bk['platform_fee']);
+    if (toInt(_bk['cash_allowed'], 1) == 1 || fee <= 0) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Notice(
+        'Online payment only for this job — your wallet balance is less than the platform fee ₹$fee. '
+        'Tell the customer to pay online (do not collect cash), or add at least ₹$fee to your wallet to accept cash.',
+        tone: Tone.error,
+        icon: Icons.credit_card_rounded,
+        action: Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: _addMoney,
+            icon: const Icon(Icons.add_card_rounded, size: 18),
+            label: const Text('Add money'),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _paymentResult({required bool paid}) {
+    final t = Theme.of(context).textTheme;
+    final amt = bookingAmount(_bk);
+    final method = str(_bk['payment_method']) == 'cash' ? 'in cash' : 'online';
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: paid ? AppColors.greenSoft : AppColors.yellowSoft, borderRadius: BorderRadius.circular(14)),
+      child: Column(children: [
+        Icon(paid ? Icons.verified_rounded : Icons.hourglass_top_rounded,
+            size: 36, color: paid ? AppColors.green : AppColors.yellow),
+        const SizedBox(height: 6),
+        Text(paid ? 'Payment Received' : 'Payment Pending', style: t.titleMedium),
+        const SizedBox(height: 2),
+        Text(paid ? '₹$amt paid $method' : '₹$amt — waiting for payment',
+            style: t.bodyMedium?.copyWith(color: AppColors.muted)),
+      ]),
+    );
+  }
+
+  Widget _paymentPendingBody() {
+    final amt = bookingAmount(_bk);
+    return _section([
+      _paymentResult(paid: false),
+      if (toInt(_bk['cash_allowed'], 1) == 1) ...[
+        const SizedBox(height: 12),
+        Text('The customer can pay online in their app. If they paid you in cash, confirm it below.',
+            textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
+        const SizedBox(height: 12),
+        BigButton('💵 I collected cash ₹$amt', color: AppColors.green, busy: _busy, onPressed: _cashCollected),
+      ] else ...[
+        const SizedBox(height: 12),
+        Notice('Online payment only. Your wallet balance is less than the platform fee '
+            '₹${toInt(_bk['commission_amt'])} for this job, so cash can\'t be accepted. '
+            'Ask the customer to pay online in their app, or add money to your wallet.',
+            tone: Tone.error, icon: Icons.credit_card_rounded),
+        const SizedBox(height: 12),
+        BigButton('Add money to wallet', icon: Icons.add_card_rounded, outlined: true, onPressed: _addMoney),
+      ],
+      const SizedBox(height: 12),
+      _moneyRows(),
+      _workTimes(),
+    ]);
+  }
+
+  Widget _paidBody() {
+    final cash = str(_bk['payment_method']) == 'cash';
+    final hasRating = toInt(_bk['rating']) > 0;
+    return _section([
+      _paymentResult(paid: true),
+      if (!cash && str(_bk['provider_earns']).isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Text('₹${toInt(_bk['provider_earns'])} added to your earnings balance',
+              textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
+        ),
+      if (cash && str(_bk['commission_amt']).isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Text('Commission ₹${toInt(_bk['commission_amt'])} deducted from your earnings balance',
+              textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
+        ),
+      const SizedBox(height: 12),
+      _moneyRows(),
+      _workTimes(),
+      const SizedBox(height: 14),
+      if (hasRating)
+        Notice('Customer rated you ${toInt(_bk['rating'])}★'
+            '${str(_bk['review']).isNotEmpty ? ' — "${str(_bk['review'])}"' : ''}', tone: Tone.success,
+            icon: Icons.star_rounded)
+      else
+        BigButton(_reviewRequested ? 'Review requested' : '⭐ Ask Customer for Review',
+            color: AppColors.brand, busy: _busy, onPressed: _reviewRequested ? null : _requestReview),
+    ]);
+  }
+
+  Widget _moneyRows() => Column(children: [
+        KeyValueRow('Job amount', '₹${toInt(_bk['amount'])}'),
+        KeyValueRow('Platform commission (${toInt(_bk['commission_pct'])}%)', '− ₹${toInt(_bk['commission_amt'])}'),
+        const Divider(height: 12),
+        KeyValueRow('You earn', '₹${toInt(_bk['provider_earns'])}', bold: true, valueColor: AppColors.green),
+      ]);
+
+  /// "Customer has m:ss left to confirm" / "⌛ Time up — job will be released"
+  Widget _quoteLeft() {
+    final txt = quoteLeftText(_quoteDeadline);
+    if (txt.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(children: [
+        const Icon(Icons.timer_outlined, size: 18, color: Color(0xFFB45309)),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(txt,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Color(0xFFB45309))),
+        ),
+      ]),
+    );
+  }
+
+  /// Started / closed / duration for a completed job.
+  Widget _workTimes() {
+    final st = str(_bk['started_at']), done = str(_bk['completed_at']);
+    if (st.isEmpty && done.isEmpty) return const SizedBox.shrink();
+    final dur = istDuration(st, done);
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(color: const Color(0xFFF3F7F8), borderRadius: BorderRadius.circular(10)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (st.isNotEmpty) Text('▶️ Started: ${istTime(st)}', style: Theme.of(context).textTheme.bodyMedium),
+        if (done.isNotEmpty)
+          Text('⏹️ Closed: ${istTime(done)}${dur.isNotEmpty ? ' · ⏱️ $dur' : ''}',
+              style: Theme.of(context).textTheme.bodyMedium),
+      ]),
+    );
+  }
+
+  Widget _jobTimer() {
+    final started = parseIst(_bk['started_at']);
+    var d = started == null ? Duration.zero : DateTime.now().difference(started);
+    if (d.isNegative) d = Duration.zero;
+    String two(int n) => n.toString().padLeft(2, '0');
+    final t = '${two(d.inHours)}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(14)),
+      child: Row(children: [
+        const Icon(Icons.timer_outlined, color: AppColors.teal2, size: 26),
+        const SizedBox(width: 12),
+        const Expanded(
+            child: Text('Job in progress',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.teal2))),
+        Text(t,
+            style: const TextStyle(
+                fontSize: 22, fontWeight: FontWeight.w700, color: AppColors.teal2,
+                fontFeatures: [FontFeature.tabularFigures()])),
+      ]),
+    );
+  }
+
+  Widget _endCard(IconData icon, Color color, String title, String body) => _section([
+        Icon(icon, color: color, size: 48),
+        const SizedBox(height: 10),
+        Text(title, textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(color: color)),
+        const SizedBox(height: 6),
+        Text(body, textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
+        const SizedBox(height: 16),
+        BigButton('Back to jobs', icon: Icons.work_outline_rounded, onPressed: _exit),
+      ]);
+
+  Widget _endState(IconData icon, Color color, String title, String body) => ListView(
+        padding: const EdgeInsets.all(24),
+        children: [const SizedBox(height: 40), _endCard(icon, color, title, body)],
+      );
 }

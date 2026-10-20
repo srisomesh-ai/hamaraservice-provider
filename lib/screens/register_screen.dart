@@ -1,19 +1,22 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../services/provider_api_service.dart';
-import 'package:flutter/services.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
+import '../utils/support_contact.dart';
+import 'login_screen.dart';
+import 'map_picker_screen.dart';
+import 'pending_approval_screen.dart';
+import '../widgets/ui.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String prefillEmail;
-  final String prefillPassword;
   const RegisterScreen({
     super.key,
     this.prefillEmail = '',
-    this.prefillPassword = '',
   });
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -34,7 +37,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _idNumCtrl     = TextEditingController();
   String _gender     = 'Male';
   String _experience = '1-2 years';
-  String _idType     = 'Aadhaar Card';
+  String _idType     = 'Aadhaar';
+  File? _photo;      // optional, uploaded after the automatic login
   bool _showPwd      = false;
 
   // Step 2 - Services
@@ -46,22 +50,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
   double? _lat;
   double? _lng;
   String _address = '';
+  String _city = '';
   bool _detectingLocation = false;
   int _radius = 5; // default 5km radius
+  bool _pinned = false; // set on the map → sent as base_lat/base_lng
+  int _locSeq = 0;      // bumps on every location source; stale GPS fixes are dropped
 
   bool _submitting = false;
   String _error = '';
   String _generatedId = '';
 
+  // Areas you serve (required, like the website)
+  final List<String> _areas = [];
+  final _areaCtrl = TextEditingController();
+  final _addrCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
-    // Pre-fill email and password from login screen
+    // Pre-fill email from the login screen (never the password)
     if (widget.prefillEmail.isNotEmpty) {
       _emailCtrl.text = widget.prefillEmail;
-    }
-    if (widget.prefillPassword.isNotEmpty) {
-      _pwdCtrl.text = widget.prefillPassword;
     }
     _loadRefPrices();
   }
@@ -75,9 +84,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
         res.forEach((svcId, grouped) {
           if (grouped is! Map) return;
           final List<int> vals = [];
-          (grouped as Map).forEach((_, gv) {
+          grouped.forEach((_, gv) {
             if (gv is Map) {
-              (gv as Map).forEach((_, v) {
+              gv.forEach((_, v) {
                 if (v is num && v.toInt() > 0) vals.add(v.toInt());
               });
             }
@@ -96,23 +105,51 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _nameCtrl.dispose(); _phoneCtrl.dispose(); _emailCtrl.dispose();
     _whatsappCtrl.dispose(); _pwdCtrl.dispose(); _confirmPwdCtrl.dispose();
     _bioCtrl.dispose(); _idNumCtrl.dispose();
+    _areaCtrl.dispose(); _addrCtrl.dispose();
     super.dispose();
   }
 
-  String _generateId() {
-    final name = _nameCtrl.text.trim().replaceAll(RegExp(r'[^a-zA-Z]'), '').toUpperCase().padRight(4, 'X').substring(0, 4);
-    final phone = _phoneCtrl.text.trim();
-    final phonePart = phone.length >= 4 ? phone.substring(phone.length - 4) : phone.padLeft(4, '0');
-    return 'HS-PRO-$name$phonePart';
+  void _addArea() {
+    final a = _areaCtrl.text.trim();
+    if (a.isEmpty) return;
+    setState(() {
+      if (!_areas.any((x) => x.toLowerCase() == a.toLowerCase())) _areas.add(a);
+      _areaCtrl.clear();
+    });
+  }
+
+  Future<void> _pickPhoto() async {
+    final img = await ImagePicker().pickImage(
+        source: ImageSource.gallery, imageQuality: 80, maxWidth: 600, maxHeight: 600);
+    if (img != null && mounted) setState(() => _photo = File(img.path));
   }
 
   bool _validateStep1() {
     if (_nameCtrl.text.trim().isEmpty) { setState(() => _error = 'Enter your full name'); return false; }
-    if (_phoneCtrl.text.trim().length < 10) { setState(() => _error = 'Enter valid 10-digit phone'); return false; }
-    if (!_emailCtrl.text.contains('@')) { setState(() => _error = 'Enter valid email address'); return false; }
+    final phone = _normPhone(_phoneCtrl.text);
+    if (!_phoneRe.hasMatch(phone)) { setState(() => _error = 'Enter a valid 10-digit mobile number (starts with 6-9)'); return false; }
+    final wa = _normPhone(_whatsappCtrl.text);
+    if (_whatsappCtrl.text.trim().isNotEmpty && !_phoneRe.hasMatch(wa)) { setState(() => _error = 'Enter a valid 10-digit WhatsApp number'); return false; }
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_emailCtrl.text.trim())) { setState(() => _error = 'Enter a valid email address'); return false; }
     if (_pwdCtrl.text.length < 8) { setState(() => _error = 'Password must be at least 8 characters'); return false; }
     if (_pwdCtrl.text != _confirmPwdCtrl.text) { setState(() => _error = 'Passwords do not match'); return false; }
-    if (_idNumCtrl.text.trim().isEmpty) { setState(() => _error = 'Enter your ID proof number'); return false; }
+    setState(() => _error = '');
+    return true;
+  }
+
+  static final RegExp _phoneRe = RegExp(r'^[6-9]\d{9}$');
+
+  /// Keeps the last 10 digits (strips +91 / spaces / dashes).
+  String _normPhone(String v) {
+    final d = v.replaceAll(RegExp(r'\D'), '');
+    return d.length > 10 ? d.substring(d.length - 10) : d;
+  }
+
+  bool _validateStep3() {
+    if (_addrCtrl.text.trim().isEmpty && _address.isEmpty) { setState(() => _error = 'Enter your address'); return false; }
+    if (_lat == null || _lng == null) { setState(() => _error = 'Location not captured yet — tap the location card'); return false; }
+    if (_areaCtrl.text.trim().isNotEmpty) _addArea();
+    if (_areas.isEmpty) { setState(() => _error = 'Add at least one area you serve'); return false; }
     setState(() => _error = '');
     return true;
   }
@@ -130,6 +167,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       setState(() { _currentStep++; _error = ''; });
       _pageCtrl.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
     } else {
+      if (!_validateStep3()) return;
       _submitRegistration();
     }
   }
@@ -142,114 +180,173 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _detectLocation() async {
-    setState(() => _detectingLocation = true);
+    final seq = ++_locSeq;
+    setState(() { _detectingLocation = true; _error = ''; });
+
+    // 1. Location services + permission
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      if (!mounted || seq != _locSeq) return;
+      setState(() { _detectingLocation = false; _error = 'Turn on Location (GPS) and tap Detect again'; });
+      await Geolocator.openLocationSettings();
+      return;
+    }
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      if (!mounted || seq != _locSeq) return;
+      setState(() { _detectingLocation = false; _error = 'Location permission is needed to find jobs near you. Allow it in Settings.'; });
+      if (permission == LocationPermission.deniedForever) await Geolocator.openAppSettings();
+      return;
+    }
+
+    // 2. Position — with a timeout, falling back to the last known fix
+    Position? pos;
     try {
-      final permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-        setState(() { _detectingLocation = false; _error = 'Location permission denied'; });
-        return;
-      }
-      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.low);
+      pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium, timeLimit: const Duration(seconds: 20));
+    } catch (_) {
+      try { pos = await Geolocator.getLastKnownPosition(); } catch (_) {}
+    }
+    if (pos == null) {
+      if (!mounted || seq != _locSeq) return;
+      setState(() { _detectingLocation = false; _error = 'Could not get your location. Move near a window and tap Detect again.'; });
+      return;
+    }
+
+    // 3. Address lookup is best effort — never lose the GPS fix because of it
+    String addr = '';
+    String city = '';
+    try {
       final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
-      String addr = '';
       if (placemarks.isNotEmpty) {
         final p = placemarks.first;
-        addr = [p.locality, p.subAdministrativeArea, p.administrativeArea]
+        addr = [p.subLocality, p.locality, p.subAdministrativeArea, p.administrativeArea]
             .where((s) => s != null && s.isNotEmpty).join(', ');
+        // City = locality (fallback: district). Never the state.
+        city = (p.locality?.isNotEmpty == true)
+            ? p.locality!
+            : (p.subAdministrativeArea ?? '');
       }
-      setState(() {
-        _lat = pos.latitude;
-        _lng = pos.longitude;
-        _address = addr;
-        _detectingLocation = false;
-      });
-    } catch (e) {
-      setState(() { _detectingLocation = false; _error = 'Could not detect location'; });
-    }
+    } catch (_) {}
+    // A map pin chosen while GPS was still searching wins over this late fix.
+    if (!mounted || seq != _locSeq) return;
+    setState(() {
+      _pinned = false;
+      _lat = pos!.latitude;
+      _lng = pos.longitude;
+      _address = addr.isNotEmpty
+          ? addr
+          : '${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}';
+      _city = city;
+      _detectingLocation = false;
+      if (_addrCtrl.text.trim().isEmpty && addr.isNotEmpty) _addrCtrl.text = addr;
+    });
+  }
+
+  Future<void> _pinOnMap() async {
+    final r = await MapPickerScreen.open(context,
+        lat: _lat, lng: _lng, radiusKm: _radius,
+        title: 'Where do you work from?',
+        confirmText: 'Use this location & range');
+    if (r == null || !mounted) return;
+    _locSeq++; // drop any GPS fix still in flight
+    setState(() {
+      _pinned = true;
+      _detectingLocation = false;
+      _lat = r.lat;
+      _lng = r.lng;
+      _radius = r.radiusKm;
+      if (r.city.isNotEmpty) _city = r.city;
+      _address = r.address.isNotEmpty
+          ? r.address
+          : '${r.lat.toStringAsFixed(4)}, ${r.lng.toStringAsFixed(4)}';
+      if (_addrCtrl.text.trim().isEmpty && r.address.isNotEmpty) _addrCtrl.text = r.address;
+      _error = '';
+    });
   }
 
   Future<void> _submitRegistration() async {
     setState(() { _submitting = true; _error = ''; });
-    try {
-      final id = _generateId();
 
-      // Check if already registered
-      // Duplicate check handled by MySQL API (unique email constraint)
-
-      // Map selected IDs to full service data — NO hardcoded price
-      final services = _selectedServices.map((svcId) {
-        final matches = HSCatalog.services.where((sv) => sv.id == svcId).toList();
-        final sName = matches.isNotEmpty ? matches.first.name : svcId;
-        final sIcon = matches.isNotEmpty ? matches.first.icon : '🔧';
-        final sCat  = matches.isNotEmpty ? matches.first.cat  : 'Service';
-        return {
-          'id':   svcId,
-          'name': sName,
-          'icon': sIcon,
-          'cat':  sCat,
-          // price is set by provider AFTER approval in My Services screen
-          // min/max stored separately in services/{svcId}
-        };
-      }).toList();
-
-      // Also save services as a Map for the services_screen to read
-      final servicesMap = <String, dynamic>{};
-      for (final svcId in _selectedServices) {
-        servicesMap[svcId] = {'enabled': true, 'min': 0, 'max': 0};
-      }
-
-      final provider = {
-        'id':           id,
-        'name':         _nameCtrl.text.trim(),
-        'phone':        _phoneCtrl.text.trim(),
-        'email':        _emailCtrl.text.trim().toLowerCase(),
-        'whatsapp':     _whatsappCtrl.text.trim().isNotEmpty ? _whatsappCtrl.text.trim() : _phoneCtrl.text.trim(),
-        'password':     _pwdCtrl.text.trim(),
-        'gender':       _gender,
-        'experience':   _experience,
-        'bio':          _bioCtrl.text.trim(),
-        'idType':       _idType,
-        'idNum':        _idNumCtrl.text.trim(),
-        'services':     services,
-        'lat':          _lat ?? 0.0,
-        'lng':          _lng ?? 0.0,
-        'address':      _address,
-        'city':         _address.contains(',') ? _address.split(',').last.trim() : _address,
-        'radius':       _radius,
-        'status':       'pending',
-        'available':    false,
-        'rating':       0,
-        'reviews':      0,
-        'totalBookings':0,
-        'completedBookings': 0,
-        'totalEarned':  0,
-        'pendingEarned':0,
-        'registeredAt': DateTime.now().toIso8601String(),
-        'appliedAt':    DateTime.now().toIso8601String(),
+    final services = _selectedServices.map((svcId) {
+      final matches = HSCatalog.services.where((sv) => sv.id == svcId).toList();
+      return {
+        'id':   svcId,
+        'name': matches.isNotEmpty ? matches.first.name : svcId,
+        'icon': matches.isNotEmpty ? matches.first.icon : '🔧',
+        'cat':  matches.isNotEmpty ? matches.first.cat  : 'Service',
+        // min/max prices are set by the provider after approval (My Services)
       };
+    }).toList();
 
-      // Register via MySQL API
-      provider['servicesMap'] = servicesMap;
-      final success = await ProviderApiService.register(provider);
-      if (!success) {
-        setState(() { _submitting = false; _error = 'Registration failed. Please try again.'; });
-        return;
-      }
-
-      setState(() { _submitting = false; _generatedId = id; });
-    } catch (e) {
-      setState(() { _submitting = false; _error = 'Registration failed. Please try again.'; });
+    final phone = _normPhone(_phoneCtrl.text);
+    final wa = _normPhone(_whatsappCtrl.text);
+    final res = await ProviderApiService.register({
+      'name':       _nameCtrl.text.trim(),
+      'phone':      phone,
+      'email':      _emailCtrl.text.trim().toLowerCase(),
+      'whatsapp':   wa.isNotEmpty ? wa : phone,
+      'password':   _pwdCtrl.text,
+      'gender':     _gender,
+      'experience': _experience,
+      'bio':        _bioCtrl.text.trim(),
+      'id_type':    _idType,
+      'id_number':  _idNumCtrl.text.trim(),
+      'address':    _addrCtrl.text.trim().isNotEmpty ? _addrCtrl.text.trim() : _address,
+      'city':       _city,
+      'lat':        _lat ?? 0.0,
+      'lng':        _lng ?? 0.0,
+      'radius_km':  _radius,
+      if (_pinned) 'base_lat': _lat,
+      if (_pinned) 'base_lng': _lng,
+      'areas':      _areas,
+      'services':   services,
+    });
+    if (!mounted) return;
+    if (!res.ok) {
+      setState(() { _submitting = false; _error = res.error; });
+      return;
     }
+    final id = '${res.map?['id'] ?? ''}';
+    // Website: log in automatically (pending providers get a token), upload
+    // the photo, then show the "Application Under Review" screen.
+    final lr = await ProviderApiService.login(_emailCtrl.text.trim().toLowerCase(), _pwdCtrl.text);
+    if (lr.ok && _photo != null) {
+      try { await ProviderApiService.uploadPhoto(_photo!); } catch (_) {}
+    }
+    if (!mounted) return;
+    if (lr.ok) {
+      showSnack(context, '✅ Registered! Waiting for approval', tone: Tone.success);
+      Navigator.pushAndRemoveUntil(context, MaterialPageRoute(
+          builder: (_) => PendingApprovalScreen(
+              name: _nameCtrl.text.trim(), email: _emailCtrl.text.trim().toLowerCase(), submitted: true)),
+          (_) => false);
+      return;
+    }
+    setState(() { _submitting = false; _generatedId = id.isNotEmpty ? id : 'Submitted'; });
   }
 
   @override
   Widget build(BuildContext context) {
     if (_generatedId.isNotEmpty) return _buildSuccessScreen();
 
+    return PopScope(
+      canPop: _currentStep == 0,
+      onPopInvoked: (didPop) { if (!didPop) _prevStep(); },
+      child: _buildForm());
+  }
+
+  Widget _buildForm() {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
-        title: Text('Register — Step ${_currentStep + 1} of 3'),
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(const ['Your Details', 'Your Services', 'Location & Area'][_currentStep]),
+          Text('Step ${_currentStep + 1} of 3',
+              style: const TextStyle(fontSize: 12.5, color: Colors.white70, fontWeight: FontWeight.w400)),
+        ]),
         backgroundColor: AppColors.teal,
       ),
       body: Column(
@@ -320,7 +417,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   child: _submitting
                       ? const SizedBox(width: 22, height: 22,
                           child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation(Colors.white)))
-                      : Text(_currentStep < 2 ? 'Next →' : 'Submit Registration',
+                      : Text(_currentStep < 2 ? 'Continue →' : 'Submit Application ✓',
                           style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 ),
               ),
@@ -338,6 +435,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const Text('Personal Information', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
         const Text('Tell us about yourself', style: TextStyle(fontSize: 13, color: AppColors.muted)),
         const SizedBox(height: 20),
+        Center(
+          child: InkWell(
+            onTap: _pickPhoto,
+            customBorder: const CircleBorder(),
+            child: CircleAvatar(
+              radius: 44,
+              backgroundColor: AppColors.tealSoft,
+              backgroundImage: _photo != null ? FileImage(_photo!) : null,
+              child: _photo == null
+                  ? const Icon(Icons.add_a_photo_outlined, color: AppColors.teal, size: 30)
+                  : null,
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Center(
+          child: Text('Add your photo (recommended)', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+        ),
+        const SizedBox(height: 20),
 
         _field('FULL NAME *', _nameCtrl, 'Your full name', Icons.person_rounded),
         const SizedBox(height: 14),
@@ -349,13 +465,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const SizedBox(height: 14),
 
         // Gender
-        _dropdownField('GENDER', _gender, ['Male', 'Female', 'Other'],
+        _dropdownField('GENDER', _gender, ['Male', 'Female'],
           (v) => setState(() => _gender = v!)),
         const SizedBox(height: 14),
 
         // Experience
         _dropdownField('EXPERIENCE *', _experience,
-          ['Less than 1 year', '1-2 years', '3-5 years', '5-10 years', '10+ years'],
+          ['0-1 years', '1-2 years', '3-5 years', '5+ years'],
           (v) => setState(() => _experience = v!)),
         const SizedBox(height: 14),
 
@@ -402,11 +518,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const SizedBox(height: 14),
 
         // ID Proof
-        _dropdownField('ID PROOF TYPE *', _idType,
-          ['Aadhaar Card', 'PAN Card', 'Voter ID', 'Driving License', 'Passport'],
+        _dropdownField('ID TYPE', _idType,
+          ['Aadhaar', 'PAN', 'Voter ID', 'Driving License'],
           (v) => setState(() => _idType = v!)),
         const SizedBox(height: 14),
-        _field('ID NUMBER *', _idNumCtrl, 'Enter ID number', Icons.badge_rounded),
+        _field('ID NUMBER', _idNumCtrl, 'Enter ID number', Icons.badge_rounded),
         const SizedBox(height: 20),
       ]),
     );
@@ -587,16 +703,63 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
               const SizedBox(width: 14),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_lat != null ? 'Location Detected!' : 'Detect My Location',
+                Text(_lat != null ? (_pinned ? '📌 Location pinned · $_radius km range' : 'Location Detected!') : 'Detect My Location',
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
                     color: _lat != null ? AppColors.green : AppColors.teal)),
                 Text(_lat != null ? _address : 'Tap to detect using GPS',
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, color: AppColors.muted)),
               ])),
             ]),
           ),
         ),
 
+        const SizedBox(height: 12),
+
+        // Map pin + range
+        OutlinedButton.icon(
+          onPressed: _pinOnMap,
+          icon: const Icon(Icons.map_rounded, color: AppColors.teal, size: 20),
+          label: Text(_pinned ? 'Change location & range on map' : 'Adjust location & range on map',
+              style: const TextStyle(color: AppColors.teal, fontWeight: FontWeight.w700)),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 48),
+            side: const BorderSide(color: AppColors.teal),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+
+        const SizedBox(height: 20),
+        TextField(
+          controller: _addrCtrl,
+          maxLines: 2,
+          decoration: const InputDecoration(labelText: 'Full Address *', alignLabelWithHint: true),
+        ),
+        const SizedBox(height: 20),
+        const Text('Areas You Serve *', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.ink)),
+        const SizedBox(height: 4),
+        const Text('Add the localities where you want jobs — customers in these areas will find you',
+            style: TextStyle(fontSize: 12, color: AppColors.muted)),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _areaCtrl,
+          textCapitalization: TextCapitalization.words,
+          onSubmitted: (_) => _addArea(),
+          decoration: InputDecoration(
+            labelText: 'Area name',
+            hintText: 'e.g. Gajuwaka, Sheelanagar…',
+            prefixIcon: const Icon(Icons.search_rounded),
+            suffixIcon: IconButton(icon: const Icon(Icons.add_circle_rounded), onPressed: _addArea),
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (_areas.isEmpty)
+          const Text('No areas added yet', style: TextStyle(fontSize: 12, color: AppColors.muted))
+        else
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (var i = 0; i < _areas.length; i++)
+              InputChip(label: Text(_areas[i]), onDeleted: () => setState(() => _areas.removeAt(i))),
+          ]),
         const SizedBox(height: 24),
 
         // Summary
@@ -614,7 +777,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
             _summaryRow('Phone', _phoneCtrl.text),
             _summaryRow('Email', _emailCtrl.text),
             _summaryRow('Services', '${_selectedServices.length} of ${HSCatalog.services.length} selected'),
-            _summaryRow('Your ID will be', _generateId()),
+            _summaryRow('City', _city.isNotEmpty ? _city : '—'),
+            _summaryRow('Range', '$_radius km${_pinned ? ' · pinned on map' : ''}'),
+            _summaryRow('Areas', _areas.isEmpty ? '—' : _areas.join(', ')),
           ]),
         ),
 
@@ -673,7 +838,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   const SizedBox(height: 8),
                   Text(_generatedId, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: AppColors.teal)),
                   const SizedBox(height: 6),
-                  const Text('Save this — you\'ll need it to login after approval',
+                  const Text('Log in with your email and password once approved',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12, color: AppColors.muted)),
                 ]),
@@ -689,10 +854,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   border: Border.all(color: AppColors.brand.withOpacity(0.3)),
                 ),
                 child: Column(children: [
-                  const Text('For faster approval, contact Admin', style: TextStyle(fontSize: 12, color: AppColors.muted)),
-                  const SizedBox(height: 6),
-                  const Text('📞 8985849710', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.brand)),
-                  const Text('Call or WhatsApp', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                  const Text('For faster approval, contact support', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    onPressed: () => openSupport(context,
+                        providerId: _generatedId == 'Submitted' ? '' : _generatedId,
+                        extra: 'I just registered (${_emailCtrl.text.trim()}) and am waiting for approval.'),
+                    icon: const Icon(Icons.support_agent_rounded, size: 18, color: Colors.white),
+                    label: const Text('Contact support',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.brand,
+                      minimumSize: const Size(200, 44),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
                 ]),
               ),
 
@@ -701,7 +877,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: () => Navigator.pushAndRemoveUntil(context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()), (_) => false),
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 52),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),

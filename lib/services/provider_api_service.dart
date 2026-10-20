@@ -1,15 +1,57 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ─────────────────────────────────────────────────────────────
-// ProviderApiService — all data calls go to Hostinger MySQL
-// Provider uses JWT token (no Firebase Auth)
+// ProviderApiService — every data call goes to the HamaraService PHP API
+// (docs/API_CONTRACT.md). Providers authenticate with the JWT returned by
+// providers.php?action=login, sent as `Authorization: Bearer <jwt>`.
 // ─────────────────────────────────────────────────────────────
 
+/// Result of an API call. `ok` mirrors the server's `success` flag;
+/// `error` is the server's message (or a readable network/parse error).
+class ApiResult {
+  final bool ok;
+  final dynamic data;
+  final String error;
+  final int status; // HTTP status, 0 = network error / no response
+
+  const ApiResult(this.ok, this.data, this.error, this.status);
+
+  bool get unauthorized => status == 401;
+  bool get conflict => status == 409;
+  bool get networkError => status == 0;
+
+  Map<String, dynamic>? get map =>
+      data is Map ? Map<String, dynamic>.from(data as Map) : null;
+
+  List<Map<String, dynamic>> get list => data is List
+      ? (data as List)
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList()
+      : <Map<String, dynamic>>[];
+}
+
+class ApiException implements Exception {
+  final String message;
+  final int status;
+  ApiException(this.message, [this.status = 0]);
+  @override
+  String toString() => message;
+}
+
 class ProviderApiService {
-  static const String _base = 'https://hamaraservice.com/api';
+  static const String base = 'https://hamaraservice.com/api';
   static const String _tokenKey = 'provider_jwt';
+  static const Duration _timeout = Duration(seconds: 20);
+
+  /// Called once whenever an authenticated request gets HTTP 401
+  /// (expired/rotated JWT). main.dart wires this to "clear token → login".
+  static void Function()? onUnauthorized;
+  static bool _handling401 = false;
 
   // ── Token storage ────────────────────────────────────────
   static Future<String> getToken() async {
@@ -17,9 +59,30 @@ class ProviderApiService {
     return prefs.getString(_tokenKey) ?? '';
   }
 
+  static Future<bool> hasToken() async => (await getToken()).isNotEmpty;
+
+  /// Own provider id (saved at login). Sent as `id` on "my …" requests:
+  /// the current API derives it from the JWT, the previous API version
+  /// requires it explicitly — sending it keeps both working.
+  static Future<String> myId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('provider_id') ?? '';
+  }
+
+  static Future<Map<String, String>> _mine(String action,
+      {bool role = false}) async {
+    final id = await myId();
+    return {
+      'action': action,
+      if (id.isNotEmpty) 'id': id,
+      if (role) 'role': 'provider',
+    };
+  }
+
   static Future<void> saveToken(String token) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
+    _handling401 = false;
   }
 
   static Future<void> clearToken() async {
@@ -27,336 +90,351 @@ class ProviderApiService {
     await prefs.remove(_tokenKey);
     await prefs.remove('provider_id');
     await prefs.remove('provider_logged_in');
+    await prefs.remove('provider_data');
+    await prefs.remove('provider_email');
   }
 
-  // ── HTTP helpers ─────────────────────────────────────────
-  static Future<Map<String,dynamic>> _get(
-      String endpoint, {Map<String,String>? params}) async {
-    var uri = Uri.parse('$_base/$endpoint');
-    if (params != null) uri = uri.replace(queryParameters: params);
+  // ── HTTP core ────────────────────────────────────────────
+  static Future<Map<String, String>> _headers({bool json = true}) async {
     final token = await getToken();
-    final resp = await http.get(uri, headers: {
-      'Authorization': 'Bearer $token',
-      'Content-Type': 'application/json',
-    }).timeout(const Duration(seconds: 15));
-    return jsonDecode(resp.body) as Map<String,dynamic>;
+    return {
+      if (json) 'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
   }
 
-  static Future<Map<String,dynamic>> _post(
-      String endpoint, Map<String,dynamic> body,
-      {Map<String,String>? params}) async {
-    var uri = Uri.parse('$_base/$endpoint');
-    if (params != null) uri = uri.replace(queryParameters: params);
-    final token = await getToken();
-    final resp = await http.post(uri,
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode(body),
-    ).timeout(const Duration(seconds: 15));
-    return jsonDecode(resp.body) as Map<String,dynamic>;
+  static Uri _uri(String endpoint, Map<String, String>? params) {
+    final uri = Uri.parse('$base/$endpoint');
+    return params == null ? uri : uri.replace(queryParameters: params);
   }
+
+  static Future<ApiResult> _send(
+      Future<http.Response> Function(Map<String, String> headers) call,
+      {bool json = true}) async {
+    final headers = await _headers(json: json);
+    final hadToken = headers.containsKey('Authorization');
+    http.Response resp;
+    try {
+      resp = await call(headers).timeout(_timeout);
+    } on TimeoutException {
+      return const ApiResult(false, null, 'Server is taking too long. Check your internet and try again.', 0);
+    } on SocketException {
+      return const ApiResult(false, null, 'No internet connection.', 0);
+    } catch (e) {
+      return ApiResult(false, null, 'Network error: $e', 0);
+    }
+    return _parse(resp, hadToken);
+  }
+
+  static ApiResult _parse(http.Response resp, bool hadToken) {
+    final code = resp.statusCode;
+    dynamic body;
+    try {
+      body = jsonDecode(utf8.decode(resp.bodyBytes));
+    } catch (_) {
+      body = null;
+    }
+
+    if (code == 401 && hadToken) _notifyUnauthorized();
+
+    if (body is! Map) {
+      final msg = code >= 500
+          ? 'Server error ($code). Please try again shortly.'
+          : code == 401
+              ? 'Session expired. Please log in again.'
+              : 'Unexpected server response ($code).';
+      return ApiResult(false, null, msg, code);
+    }
+    final success = body['success'] == true && code >= 200 && code < 300;
+    if (success) {
+      // check_email returns {exists, success} at the top level
+      final data = body.containsKey('data') ? body['data'] : body;
+      return ApiResult(true, data, '', code);
+    }
+    var err = '${body['error'] ?? body['message'] ?? ''}'.trim();
+    if (err.isEmpty) err = 'Request failed ($code).';
+    if (code == 401) err = 'Session expired. Please log in again.';
+    return ApiResult(false, body['data'], err, code);
+  }
+
+  static void _notifyUnauthorized() {
+    if (_handling401) return;
+    _handling401 = true;
+    clearToken();
+    final cb = onUnauthorized;
+    if (cb != null) cb();
+  }
+
+  static Future<ApiResult> get(String endpoint,
+      {Map<String, String>? params}) {
+    return _send((h) => http.get(_uri(endpoint, params), headers: h));
+  }
+
+  static Future<ApiResult> post(String endpoint, Map<String, dynamic> body,
+      {Map<String, String>? params}) {
+    return _send((h) =>
+        http.post(_uri(endpoint, params), headers: h, body: jsonEncode(body)));
+  }
+
+  static Future<ApiResult> _bk(String action, Map<String, dynamic> body) =>
+      post('bookings.php', body, params: {'action': action});
 
   // ── AUTH ─────────────────────────────────────────────────
 
-  static Future<Map<String,dynamic>?> login(String email, String password) async {
-    final res = await _post('providers.php',
+  /// Logs in. On success saves the JWT + provider cache. `provider_logged_in`
+  /// is only persisted for approved providers.
+  static Future<ApiResult> login(String email, String password) async {
+    final res = await post('providers.php',
         {'email': email, 'password': password},
         params: {'action': 'login'});
-    if (res['success'] == true) {
-      final data = res['data'] as Map<String,dynamic>;
-      await saveToken(data['token']?.toString() ?? '');
-      // Cache provider data
-      final prefs = await SharedPreferences.getInstance();
-      final provider = data['provider'] as Map<String,dynamic>? ?? {};
-      await prefs.setString('provider_id', provider['id']?.toString() ?? '');
-      await prefs.setBool('provider_logged_in', true);
-      await prefs.setString('provider_data', jsonEncode(provider));
-      return data;
+    if (!res.ok) return res;
+    final data = res.map ?? {};
+    final token = '${data['token'] ?? ''}';
+    if (token.isEmpty) {
+      return ApiResult(false, null, 'Login failed: no token returned.', res.status);
     }
-    return null;
+    await saveToken(token);
+    final provider = data['provider'] is Map
+        ? Map<String, dynamic>.from(data['provider'] as Map)
+        : <String, dynamic>{};
+    final status = '${data['status'] ?? provider['status'] ?? 'pending'}';
+    provider['status'] = status;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('provider_id', '${provider['id'] ?? ''}');
+    await prefs.setString('provider_data', jsonEncode(provider));
+    await prefs.setBool('provider_logged_in', status == 'approved');
+    return res;
   }
 
-  static Future<bool> register(Map<String,dynamic> data) async {
-    final res = await _post('providers.php', data,
-        params: {'action': 'register'});
-    return res['success'] == true;
+  static Future<void> markLoggedIn(bool approved) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('provider_logged_in', approved);
   }
 
+  static Future<ApiResult> register(Map<String, dynamic> data) =>
+      post('providers.php', data, params: {'action': 'register'});
+
+  /// Logout: go offline (best effort), drop the JWT and cached data.
   static Future<void> logout() async {
+    try {
+      if (await hasToken()) await setAvailable(false);
+    } catch (_) {}
     await clearToken();
   }
 
-  /// Check if email already registered — returns true if exists
-  static Future<bool> checkEmailExists(String email) async {
-    try {
-      final res = await _get('providers.php',
-          params: {'action': 'check_email', 'email': email});
-      return res['exists'] == true;
-    } catch (_) { return false; }
+  /// true / false, or null when the check itself failed.
+  static Future<bool?> checkEmailExists(String email) async {
+    final res = await get('providers.php',
+        params: {'action': 'check_email', 'email': email});
+    if (!res.ok) return null;
+    final m = res.map ?? {};
+    return m['exists'] == true;
   }
 
   // ── PROVIDER PROFILE ─────────────────────────────────────
 
-  static Future<Map<String,dynamic>?> getProfile(String id) async {
-    final res = await _get('providers.php',
-        params: {'action': 'get', 'id': id});
-    if (res['success'] == true) return res['data'] as Map<String,dynamic>?;
-    return null;
+  /// Own full profile (no id) — includes `services` rows.
+  static Future<ApiResult> getMyProfile() async {
+    final res = await get('providers.php', params: await _mine('get'));
+    if (res.ok && res.map != null) await cacheProvider(res.map!);
+    return res;
   }
 
-  static Future<bool> updateProfile(Map<String,dynamic> data) async {
-    final res = await _post('providers.php', data,
-        params: {'action': 'update'});
-    return res['success'] == true;
+  static Future<ApiResult> updateProfile(Map<String, dynamic> data) =>
+      post('providers.php', data, params: {'action': 'update'});
+
+  /// Upload profile photo (multipart field 'photo'). Returns {photo: url}.
+  static Future<ApiResult> uploadPhoto(File file) async {
+    return _send((h) async {
+      final req = http.MultipartRequest(
+          'POST', _uri('upload.php', {'action': 'provider_photo'}));
+      req.headers.addAll(h);
+      req.files.add(await http.MultipartFile.fromPath('photo', file.path));
+      final streamed = await req.send();
+      return http.Response.fromStream(streamed);
+    }, json: false);
   }
 
-  static Future<bool> saveFcmToken(String fcmToken) async {
-    final res = await _post('providers.php',
-        {'fcm_token': fcmToken},
-        params: {'action': 'fcm'});
-    return res['success'] == true;
-  }
+  static Future<ApiResult> saveFcmToken(String fcmToken) =>
+      post('providers.php', {'fcm_token': fcmToken}, params: {'action': 'fcm'});
 
-  static Future<bool> setAvailable(bool available) async {
-    try {
-      final res = await _post('providers.php',
-          {'available': available},
-          params: {'action': 'available'});
-      if (res['success'] == true) {
-        // Update cache
-        final prefs = await SharedPreferences.getInstance();
-        final cached = prefs.getString('provider_data');
-        if (cached != null) {
-          final data = jsonDecode(cached) as Map<String,dynamic>;
-          data['available'] = available ? 1 : 0;
-          await prefs.setString('provider_data', jsonEncode(data));
-        }
-        return true;
+  static Future<ApiResult> setAvailable(bool available) async {
+    final res = await post('providers.php', {'available': available ? 1 : 0},
+        params: {'action': 'available'});
+    if (res.ok) {
+      final cached = await getCachedProvider();
+      if (cached != null) {
+        cached['available'] = available ? 1 : 0;
+        await cacheProvider(cached);
       }
-      return false;
-    } catch (_) { return false; }
+    }
+    return res;
   }
+
+  static Future<ApiResult> sendLocation(double lat, double lng) =>
+      post('providers.php', {'lat': lat, 'lng': lng},
+          params: {'action': 'location'});
 
   // ── SERVICES ─────────────────────────────────────────────
 
-  static Future<List<Map<String,dynamic>>> getMyServices(String providerId) async {
-    final res = await _get('providers.php',
+  static Future<List<Map<String, dynamic>>> getMyServices(String providerId) async {
+    final res = await get('providers.php',
         params: {'action': 'services', 'id': providerId});
-    if (res['success'] == true) {
-      return (res['data'] as List).cast<Map<String,dynamic>>();
-    }
-    return [];
+    if (!res.ok) throw ApiException(res.error, res.status);
+    return res.list;
   }
 
-  static Future<bool> saveMyServices(List<Map<String,dynamic>> services) async {
-    final res = await _post('providers.php',
-        {'services': services},
+  static Future<void> saveMyServices(List<Map<String, dynamic>> services) async {
+    final res = await post('providers.php', {'services': services},
         params: {'action': 'services'});
-    return res['success'] == true;
+    if (!res.ok) throw ApiException(res.error, res.status);
   }
 
-  /// Save per-option prices for a service
-  /// prices: {groupKey_optionKey: price} e.g. {'sweep_studio': 300, 'sweep_1bhk': 400}
-  static Future<bool> saveServiceOptionPrices(
-      String svcId, Map<String,int> prices) async {
-    final res = await _post('providers.php',
-        {'svc_id': svcId, 'option_prices': prices},
-        params: {'action': 'save_option_prices'});
-    return res['success'] == true;
+  /// Switch ONE service on/off (saved instantly). min/max 0 keep the
+  /// provider's saved price range on the server.
+  static Future<ApiResult> setServiceEnabled(
+          {required String svcId,
+          required String name,
+          required String icon,
+          required String cat,
+          required bool enabled}) =>
+      post('providers.php', {
+        'services': [
+          {
+            'svc_id': svcId,
+            'svc_name': name,
+            'svc_icon': icon,
+            'svc_cat': cat,
+            'enabled': enabled ? 1 : 0,
+            'min_price': 0,
+            'max_price': 0,
+          }
+        ]
+      }, params: {'action': 'services'});
+
+  /// Save the provider's price range (min/max shown to customers) and the
+  /// optional per-option prices {groupKey_optionKey: price} for a service.
+  /// Also enables the service. Returns data {min_price, max_price}.
+  static Future<ApiResult> saveServicePrices(String svcId,
+          {required Map<String, int> prices, int minPrice = 0, int maxPrice = 0}) =>
+      post('providers.php', {
+        'svc_id': svcId,
+        'prices': prices,
+        'min_price': minPrice,
+        'max_price': maxPrice,
+      }, params: {'action': 'save_option_prices'});
+
+  /// Per-option prices for all services
+  static Future<Map<String, dynamic>> getServiceOptionPrices() async {
+    final res = await get('providers.php', params: {'action': 'get_option_prices'});
+    return res.ok ? (res.map ?? {}) : {};
   }
 
-  /// Get per-option prices for all services
-  static Future<Map<String,dynamic>> getServiceOptionPrices() async {
-    final res = await _get('providers.php',
-        params: {'action': 'get_option_prices'});
-    if (res['success'] == true) return res['data'] as Map<String,dynamic>;
-    return {};
-  }
-
-  static Future<Map<String,dynamic>> getServicePrices(String svcId) async {
-    final res = await _get('services.php',
-        params: {'action': 'prices', 'id': svcId});
-    if (res['success'] == true) return res['data'] as Map<String,dynamic>;
-    return {};
-  }
-
-  static Future<List<Map<String,dynamic>>> getAllServices() async {
-    final res = await _get('services.php', params: {'action': 'all'});
-    if (res['success'] == true) {
-      return (res['data'] as List).cast<Map<String,dynamic>>();
-    }
-    return [];
+  static Future<Map<String, dynamic>> getServicePrices(String svcId) async {
+    final res = await get('services.php', params: {'action': 'prices', 'id': svcId});
+    return res.ok ? (res.map ?? {}) : {};
   }
 
   // ── BOOKINGS ─────────────────────────────────────────────
 
-  /// Get open/available bookings near provider
-  static Future<List<Map<String,dynamic>>> getOpenBookings(String providerId) async {
-    final profile = await getProfile(providerId);
-    if (profile == null) return [];
-    final lat = (profile['lat'] as num?)?.toDouble() ?? 0;
-    final lng = (profile['lng'] as num?)?.toDouble() ?? 0;
-    final radius = (profile['radius_km'] as num?)?.toDouble() ?? 10;
+  /// Open jobs — already filtered server-side by my services + radius/city,
+  /// with PII stripped and `distance_km` added.
+  static Future<ApiResult> getOpenBookings() =>
+      get('bookings.php', params: {'action': 'open'});
 
-    // Get active bookings in MySQL
-    final res = await _get('bookings.php', params: {
-      'action': 'open',
-    });
-    if (res['success'] != true) return [];
-    final all = (res['data'] as List).cast<Map<String,dynamic>>();
+  static Future<ApiResult> getBooking(String bookingId) =>
+      get('bookings.php', params: {'action': 'get', 'id': bookingId});
 
-    // Filter by distance
-    return all.where((b) {
-      final bLat = (b['lat'] as num?)?.toDouble() ?? 0;
-      final bLng = (b['lng'] as num?)?.toDouble() ?? 0;
-      if (bLat == 0 || bLng == 0) return true;
-      if (lat == 0) return true;
-      final dist = _haversine(lat, lng, bLat, bLng);
-      return dist <= radius;
-    }).toList();
-  }
+  /// My current booking (includes completed-but-unpaid) or data == null.
+  static Future<ApiResult> getActiveBooking() async =>
+      get('bookings.php', params: await _mine('active', role: true));
 
-  static double _haversine(double lat1, double lon1, double lat2, double lon2) {
-    const r = 6371.0;
-    final dLat = _rad(lat2 - lat1);
-    final dLon = _rad(lon2 - lon1);
-    final a = _sin2(dLat/2) + _sin2(dLon/2) * _cos(_rad(lat1)) * _cos(_rad(lat2));
-    return r * 2 * _asin(_sqrt(a));
-  }
-  static double _rad(double d) => d * 3.141592653589793 / 180;
-  static double _sin2(double x) => _sin(x) * _sin(x);
-  static double _sin(double x) => x - x*x*x/6 + x*x*x*x*x/120;
-  static double _cos(double x) => 1 - x*x/2 + x*x*x*x/24;
-  static double _asin(double x) => x + x*x*x/6;
-  static double _sqrt(double x) {
-    if (x <= 0) return 0;
-    double r = x; for (int i = 0; i < 20; i++) r = (r + x/r) / 2; return r;
-  }
+  static Future<ApiResult> getBookingHistory() async =>
+      get('bookings.php', params: await _mine('history', role: true));
 
-  static Future<Map<String,dynamic>?> getBooking(String bookingId) async {
-    final res = await _get('bookings.php',
-        params: {'action': 'get', 'id': bookingId});
-    if (res['success'] == true) return res['data'] as Map<String,dynamic>?;
-    return null;
-  }
+  static Future<ApiResult> acceptBooking(String bookingId, int quotedPrice) =>
+      _bk('accept', {'booking_id': bookingId, 'quoted_price': quotedPrice});
 
-  /// Get provider's active booking
-  static Future<Map<String,dynamic>?> getActiveBooking(String providerId) async {
-    final res = await _get('bookings.php', params: {
-      'action': 'active',
-      'id':     providerId,
-      'role':   'provider',
-    });
-    if (res['success'] == true && res['data'] != null) {
-      return res['data'] as Map<String,dynamic>;
-    }
-    return null;
-  }
+  static Future<ApiResult> sendFinalOffer(String bookingId, int finalPrice) =>
+      _bk('final_offer', {'booking_id': bookingId, 'final_price': finalPrice});
 
-  /// Provider accepts booking and quotes price
-  static Future<bool> acceptBooking(String bookingId, int quotedPrice) async {
-    final res = await _post('bookings.php', {
-      'booking_id':   bookingId,
-      'quoted_price': quotedPrice,
-    }, params: {'action': 'accept'});
-    return res['success'] == true;
-  }
+  static Future<ApiResult> acceptCounter(String bookingId) =>
+      _bk('accept_counter', {'booking_id': bookingId});
 
-  /// Provider sends final offer
-  static Future<bool> sendFinalOffer(String bookingId, int finalPrice) async {
-    final res = await _post('bookings.php', {
-      'booking_id':  bookingId,
-      'final_price': finalPrice,
-    }, params: {'action': 'final_offer'});
-    return res['success'] == true;
-  }
+  /// Provider gives up the job before it starts → back to `searching`.
+  static Future<ApiResult> releaseBooking(String bookingId) =>
+      _bk('release', {'booking_id': bookingId});
 
-  /// Provider accepts customer counter
-  static Future<bool> acceptCounter(String bookingId) async {
-    final res = await _post('bookings.php',
-        {'booking_id': bookingId},
-        params: {'action': 'accept_counter'});
-    return res['success'] == true;
-  }
+  /// START OTP (shown by the customer at the door).
+  static Future<ApiResult> verifyStartOtp(String bookingId, String otp) =>
+      _bk('verify_otp', {'booking_id': bookingId, 'otp': otp});
 
-  /// Provider verifies OTP
-  static Future<Map<String,dynamic>?> verifyOtp(String bookingId, String otp) async {
-    final res = await _post('bookings.php', {
-      'booking_id': bookingId,
-      'otp':        otp,
-    }, params: {'action': 'verify_otp'});
-    if (res['success'] == true) return res['data'] as Map<String,dynamic>?;
-    return null;
-  }
+  static Future<ApiResult> requestCompletionOtp(String bookingId) =>
+      _bk('request_completion_otp', {'booking_id': bookingId});
 
-  /// Cancel/decline booking
-  static Future<bool> cancelBooking(String bookingId) async {
-    final res = await _post('bookings.php',
-        {'booking_id': bookingId},
-        params: {'action': 'cancel'});
-    return res['success'] == true;
-  }
+  static Future<ApiResult> completeBooking(String bookingId, String completionOtp) =>
+      _bk('complete', {'booking_id': bookingId, 'completion_otp': completionOtp});
 
-  /// Get booking history for provider
-  static Future<List<Map<String,dynamic>>> getBookingHistory(String providerId) async {
-    final res = await _get('bookings.php', params: {
-      'action': 'history',
-      'id':     providerId,
-      'role':   'provider',
-    });
-    if (res['success'] == true) {
-      return (res['data'] as List).cast<Map<String,dynamic>>();
-    }
-    return [];
-  }
+  static Future<ApiResult> cashCollected(String bookingId) =>
+      _bk('cash_collected', {'booking_id': bookingId});
+
+  static Future<ApiResult> requestReview(String bookingId) =>
+      _bk('request_review', {'booking_id': bookingId});
 
   // ── EARNINGS / PAYOUTS ───────────────────────────────────
 
-  static Future<Map<String,dynamic>> getBalance(String providerId) async {
-    final res = await _get('payouts.php',
-        params: {'action': 'balance', 'id': providerId});
-    if (res['success'] == true) return res['data'] as Map<String,dynamic>;
-    return {};
-  }
+  static Future<ApiResult> getBalance() async =>
+      get('payouts.php', params: await _mine('balance'));
 
-  static Future<bool> requestPayout(Map<String,dynamic> data) async {
-    final res = await _post('payouts.php', data,
-        params: {'action': 'request'});
-    return res['success'] == true;
-  }
+  static Future<ApiResult> requestPayout(Map<String, dynamic> data) =>
+      post('payouts.php', data, params: {'action': 'request'});
 
-  static Future<List<Map<String,dynamic>>> getPayoutHistory(String providerId) async {
-    final res = await _get('payouts.php',
-        params: {'action': 'history', 'id': providerId});
-    if (res['success'] == true) {
-      return (res['data'] as List).cast<Map<String,dynamic>>();
-    }
-    return [];
-  }
+  static Future<ApiResult> getPayoutHistory() async =>
+      get('payouts.php', params: await _mine('history'));
+
+  /// Wallet top-up step 1 → {order_id, amount (paise), currency, key_id}.
+  static Future<ApiResult> topupOrder(int amountRupees) =>
+      post('payouts.php', {'amount': amountRupees},
+          params: {'action': 'topup_order'});
+
+  /// Wallet top-up step 2 — verify the Razorpay payment and credit the wallet.
+  static Future<ApiResult> topupConfirm(
+          {required String orderId,
+          required String paymentId,
+          required String signature}) =>
+      post('payouts.php', {
+        'razorpay_order_id': orderId,
+        'razorpay_payment_id': paymentId,
+        'razorpay_signature': signature,
+      }, params: {'action': 'topup_confirm'});
+
+  // ── SITE SETTINGS (public) ───────────────────────────────
+
+  /// {support_whatsapp, support_email, ...}
+  static Future<ApiResult> getSiteConfig() =>
+      get('site.php', params: {'action': 'config'});
 
   // ── REVIEWS ──────────────────────────────────────────────
 
-  static Future<List<Map<String,dynamic>>> getReviews(String providerId) async {
-    final res = await _get('reviews.php',
-        params: {'action': 'provider', 'id': providerId});
-    if (res['success'] == true) {
-      return (res['data'] as List).cast<Map<String,dynamic>>();
-    }
-    return [];
-  }
+  static Future<ApiResult> getMyReviews() async =>
+      get('reviews.php', params: await _mine('provider'));
 
   // ── CACHED PROVIDER DATA ─────────────────────────────────
 
-  static Future<Map<String,dynamic>?> getCachedProvider() async {
+  static Future<Map<String, dynamic>?> getCachedProvider() async {
     final prefs = await SharedPreferences.getInstance();
     final s = prefs.getString('provider_data');
     if (s == null) return null;
-    return jsonDecode(s) as Map<String,dynamic>;
+    try {
+      final d = jsonDecode(s);
+      return d is Map ? Map<String, dynamic>.from(d) : null;
+    } catch (_) {
+      return null;
+    }
   }
 
-  static Future<void> cacheProvider(Map<String,dynamic> data) async {
+  static Future<void> cacheProvider(Map<String, dynamic> data) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('provider_data', jsonEncode(data));
   }

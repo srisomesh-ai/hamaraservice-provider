@@ -1,2133 +1,870 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:flutter/services.dart';
-import 'package:firebase_database/firebase_database.dart';
-import '../services/provider_api_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:vibration/vibration.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:vibration/vibration.dart';
+import '../services/location_service.dart';
+import '../services/notification_service.dart';
+import '../services/provider_api_service.dart';
+import '../utils/parse.dart';
+import '../utils/support_contact.dart';
 import '../utils/theme.dart';
-import 'test_console_screen.dart';
-import 'login_screen.dart';
+import '../widgets/accept_job.dart';
+import '../widgets/active_job_card.dart';
+import '../widgets/new_job_card.dart';
+import '../widgets/ui.dart';
 import 'active_booking_screen.dart';
-import 'services_screen.dart';
-import 'support_screen.dart';
 import 'earnings_screen.dart';
+import 'login_screen.dart';
+import 'profile_tab.dart';
 import 'ratings_screen.dart';
-import 'open_jobs_screen.dart';
-import 'profile_edit_screen.dart';
+import 'services_screen.dart';
 
+/// Home shell shown after login: a Material 3 [NavigationBar] with four tabs
+/// (Jobs · Earnings · Services · Profile) kept alive in an [IndexedStack].
+/// The shell owns job discovery (one poller), the new-job alert and the
+/// current-job poll, exactly like the website dashboard.
 class DashboardScreen extends StatefulWidget {
   final String providerId;
-  const DashboardScreen({super.key, required this.providerId});
+  final int initialTab;
+
+  // ── Test-only sample data (screenshots). When [debugProfile] is set the
+  // shell never touches the network, plugins or timers.
+  final Map<String, dynamic>? debugProfile;
+  final Map<String, dynamic>? debugActive;
+  final List<Map<String, dynamic>>? debugOpenJobs;
+  final Map<String, dynamic>? debugIncoming;
+  final Map<String, dynamic>? debugBalance;
+  final EarningsDemo? debugEarnings;
+  final ServicesDemo? debugServices;
+
+  const DashboardScreen({
+    super.key,
+    required this.providerId,
+    this.initialTab = 0,
+    this.debugProfile,
+    this.debugActive,
+    this.debugOpenJobs,
+    this.debugIncoming,
+    this.debugBalance,
+    this.debugEarnings,
+    this.debugServices,
+  });
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
+const int _alertSeconds = 30;
+
 class _DashboardScreenState extends State<DashboardScreen>
-    with TickerProviderStateMixin {
-  int _currentTab = 0;
-  bool _available = false;
+    with WidgetsBindingObserver {
+  late int _tab = widget.initialTab.clamp(0, 3);
+  final Set<int> _visited = {};
+  int _earningsTick = 0;
+  int _servicesTick = 0;
+
   bool _loading = true;
-  Map<String, dynamic>? _providerData;
-  List<Map<String, dynamic>> _bookings = [];
-  Map<String, dynamic>? _incomingBooking;
-  String? _incomingBookingKey;
-  Timer? _pollTimer;
-  Timer? _alertCountdown;
-  StreamSubscription? _bookingWatcher;
-  StreamSubscription? _newBookingListener;
-  int _countdownSeconds = 30;
-  int _openJobsCount = 0;
-  final _audioPlayer = AudioPlayer();
-  final Set<String> _dismissedBookingKeys = {};
-  int _testTapCount = 0;
-  DateTime? _lastTestTap;
+  bool _available = false;
+  bool _toggling = false;
+  bool _foreground = true;
+  Map<String, dynamic>? _profile;
+  Map<String, dynamic>? _balance;
+  Timer? _profileTimer; // rating / earnings stay current (every 60 s)
 
-  late AnimationController _pulseCtrl;
-  late Animation<double> _pulseAnim;
+  // "My saved price" sources (same as the website)
+  Map<String, dynamic> _optionPrices = {};
+  Map<String, dynamic> _adminRanges = {};
 
+  // Job discovery (ONE poller, every 4 s like the website)
+  Timer? _jobsTimer;
+  bool _jobsFetching = false;
+  List<Map<String, dynamic>> _openJobs = [];
+  String _openError = '';
+  final Map<String, DateTime> _shownAt = {}; // re-alert after 45 s (web)
+  final Set<String> _acceptingIds = {};
+
+  // New-job alert
+  Map<String, dynamic>? _incoming;
+  Timer? _countdownTimer;
+  int _countdown = _alertSeconds;
+  int _incomingSaved = 0;
+  final _priceCtrl = TextEditingController();
+  AudioPlayer? _audio;
+
+  // Current job (polled every 4 s like the website)
+  Timer? _activeTimer;
+  Map<String, dynamic>? _active;
+  String? _lastStatus;
+  String? _lastPay;
+  DateTime? _quoteDeadline;
+  Timer? _quoteTick;
+
+  bool get _demo => widget.debugProfile != null;
   String get _pid => widget.providerId;
+  bool get _approved => str(_profile?['status'], 'pending') == 'approved';
 
   @override
   void initState() {
     super.initState();
-    _pulseCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 900))
-      ..repeat(reverse: true);
-    _pulseAnim = Tween(begin: 1.0, end: 1.06).animate(
-        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
-    _loadProfile();
-    _startPolling();
-    _watchOpenJobs();
-    _setupAudio();
+    _visited.add(_tab);
+    if (_demo) {
+      _profile = widget.debugProfile;
+      _available = toBool(_profile?['available']);
+      _active = widget.debugActive;
+      _openJobs = widget.debugOpenJobs ?? [];
+      _balance = widget.debugBalance;
+      _loading = false;
+      if (_active != null) _setQuoteDeadline(_active!);
+      final inc = widget.debugIncoming;
+      if (inc != null) {
+        _incoming = inc;
+        _incomingSaved = _savedPrice(inc);
+        _priceCtrl.text = _incomingSaved > 0 ? '$_incomingSaved' : '';
+      }
+      return;
+    }
+    WidgetsBinding.instance.addObserver(this);
+    _audio = AudioPlayer()..setReleaseMode(ReleaseMode.loop);
+    _init();
   }
 
-  Future<void> _setupAudio() async {
-    await _audioPlayer.setReleaseMode(ReleaseMode.loop);
+  Future<void> _init() async {
+    final cached = await ProviderApiService.getCachedProvider();
+    if (cached != null && mounted) {
+      setState(() {
+        _profile = cached;
+        _available = toBool(cached['available']);
+        _loading = false;
+      });
+    }
+    await _refreshAll();
+    if (!mounted) return;
+    setState(() => _loading = false);
+    NotificationService.registerToken();
+    NotificationService.appReady = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => NotificationService.consumePending());
+    _startActivePolling();
+    _startProfilePolling();
+    loadSupportConfig();
+    _loadPriceSources();
   }
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
-    _alertCountdown?.cancel();
-    _bookingWatcher?.cancel();
-    _newBookingListener?.cancel();
-    _providerDataListener?.cancel();
-    _bookingsListener?.cancel();
-    _pulseCtrl.dispose();
-    _audioPlayer.dispose();
+    if (!_demo) WidgetsBinding.instance.removeObserver(this);
+    _jobsTimer?.cancel();
+    _activeTimer?.cancel();
+    _profileTimer?.cancel();
+    _countdownTimer?.cancel();
+    _quoteTick?.cancel();
+    _stopAlert();
+    _audio?.dispose();
+    _priceCtrl.dispose();
     super.dispose();
   }
 
-  StreamSubscription? _providerDataListener;
-  StreamSubscription? _bookingsListener;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final fg = state == AppLifecycleState.resumed;
+    if (fg == _foreground) return;
+    _foreground = fg;
+    if (fg) {
+      _refreshAll();
+      _startActivePolling();
+      _startProfilePolling();
+    } else {
+      _jobsTimer?.cancel();
+      _jobsTimer = null;
+      _activeTimer?.cancel();
+      _activeTimer = null;
+      _profileTimer?.cancel();
+      _profileTimer = null;
+      _stopAlert();
+    }
+    _syncJobPoller();
+  }
+
+  Future<void> _refreshAll() async {
+    if (_demo) return;
+    await Future.wait([_loadProfile(), _loadActive(), _loadBalance()]);
+    _syncJobPoller();
+  }
 
   Future<void> _loadProfile() async {
-    // Load immediately from cache first for instant UI
-    final cached = await ProviderApiService.getCachedProvider();
-    if (cached != null && mounted) {
-      setState(() {
-        _providerData = cached;
-        _available    = cached['available'] == 1 || cached['available'] == true;
-        _loading      = false;
-      });
-    }
-
-    // Then fetch fresh from MySQL
-    try {
-      final fresh = await ProviderApiService.getProfile(_pid);
-      if (fresh != null && mounted) {
-        await ProviderApiService.cacheProvider(fresh);
-        setState(() {
-          _providerData = fresh;
-          _available    = fresh['available'] == 1 || fresh['available'] == true;
-          _loading      = false;
-        });
-      }
-    } catch (_) {}
-
-    // FCM token
-    try {
-      final token = await FirebaseMessaging.instance.getToken();
-      if (token != null) await ProviderApiService.saveFcmToken(token);
-    } catch (_) {}
-
-    // Periodic refresh every 30 seconds
-    _providerDataListener = Stream.periodic(const Duration(seconds: 30))
-        .asyncMap((_) => ProviderApiService.getProfile(_pid))
-        .listen((data) {
-      if (data == null || !mounted) return;
-      ProviderApiService.cacheProvider(data);
-      setState(() {
-        _providerData = data;
-        _available    = data['available'] == 1 || data['available'] == true;
-      });
-    }, onError: (_) {});
-
-    _listenBookings();
+    final res = await ProviderApiService.getMyProfile();
+    if (!mounted || !res.ok) return;
+    final p = res.map!;
+    setState(() {
+      _profile = p;
+      if (!_toggling) _available = toBool(p['available']);
+    });
+    LocationService.instance.online = _available && _approved;
   }
 
-  void _listenBookings() {
-    // Real-time bookings listener — updates immediately when status changes
-    _bookingsListener = Stream.periodic(const Duration(seconds: 5))
-        .asyncMap((_) => ProviderApiService.getActiveBooking(_pid))
-        .listen((booking) {
-      if (!mounted) return;
-      if (booking == null) {
-        setState(() => _bookings = []);
-        return;
-      }
-      final all = <String,dynamic>{'active': booking};
-      final mine = all.entries
-          .where((e) {
-            final b = e.value as Map;
-            return b['providerId'] == _pid ||
-                (b['acceptedBy'] is Map && b['acceptedBy']['id'] == _pid);
-          })
-          .map((e) => Map<String, dynamic>.from({...e.value as Map, 'id': e.key}))
-          .toList()
-        ..sort((a, b) => (b['createdAt'] ?? '').compareTo(a['createdAt'] ?? ''));
-
-      // Check for new review/rating
-      for (final b in mine) {
-        if ((b['rating'] != null) && !(b['reviewNotified'] == true)) {
-          _notifyNewReview(b);
-          // Mark as notified
-          // Review notified tracked locally
-        }
-      }
-
-      if (mounted) setState(() => _bookings = mine);
+  void _startProfilePolling() {
+    _profileTimer?.cancel();
+    _profileTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      _loadProfile();
+      _loadBalance();
     });
   }
 
-  void _notifyNewReview(Map<String, dynamic> booking) {
+  Future<void> _loadBalance() async {
+    final res = await ProviderApiService.getBalance();
+    if (mounted && res.ok) setState(() => _balance = res.map);
+  }
+
+  /// Saved option prices + admin defaults → prefill of "Your Price (₹)".
+  Future<void> _loadPriceSources() async {
+    try {
+      final op = await ProviderApiService.getServiceOptionPrices();
+      final ad = await ProviderApiService.getServicePrices('');
+      if (!mounted) return;
+      _optionPrices = op;
+      _adminRanges = ad;
+    } catch (_) {}
+  }
+
+  // ── Current job ─────────────────────────────────────────────
+  void _startActivePolling() {
+    _activeTimer?.cancel();
+    _activeTimer = Timer.periodic(const Duration(seconds: 4), (_) => _loadActive());
+  }
+
+  Future<void> _loadActive() async {
+    final res = await ProviderApiService.getActiveBooking();
+    if (!mounted || !res.ok) return;
+    final b = res.map;
+    final active = (b != null && str(b['id']).isNotEmpty) ? b : null;
+    if (active != null) _detectChanges(active);
+    setState(() => _active = active);
+    if (active != null) _setQuoteDeadline(active);
+    if (active == null) _setQuoteDeadline(const {});
+    LocationService.instance.onJob = active != null &&
+        ['confirmed', 'active'].contains(str(active['status']));
+    if (active != null && _incoming != null) _closeIncoming(dismiss: false);
+  }
+
+  /// Status-change pop-ups (website pDetect()).
+  void _detectChanges(Map<String, dynamic> b) {
+    final st = str(b['status']);
+    final pay = str(b['payment_status']);
+    if (_lastStatus != null && st != _lastStatus) {
+      if (st == 'confirmed') {
+        final p = toInt(b['confirmed_price']) > 0 ? toInt(b['confirmed_price']) : toInt(b['quoted_price']);
+        showSnack(context, '✅ Customer Confirmed! ₹$p — head to the location', tone: Tone.success);
+      } else if (st == 'searching' && _lastStatus == 'price_quoted') {
+        showSnack(context, '❌ Customer Declined — they chose to search another provider', tone: Tone.error);
+      } else if (st == 'cancelled') {
+        showSnack(context, '❌ Booking Cancelled — this job was cancelled', tone: Tone.error);
+      }
+    }
+    if (_lastPay != null && pay != _lastPay && pay == 'paid') {
+      final amt = toInt(b['amount']) > 0 ? toInt(b['amount']) : toInt(b['confirmed_price']);
+      showSnack(context, '💰 Payment Received! ₹$amt marked paid', tone: Tone.success);
+    }
+    _lastStatus = st;
+    _lastPay = pay;
+  }
+
+  void _setQuoteDeadline(Map<String, dynamic> b) {
+    final st = str(b['status']);
+    final live = (st == 'price_quoted' || st == 'negotiation_final') && b['quote_expires_in'] != null;
+    _quoteDeadline = live ? DateTime.now().add(Duration(seconds: toInt(b['quote_expires_in']))) : null;
+    if (_demo) return;
+    if (live && _quoteTick == null) {
+      _quoteTick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && _tab == 0) setState(() {});
+      });
+    } else if (!live) {
+      _quoteTick?.cancel();
+      _quoteTick = null;
+    }
+  }
+
+  Future<void> _openBooking(String id, {Map<String, dynamic>? initial}) async {
+    if (id.isEmpty) return;
+    await Navigator.push(context, MaterialPageRoute(
+        builder: (_) => ActiveBookingScreen(bookingId: id, initial: initial)));
     if (!mounted) return;
-    final rating = booking['rating']?.toString() ?? '';
-    final review = booking['review']?.toString() ?? '';
-    final service = booking['service']?.toString() ?? 'Service';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(children: [
-        const Text('⭐', style: TextStyle(fontSize: 20)),
-        const SizedBox(width: 8),
-        Expanded(child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('New $rating★ review for $service',
-              style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.white)),
-            if (review.isNotEmpty)
-              Text('"$review"',
-                style: const TextStyle(fontSize: 11, color: Colors.white70),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
-          ])),
-      ]),
-      backgroundColor: AppColors.green,
-      duration: const Duration(seconds: 5),
-      behavior: SnackBarBehavior.floating));
+    _loadActive();
+    _loadBalance();
+    _loadProfile();
   }
 
-  void _watchOpenJobs() {
-    // Open jobs polled by _checkForBookings
-    if (false) Stream.periodic(const Duration(seconds: 1)).listen((_) {
-      if (!mounted) return;
-      final all =
-          <String,dynamic>{};
-      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
-              ?.map((s) => (s is Map
-                      ? s['name'] ?? ''
-                      : s.toString())
-                  .toLowerCase())
-              .toList() ??
-          [];
-      int count = 0;
-      for (final entry in all.entries) {
-        final b = Map<String, dynamic>.from(entry.value as Map);
-        if (b['status'] != 'searching' || b['acceptedBy'] != null) {
-          continue;
-        }
-        final svcName = (b['service'] ?? '').toString().toLowerCase();
-        if (providerServices.isNotEmpty &&
-            !providerServices.any((s) => s == svcName)) continue;
-        count++;
-      }
-      if (mounted) setState(() => _openJobsCount = count);
-    });
-  }
-
-  Future<void> _toggleAvailability(bool val) async {
-    setState(() => _available = val);
-    // Update cache immediately so refresh doesn't revert
-    final cached = await ProviderApiService.getCachedProvider();
-    if (cached != null) {
-      cached['available'] = val ? 1 : 0;
-      await ProviderApiService.cacheProvider(cached);
+  // ── Job discovery: single poller ────────────────────────────
+  void _syncJobPoller() {
+    if (_demo) return;
+    final shouldRun = _available && _approved && _foreground;
+    if (!shouldRun) {
+      _jobsTimer?.cancel();
+      _jobsTimer = null;
+      if (_incoming != null) _closeIncoming(dismiss: false);
+      return;
     }
-    if (val) {
-      final choice = await showDialog<String>(
-        context: context,
-        builder: (_) => AlertDialog(
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20)),
-          title: const Text('Going Online',
-              style: TextStyle(fontWeight: FontWeight.w800)),
-          content: const Text(
-              'Update your location so nearby customers can find you?'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(context, 'keep'),
-                child: const Text('Keep Existing',
-                    style: TextStyle(color: AppColors.muted))),
-            ElevatedButton(
-                onPressed: () => Navigator.pop(context, 'update'),
-                child: const Text('Update Location')),
-          ],
-        ),
-      );
-      if (choice == 'update') {
-        try {
-          final permission = await Geolocator.requestPermission();
-          if (permission != LocationPermission.denied &&
-              permission != LocationPermission.deniedForever) {
-            final pos = await Geolocator.getCurrentPosition(
-                desiredAccuracy: LocationAccuracy.high);
-            String city = '';
-            try {
-              final placemarks = await placemarkFromCoordinates(
-                  pos.latitude, pos.longitude);
-              if (placemarks.isNotEmpty) {
-                city = placemarks.first.locality ??
-                    placemarks.first.subAdministrativeArea ??
-                    '';
-              }
-            } catch (e) {}
-            await ProviderApiService.updateProfile({
-              'available': 1,
-              'lat': pos.latitude,
-              'lng': pos.longitude,
-              if (city.isNotEmpty) 'city': city,
-            });
-            if (city.isNotEmpty && mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text('Location updated: $city'),
-                  backgroundColor: AppColors.green));
-            }
-            _loadProfile();
-            return;
-          }
-        } catch (e) {}
-      }
-    }
-    // Use dedicated availability endpoint
-    final ok = await ProviderApiService.setAvailable(val);
-    if (!ok && mounted) {
-      // Revert on failure
-      setState(() => _available = !val);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Could not update status — check connection'),
-        backgroundColor: AppColors.red));
-    }
+    if (_jobsTimer != null) return;
+    _fetchOpenJobs();
+    _jobsTimer = Timer.periodic(const Duration(seconds: 4), (_) => _fetchOpenJobs());
   }
 
-  void _startPolling() {
-    _newBookingListener = Stream.periodic(const Duration(seconds: 4))
-        .asyncMap((_) => ProviderApiService.getOpenBookings(_pid))
-        .listen((bookings) {
-      if (!mounted || !_available || _incomingBooking != null) return;
-      try {
-        final bk =
-            bookings.isEmpty ? <String,dynamic>{} : bookings.first;
-        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
-          return;
-        }
-        if (bk['status'] == 'cancelled') return;
-        // Skip if already declined or standbyed this session
-        if (_dismissedBookingKeys.contains(bk['id'])) return;
-        // Check provider offers this service (by svcId or name)
-        if (!_offersService(bk)) return;
-        setState(() {
-          _incomingBooking = bk;
-          _incomingBookingKey = bk['id']?.toString();
-          _countdownSeconds = 30;
-        });
-        _startCountdown();
-        _watchBookingStatus(bk['id']?.toString() ?? '');
-      } catch (e) {}
-    });
-    _pollTimer = Timer.periodic(
-        const Duration(seconds: 5), (_) => _checkForBookings());
-  }
-
-  Future<void> _checkForBookings() async {
-    if (!_available || _incomingBooking != null) return;
+  Future<void> _fetchOpenJobs() async {
+    if (_jobsFetching || _demo) return;
+    _jobsFetching = true;
     try {
-      final openList = await ProviderApiService.getOpenBookings(_pid);
-      if (openList.isEmpty) return;
-      final all = <String,dynamic>{for (final b in openList) b['id']?.toString() ?? '': b};
-      final providerServices = (_providerData?['services'] is List ? (_providerData!['services'] as List) : null)
-              ?.map((s) => (s is Map
-                      ? s['name'] ?? ''
-                      : s.toString())
-                  .toLowerCase())
-              .toList() ??
-          [];
-      for (final entry in all.entries) {
-        final bk = Map<String, dynamic>.from(entry.value as Map);
-        if (bk['status'] != 'searching' || bk['acceptedBy'] != null) {
-          continue;
+      final res = await ProviderApiService.getOpenBookings();
+      if (!mounted) return;
+      if (!res.ok) {
+        if (!res.unauthorized) setState(() => _openError = res.error);
+        if (res.status == 403) {
+          // Not approved / suspended: stop polling and reflect it.
+          _jobsTimer?.cancel();
+          _jobsTimer = null;
+          setState(() => _available = false);
+          LocationService.instance.online = false;
         }
-        if (bk['status'] == 'cancelled') continue;
-        // Skip if already declined or standbyed this session
-        if (_dismissedBookingKeys.contains(entry.key)) continue;
-        final svcName = (bk['service'] ?? '').toString().toLowerCase();
-        if (providerServices.isNotEmpty &&
-            !providerServices.any((s) => s == svcName)) continue;
-        if (mounted) {
-          setState(() {
-            _incomingBooking = bk;
-            _incomingBookingKey = entry.key;
-            _countdownSeconds = 30;
-          });
-          _startCountdown();
-          _watchBookingStatus(entry.key);
-        }
-        break;
+        return;
       }
-    } catch (e) {}
+      final jobs = res.list;
+      setState(() {
+        _openJobs = jobs;
+        _openError = '';
+      });
+      _maybeShowIncoming(jobs);
+    } finally {
+      _jobsFetching = false;
+    }
   }
 
-  void _watchBookingStatus(String bookingKey) {
-    _bookingWatcher?.cancel();
-    // Check immediately — handles already-cancelled or already-deleted
-    ProviderApiService.getBooking(bookingKey).then((snap) {
-      if (!mounted || _incomingBookingKey != bookingKey) return;
-      if (snap == null) {
-        _alertCountdown?.cancel();
-        _stopAlert();
-        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
+  void _maybeShowIncoming(List<Map<String, dynamic>> jobs) {
+    final ids = jobs.map((j) => str(j['id'])).toSet();
+    // Alert job disappeared (taken by someone else / cancelled)
+    if (_incoming != null && !ids.contains(str(_incoming!['id']))) {
+      if (!_acceptingIds.contains(str(_incoming!['id']))) {
+        _closeIncoming(dismiss: true);
+        showSnack(context, 'That job is no longer available.');
+      }
+      return;
+    }
+    // Website: no alerts while a job (incl. completed-but-unpaid) is ours.
+    if (_incoming != null || _active != null || !_available) return;
+    // Don't ring while another screen (job, ratings…) is on top.
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    final now = DateTime.now();
+    for (final j in jobs) {
+      final id = str(j['id']);
+      if (id.isEmpty) continue;
+      final last = _shownAt[id];
+      if (last != null && now.difference(last).inSeconds < 45) continue;
+      _shownAt[id] = now;
+      _showIncoming(j);
+      break;
+    }
+  }
+
+  int _savedPrice(Map<String, dynamic> job) {
+    final svc = str(job['svc_id']);
+    return savedPriceFor(svc,
+        optionPrices: _optionPrices,
+        range: priceRangeFor(_profile, svc),
+        adminRanges: _adminRanges);
+  }
+
+  void _showIncoming(Map<String, dynamic> job, {bool alert = true}) {
+    final saved = _savedPrice(job);
+    _priceCtrl.text = saved > 0 ? '$saved' : '';
+    setState(() {
+      _incoming = job;
+      _incomingSaved = saved;
+      _countdown = _alertSeconds;
+    });
+    if (alert) _startAlert();
+    if (_demo) return;
+    _countdownTimer?.cancel();
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      if (_countdown <= 1) {
+        t.cancel();
+        _closeIncoming(dismiss: true);
         return;
       }
-      final status = snap?['status']?.toString() ?? '';
-      if (status == 'cancelled') {
-        _alertCountdown?.cancel();
-        _stopAlert();
-        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-      }
+      setState(() => _countdown--);
     });
-    // Watch FULL node — catches both status change AND node deletion
-    _bookingWatcher = Stream.periodic(const Duration(seconds: 3))
-        .asyncMap((_) => ProviderApiService.getBooking(bookingKey))
-        .listen((data) {
-      if (!mounted || _incomingBookingKey != bookingKey) return;
-      // Node deleted = customer cancelled search
-      if (data == null) {
-        _alertCountdown?.cancel();
-        _bookingWatcher?.cancel();
-        _stopAlert();
-        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Customer cancelled the search.'),
-          backgroundColor: AppColors.muted,
-          behavior: SnackBarBehavior.floating));
-        return;
-      }
-      final bkData = data ?? <String,dynamic>{};
-      final status = data['status']?.toString() ?? '';
-      if (status == 'cancelled') {
-        _alertCountdown?.cancel();
-        _bookingWatcher?.cancel();
-        _stopAlert();
-        setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Customer cancelled this booking.'),
-          backgroundColor: AppColors.muted,
-          behavior: SnackBarBehavior.floating));
-      } else if (status == 'accepted') {
-        ProviderApiService.getBooking(bookingKey).then((snap) {
-          if (snap?['provider_id']?.toString() != _pid) {
-            _alertCountdown?.cancel();
-            _bookingWatcher?.cancel();
-            _stopAlert();
-            if (mounted) setState(() { _incomingBooking = null; _incomingBookingKey = null; });
-          }
-        });
-      }
-    });
+  }
+
+  void _startAlert() {
+    if (_demo) return;
+    try {
+      Vibration.vibrate(pattern: [0, 600, 200, 600, 200, 600], repeat: 0);
+    } catch (_) {}
+    _audio?.play(AssetSource('sounds/alert.mp3')).catchError((_) {});
   }
 
   void _stopAlert() {
-    try {
-      Vibration.cancel();
-      _audioPlayer.stop();
-    } catch (e) {}
+    if (_demo) return;
+    try { Vibration.cancel(); } catch (_) {}
+    try { _audio?.stop(); } catch (_) {}
   }
 
-  void _startCountdown() {
-    try {
-      Vibration.vibrate(
-          pattern: [0, 600, 200, 600, 200, 600], repeat: 0);
-    } catch (e) {}
-    try {
-      _audioPlayer.play(AssetSource('sounds/alert.mp3'));
-    } catch (e) {}
-    _alertCountdown?.cancel();
-    _alertCountdown =
-        Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
-      setState(() => _countdownSeconds--);
-      if (_countdownSeconds <= 0) {
-        t.cancel();
-        _bookingWatcher?.cancel();
-        _stopAlert();
-        setState(() {
-          _incomingBooking = null;
-          _incomingBookingKey = null;
-        });
-      }
-    });
-  }
-
-  Future<void> _acceptBooking() async {
-    if (_incomingBooking == null || _incomingBookingKey == null) return;
-    final bookingKey = _incomingBookingKey!;
-    final booking = Map<String, dynamic>.from(_incomingBooking!);
-    final svcId = booking['serviceId']?.toString() ?? '';
-
-    // Get provider's min/max for this service
-    int minPrice = 0; int maxPrice = 0;
-    try {
-      final mysvcs = await ProviderApiService.getMyServices(_pid);
-      final svcMatch = mysvcs.where((s) => s['svc_id'] == svcId).toList();
-      if (svcMatch.isNotEmpty) {
-        final sd = svcMatch.first;
-        minPrice = (sd['min_price'] as num?)?.toInt() ?? 0;
-        maxPrice = (sd['max_price'] as num?)?.toInt() ?? 0;
-      }
-    } catch (_) {}
-
-    // Show quote entry dialog
-    final quoteCtrl = TextEditingController(
-      text: minPrice > 0 ? '$minPrice' : '');
-    final quoted = await showDialog<int>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Enter Your Quote', style: TextStyle(fontSize:18, fontWeight:FontWeight.w800)),
-          Text(booking['service']?.toString() ?? '',
-            style: const TextStyle(fontSize:13, color:AppColors.muted, fontWeight:FontWeight.w500)),
-        ]),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (minPrice > 0 && maxPrice > 0)
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppColors.tealSoft, borderRadius: BorderRadius.circular(10)),
-              child: Row(children: [
-                const Icon(Icons.info_outline_rounded, color:AppColors.teal, size:16),
-                const SizedBox(width:8),
-                Text('Your range: ₹$minPrice – ₹$maxPrice',
-                  style: const TextStyle(fontSize:12, color:AppColors.teal, fontWeight:FontWeight.w700)),
-              ])),
-          const SizedBox(height:14),
-          TextField(
-            controller: quoteCtrl,
-            keyboardType: TextInputType.number,
-            autofocus: true,
-            decoration: InputDecoration(
-              labelText: 'Your quoted price (₹)',
-              prefixText: '₹ ',
-              hintText: minPrice > 0 ? '$minPrice' : 'Enter price',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
-          ),
-          const SizedBox(height:8),
-          const Text('Customer will see this price and can accept or negotiate.',
-            style: TextStyle(fontSize:11, color:AppColors.muted)),
-        ]),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('Cancel', style: TextStyle(color:AppColors.muted))),
-          ElevatedButton(
-            onPressed: () {
-              final v = int.tryParse(quoteCtrl.text.trim()) ?? 0;
-              if (v <= 0) return;
-              Navigator.pop(ctx, v);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor:AppColors.teal),
-            child: const Text('Send Quote', style: TextStyle(color:Colors.white))),
-        ],
-      ),
-    );
-
-    if (quoted == null || quoted <= 0) return; // Provider cancelled
-
-    _alertCountdown?.cancel();
-    _bookingWatcher?.cancel();
+  void _closeIncoming({required bool dismiss}) {
+    _countdownTimer?.cancel();
     _stopAlert();
-    setState(() {
-      _incomingBooking = null;
-      _incomingBookingKey = null;
-    });
+    final id = str(_incoming?['id']);
+    if (dismiss && id.isNotEmpty) _shownAt[id] = DateTime.now();
+    if (mounted) setState(() => _incoming = null);
+  }
 
-    try {
-      final snapData = await ProviderApiService.getBooking(bookingKey);
-      if (snapData == null) return;
-      final current = snapData;
-      if (current['acceptedBy'] != null &&
-          current['acceptedBy'].toString() != 'null') {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Booking already accepted by another provider.'),
-            backgroundColor: AppColors.red));
-        }
-        return;
-      }
-      final providerInfo = {
-        'id': _pid,
-        'name': _providerData?['name'] ?? '',
-        'phone': _providerData?['phone'] ?? '',
-        'photo': _providerData?['photo'] ?? '',
-      };
-      // Write accepted + quotedPrice + negotiation status
-      final update = {
-        'acceptedBy': providerInfo,
-        'status': 'price_quoted',
-        'providerId': _pid,
-        'providerName': _providerData?['name'] ?? '',
-        'acceptedAt': DateTime.now().toIso8601String(),
-        'quotedPrice': quoted,
-        'negotiationStatus': 'quoted',
-      };
-      await ProviderApiService.acceptBooking(bookingKey, (update['quotedPrice'] as num?)?.toInt() ?? 0);
-      // Booking update handled by MySQL acceptBooking API
-
-      // Notify customer — provider quoted a price
-      try {
-        final customerToken = ''; // FCM sent by MySQL API
-        await _sendPushNotification(
-          fcmToken: customerToken,
-          event: 'price_quoted',
-          data: {
-            'providerName': _providerData?['name']?.toString() ?? '',
-            'service': booking['service']?.toString() ?? '',
-            'quotedPrice': quoted.toString(),
-            'bookingId': bookingKey,
-          },
-        );
-      } catch (_) {}
-
-      if (mounted) {
-        Navigator.push(context, MaterialPageRoute(
-            builder: (_) => ActiveBookingScreen(
-                bookingKey: bookingKey,
-                booking: {...booking, 'quotedPrice': quoted},
-                providerId: _pid)));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Error: \$e'), backgroundColor: AppColors.red));
-      }
+  Future<void> _acceptIncoming() async {
+    final job = _incoming;
+    if (job == null) return;
+    final id = str(job['id']);
+    if (id.isEmpty || _acceptingIds.contains(id)) return;
+    final price = int.tryParse(_priceCtrl.text.trim()) ?? 0;
+    if (price < 1) {
+      showSnack(context, 'Enter your price for this job', tone: Tone.error);
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    _stopAlert();
+    setState(() => _acceptingIds.add(id));
+    final ok = await sendQuote(context, id, price);
+    if (!mounted) return;
+    setState(() => _acceptingIds.remove(id));
+    _closeIncoming(dismiss: true);
+    if (ok) {
+      setState(() => _openJobs.removeWhere((j) => str(j['id']) == id));
+      await _loadActive();
+    } else {
+      _fetchOpenJobs();
     }
   }
 
-  Future<void> _standbyBooking() async {
-    if (_incomingBooking == null || _incomingBookingKey == null) return;
-    _alertCountdown?.cancel();
-    _bookingWatcher?.cancel();
-    _stopAlert();
-    final bookingKey = _incomingBookingKey!;
-    final booking = Map<String, dynamic>.from(_incomingBooking!);
-    // Add to dismissed so it never pops up again this session
-    _dismissedBookingKeys.add(bookingKey);
-    setState(() {
-      _incomingBooking = null;
-      _incomingBookingKey = null;
-    });
-      // Standby saved locally
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'Job saved to standby. You can accept it from Open Jobs later.'),
-          backgroundColor: AppColors.teal,
-          duration: Duration(seconds: 3)));
+  // ── Online / offline ────────────────────────────────────────
+  Future<void> _toggleAvailability(bool val) async {
+    if (_toggling || _demo) return;
+    if (val && !_approved) {
+      showSnack(context, 'Your account is not approved yet.', tone: Tone.error);
+      return;
     }
-  }
-
-  void _declineBooking() {
-    _alertCountdown?.cancel();
-    _bookingWatcher?.cancel();
-    _stopAlert();
-    // Add to dismissed so it never pops up again this session
-    if (_incomingBookingKey != null) {
-      _dismissedBookingKeys.add(_incomingBookingKey!);
+    HapticFeedback.selectionClick();
+    setState(() { _toggling = true; _available = val; });
+    if (val) {
+      final pos = await LocationService.currentPosition(ask: true);
+      if (pos != null) {
+        await ProviderApiService.sendLocation(pos.latitude, pos.longitude);
+      } else if (mounted) {
+        showSnack(context, 'Location unavailable — jobs will be matched by your saved area. '
+            'Enable location for better matches.', tone: Tone.warning);
+      }
     }
-    setState(() {
-      _incomingBooking = null;
-      _incomingBookingKey = null;
-    });
+    final res = await ProviderApiService.setAvailable(val);
+    if (!mounted) return;
+    setState(() => _toggling = false);
+    if (!res.ok) {
+      setState(() => _available = !val);
+      if (!res.unauthorized) {
+        showSnack(context, res.error.isNotEmpty ? res.error : 'Could not update', tone: Tone.error);
+      }
+      return;
+    }
+    showSnack(context, val ? '✅ You are Online' : 'You are Offline',
+        tone: val ? Tone.success : Tone.neutral);
+    LocationService.instance.online = val;
+    if (!val) {
+      _closeIncoming(dismiss: false);
+      setState(() => _openJobs = []);
+    }
+    _syncJobPoller();
   }
 
   Future<void> _logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('provider_id');
-    await prefs.remove('provider_email');
-    await prefs.setBool('provider_logged_in', false);
-    try {
-      await ProviderApiService.setAvailable(false);
-    } catch (e) {}
-    if (mounted) {
-      Navigator.pushReplacement(context,
-          MaterialPageRoute(builder: (_) => const LoginScreen()));
-    }
-  }
-
-
-  // Get provider's offered service IDs from either Map or List format
-  Set<String> get _myServiceIds {
-    final raw = _providerData?['services'];
-    if (raw == null) return {};
-    if (raw is Map) {
-      return raw.entries
-          .where((e) => e.value == true)
-          .map((e) => e.key.toString())
-          .toSet();
-    }
-    if (raw is List) {
-      return raw.map((s) => s.toString()).toSet();
-    }
-    return {};
-  }
-
-  // Check if provider offers a service by svcId OR service name
-  bool _offersService(Map<String, dynamic> booking) {
-    final ids = _myServiceIds;
-    if (ids.isEmpty) return true; // no filter = accept all
-    final svcId = (booking['svc_id'] ?? booking['svcId'] ?? '').toString();
-    if (svcId.isNotEmpty && ids.contains(svcId)) return true;
-    // Fallback: match by name
-    final name = (booking['svc_name'] ?? booking['service'] ?? '').toString().toLowerCase();
-    return ids.any((id) => id.toLowerCase() == name);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.08),
-                blurRadius: 12,
-                offset: const Offset(0, -2))
-          ],
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentTab,
-          onTap: (i) => setState(() => _currentTab = i),
-          selectedItemColor: AppColors.teal,
-          unselectedItemColor: AppColors.muted,
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          type: BottomNavigationBarType.fixed,
-          selectedLabelStyle: const TextStyle(
-              fontWeight: FontWeight.w700, fontSize: 11),
-          items: [
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.dashboard_rounded), label: 'Overview'),
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.receipt_long_rounded),
-                label: 'Bookings'),
-            BottomNavigationBarItem(
-              icon: Stack(children: [
-                const Icon(Icons.work_outline_rounded),
-                if (_openJobsCount > 0)
-                  Positioned(
-                      right: 0,
-                      top: 0,
-                      child: Container(
-                          width: 9,
-                          height: 9,
-                          decoration: const BoxDecoration(
-                              color: AppColors.red,
-                              shape: BoxShape.circle))),
-              ]),
-              label: 'Open Jobs',
-            ),
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.person_rounded), label: 'Profile'),
-          ],
-        ),
-      ),
-      body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppColors.teal))
-          : Stack(children: [
-              IndexedStack(index: _currentTab, children: [
-                _buildOverview(),
-                _buildBookings(),
-                OpenJobsScreen(
-                    providerId: _pid,
-                    providerData: _providerData),
-                _buildProfile(),
-              ]),
-              if (_incomingBooking != null) _buildIncomingAlert(),
-            ]),
-    );
-  }
-
-  // ── OVERVIEW ──────────────────────────────────────────────────
-  Widget _buildOverview() {
-    final isApproved =
-        (_providerData?['status'] ?? 'pending') == 'approved';
-    final activeBookings = _bookings
-        .where((b) => ['accepted', 'active', 'otp_sent', 'payment_pending'].contains(b['status']))
-        .toList();
-    final totalEarned = _providerData?['totalEarned'] ?? 0;
-    final photo = _providerData?['photo'] as String?;
-    final name = _providerData?['name'] ?? 'Provider';
-
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      body: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          SliverAppBar(
-            expandedHeight: 160,
-            pinned: true,
-            backgroundColor: AppColors.teal,
-            actions: [
-              IconButton(
-                  icon: const Icon(Icons.logout, color: Colors.white),
-                  onPressed: _logout)
-            ],
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                      colors: [Color(0xFF0A2E36), AppColors.teal],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight),
-                ),
-                child: SafeArea(
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.fromLTRB(20, 8, 60, 16),
-                    child: Row(children: [
-                      Stack(children: [
-                        CircleAvatar(
-                          radius: 32,
-                          backgroundColor: AppColors.brand,
-                          backgroundImage:
-                              (photo?.isNotEmpty == true)
-                                  ? NetworkImage(photo!)
-                                  : null,
-                          child: (photo == null || photo.isEmpty)
-                              ? Text(name[0].toUpperCase(),
-                                  style: const TextStyle(
-                                      fontSize: 24,
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w800))
-                              : null,
-                        ),
-                        Positioned(
-                            bottom: 0,
-                            right: 0,
-                            child: Container(
-                                width: 12,
-                                height: 12,
-                                decoration: BoxDecoration(
-                                    color: _available
-                                        ? AppColors.green
-                                        : AppColors.muted,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                        color: Colors.white,
-                                        width: 2)))),
-                      ]),
-                      const SizedBox(width: 14),
-                      Expanded(
-                          child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
-                              mainAxisAlignment:
-                                  MainAxisAlignment.center,
-                              children: [
-                            Text(name,
-                                style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white)),
-                            Text(_providerData?['email'] ?? '',
-                                style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.white60)),
-                            const SizedBox(height: 4),
-                            Row(children: [
-                              Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 2),
-                                  decoration: BoxDecoration(
-                                      color: isApproved
-                                          ? Colors.green
-                                              .withOpacity(0.3)
-                                          : Colors.orange
-                                              .withOpacity(0.3),
-                                      borderRadius:
-                                          BorderRadius.circular(20),
-                                      border: Border.all(
-                                          color: isApproved
-                                              ? AppColors.green
-                                              : AppColors.yellow)),
-                                  child: Text(
-                                      isApproved
-                                          ? 'Approved'
-                                          : 'Pending',
-                                      style: TextStyle(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w800,
-                                          color: isApproved
-                                              ? AppColors.green
-                                              : AppColors.yellow))),
-                            ]),
-                          ])),
-                    ]),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: RefreshIndicator(
-              onRefresh: _loadProfile,
-              color: AppColors.teal,
-              child: SingleChildScrollView(
-                physics:
-                    const NeverScrollableScrollPhysics(),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(children: [
-                    // Pending warning
-                    if (!isApproved) ...[
-                      Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                            color:
-                                AppColors.yellow.withOpacity(0.1),
-                            borderRadius:
-                                BorderRadius.circular(14),
-                            border: Border.all(
-                                color: AppColors.yellow
-                                    .withOpacity(0.3))),
-                        child: const Row(children: [
-                          Icon(Icons.info_outline_rounded,
-                              color: AppColors.yellow),
-                          SizedBox(width: 10),
-                          Expanded(
-                              child: Text(
-                                  'Your account is pending admin approval.',
-                                  style: TextStyle(
-                                      fontSize: 13,
-                                      color: AppColors.ink2))),
-                        ]),
-                      ),
-                      const SizedBox(height: 14),
-                    ],
-
-                    // Availability
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 14),
-                      decoration: BoxDecoration(
-                          color: _available
-                              ? AppColors.green.withOpacity(0.08)
-                              : Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                              color: _available
-                                  ? AppColors.green
-                                      .withOpacity(0.4)
-                                  : AppColors.line),
-                          boxShadow: [
-                            BoxShadow(
-                                color:
-                                    Colors.black.withOpacity(0.04),
-                                blurRadius: 8)
-                          ]),
-                      child: Row(children: [
-                        Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                              color: _available
-                                  ? AppColors.green
-                                      .withOpacity(0.15)
-                                  : AppColors.bg,
-                              shape: BoxShape.circle),
-                          child: Icon(
-                              _available
-                                  ? Icons
-                                      .wifi_tethering_rounded
-                                  : Icons
-                                      .wifi_tethering_off_rounded,
-                              color: _available
-                                  ? AppColors.green
-                                  : AppColors.muted,
-                              size: 22),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                            child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.start,
-                                children: [
-                              Text(
-                                  _available
-                                      ? 'You are Online'
-                                      : 'You are Offline',
-                                  style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w800,
-                                      color: _available
-                                          ? AppColors.green
-                                          : AppColors.ink)),
-                              Text(
-                                  _available
-                                      ? 'Receiving booking alerts'
-                                      : 'Toggle to start receiving bookings',
-                                  style: const TextStyle(
-                                      fontSize: 11,
-                                      color: AppColors.muted)),
-                            ])),
-                        Switch(
-                            value: _available,
-                            onChanged: isApproved
-                                ? _toggleAvailability
-                                : null,
-                            activeColor: AppColors.green),
-                      ]),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    // MY SERVICES BUTTON
-                    GestureDetector(
-                      onTap: () => Navigator.push(context, MaterialPageRoute(
-                        builder: (_) => ServicesScreen(providerId: _pid))),
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF8B5CF6).withOpacity(0.08),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: const Color(0xFF8B5CF6).withOpacity(0.3))),
-                        child: Row(children: [
-                          Container(width: 40, height: 40,
-                            decoration: BoxDecoration(color: const Color(0xFF8B5CF6).withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(10)),
-                            child: const Icon(Icons.miscellaneous_services_rounded,
-                              color: const Color(0xFF8B5CF6), size: 22)),
-                          const SizedBox(width: 12),
-                          const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text('My Services', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                            Text('Manage your 25 available services', style: TextStyle(fontSize: 11, color: AppColors.muted)),
-                          ])),
-                          const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
-                        ]))),
-
-                    // BIG EARNINGS CARD — FIRST
-                    GestureDetector(
-                      onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => EarningsScreen(
-                                  providerId: _pid))),
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                              colors: [
-                                Color(0xFF1B5E20),
-                                Color(0xFF388E3C)
-                              ],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight),
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                                color: Colors.green
-                                    .withOpacity(0.25),
-                                blurRadius: 12,
-                                offset: const Offset(0, 4))
-                          ],
-                        ),
-                        child: Row(children: [
-                          Container(
-                            width: 52,
-                            height: 52,
-                            decoration: BoxDecoration(
-                                color:
-                                    Colors.white.withOpacity(0.2),
-                                borderRadius:
-                                    BorderRadius.circular(14)),
-                            child: const Icon(
-                                Icons
-                                    .account_balance_wallet_rounded,
-                                color: Colors.white,
-                                size: 28),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                              child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
-                                  children: [
-                                const Text('Available Balance',
-                                    style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.white70,
-                                        fontWeight:
-                                            FontWeight.w600)),
-                                Text('Rs.$totalEarned',
-                                    style: const TextStyle(
-                                        fontSize: 34,
-                                        fontWeight:
-                                            FontWeight.w900,
-                                        color: Colors.white)),
-                                const Text(
-                                    'Tap to view details & withdraw',
-                                    style: TextStyle(
-                                        fontSize: 11,
-                                        color: Colors.white60)),
-                              ])),
-                          Container(
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                                color:
-                                    Colors.white.withOpacity(0.2),
-                                shape: BoxShape.circle),
-                            child: const Icon(
-                                Icons.arrow_forward_rounded,
-                                color: Colors.white,
-                                size: 18),
-                          ),
-                        ]),
-                      ),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    // Stats — Jobs + Rating only
-                    Row(children: [
-                      _statTile(
-                          'Total Jobs',
-                          '${_providerData?['totalBookings'] ?? _providerData?['totalJobs'] ?? 0}',
-                          Icons.work_rounded,
-                          AppColors.teal),
-                      const SizedBox(width: 10),
-                      _statTile(
-                          'Rating',
-                          '${_providerData?['rating'] ?? '5.0'}',
-                          Icons.star_rounded,
-                          AppColors.yellow),
-                      const SizedBox(width: 10),
-                      _statTile(
-                          'Reviews',
-                          '${_providerData?['reviews'] ?? 0}',
-                          Icons.reviews_rounded,
-                          AppColors.brand),
-                    ]),
-
-                    // Open jobs banner
-                    if (_openJobsCount > 0) ...[
-                      const SizedBox(height: 12),
-                      GestureDetector(
-                        onTap: () =>
-                            setState(() => _currentTab = 2),
-                        child: Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                              color: AppColors.brand
-                                  .withOpacity(0.08),
-                              borderRadius:
-                                  BorderRadius.circular(14),
-                              border: Border.all(
-                                  color: AppColors.brand
-                                      .withOpacity(0.3))),
-                          child: Row(children: [
-                            Container(
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                    color: AppColors.brand
-                                        .withOpacity(0.15),
-                                    shape: BoxShape.circle),
-                                child: const Icon(
-                                    Icons
-                                        .notifications_active_rounded,
-                                    color: AppColors.brand,
-                                    size: 18)),
-                            const SizedBox(width: 12),
-                            Expanded(
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                  Text(
-                                      '$_openJobsCount New Job${_openJobsCount == 1 ? '' : 's'} Available!',
-                                      style: const TextStyle(
-                                          fontSize: 13,
-                                          fontWeight:
-                                              FontWeight.w800,
-                                          color: AppColors.brand)),
-                                  const Text(
-                                      'Tap to view pending bookings',
-                                      style: TextStyle(
-                                          fontSize: 11,
-                                          color: AppColors.muted)),
-                                ])),
-                            const Icon(Icons.chevron_right,
-                                color: AppColors.brand),
-                          ]),
-                        ),
-                      ),
-                    ],
-
-                    // Active bookings
-                    if (activeBookings.isNotEmpty) ...[
-                      const SizedBox(height: 14),
-                      Row(
-                          mainAxisAlignment:
-                              MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Active Bookings',
-                                style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppColors.ink)),
-                            Text(
-                                '${activeBookings.length} active',
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.muted)),
-                          ]),
-                      const SizedBox(height: 10),
-                      ...activeBookings
-                          .take(3)
-                          .map((b) =>
-                              _bookingCard(b, compact: true)),
-                    ],
-
-
-
-                    const SizedBox(height: 20),
-                  ]),
-                ),
-              ),
-            ),
-          ),
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Log out?'),
+        content: const Text('You will go offline and stop receiving job alerts.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size(96, 44), backgroundColor: AppColors.red),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Log out')),
         ],
       ),
     );
+    if (ok != true || !mounted || _demo) return;
+    _jobsTimer?.cancel();
+    _activeTimer?.cancel();
+    _profileTimer?.cancel();
+    _closeIncoming(dismiss: false);
+    LocationService.instance.stopAll();
+    NotificationService.appReady = false;
+    await ProviderApiService.logout();
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+        context, MaterialPageRoute(builder: (_) => const LoginScreen()), (_) => false);
   }
 
-  Widget _statTile(
-      String label, String value, IconData icon, Color color) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [
-              BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 8)
-            ]),
-        child: Column(children: [
-          Icon(icon, color: color, size: 24),
-          const SizedBox(height: 6),
-          Text(value,
-              style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w900,
-                  color: color)),
-          Text(label,
-              style: const TextStyle(
-                  fontSize: 10,
-                  color: AppColors.muted,
-                  fontWeight: FontWeight.w600)),
-        ]),
-      ),
-    );
-  }
+  void _openReviews() => Navigator.push(context, MaterialPageRoute(
+      builder: (_) => RatingsScreen(providerId: _pid, rating: toDouble(_profile?['rating']))));
 
-  // ── BOOKINGS ──────────────────────────────────────────────────
-  Widget _buildBookings() {
-    final active = _bookings
-        .where((b) =>
-            ['accepted', 'active', 'otp_sent', 'payment_pending'].contains(b['status']))
-        .toList();
-    final completed = _bookings
-        .where((b) => b['status'] == 'completed')
-        .toList();
-    final cancelled = _bookings
-        .where((b) => b['status'] == 'cancelled')
-        .toList();
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-            title: const Text('My Bookings'),
-            backgroundColor: AppColors.teal,
-            bottom: const TabBar(
-                indicatorColor: AppColors.brand,
-                labelColor: Colors.white,
-                unselectedLabelColor: Colors.white70,
-                tabs: [
-                  Tab(text: 'Active'),
-                  Tab(text: 'Completed'),
-                  Tab(text: 'Cancelled')
-                ])),
-        body: TabBarView(children: [
-          _bookingList(active, 'No active bookings'),
-          _bookingList(completed, 'No completed bookings yet'),
-          _bookingList(cancelled, 'No cancelled bookings'),
-        ]),
-      ),
-    );
-  }
-
-  Widget _bookingList(
-      List<Map<String, dynamic>> list, String emptyMsg) {
-    if (list.isEmpty) {
-      return Center(
-          child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-            const Icon(Icons.receipt_long_rounded,
-                size: 56, color: AppColors.muted),
-            const SizedBox(height: 12),
-            Text(emptyMsg,
-                style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.muted)),
-          ]));
+  void _selectTab(int i) {
+    if (i == _tab) return;
+    HapticFeedback.selectionClick();
+    final prev = _tab;
+    setState(() {
+      _tab = i;
+      _visited.add(i);
+      if (i == 1) _earningsTick++;
+      if (i == 2) _servicesTick++;
+    });
+    if (prev == 2 && !_demo) {
+      // prices may have changed → refresh the "saved price" sources
+      _loadPriceSources();
+      _loadProfile();
     }
-    return RefreshIndicator(
-      onRefresh: () async => _listenBookings(),
-      color: AppColors.teal,
-      child: ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: list.length,
-          itemBuilder: (_, i) => _bookingCard(list[i])),
-    );
+    if (i == 0 && !_demo) _loadActive();
   }
 
-  Widget _bookingCard(Map<String, dynamic> b,
-      {bool compact = false}) {
-    final status = b['status'] ?? '';
-    final statusColor = _statusColor(status);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 8)
-          ],
-          border:
-              Border.all(color: statusColor.withOpacity(0.15))),
-      child: Column(children: [
-        Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-                color: statusColor.withOpacity(0.05),
-                borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(14))),
-            child: Row(children: [
-              Expanded(
-                  child: Text(b['service'] ?? 'Service',
-                      style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.ink))),
-              Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                      color: statusColor.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(20)),
-                  child: Text(_statusLabel(status),
-                      style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          color: statusColor))),
-            ])),
-        Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Row(children: [
-                const Icon(Icons.person_rounded,
-                    size: 13, color: AppColors.muted),
-                const SizedBox(width: 6),
-                Text(
-                    status == 'completed'
-                        ? '${b['customer'] ?? ''}'
-                        : '${b['customer'] ?? ''} - ${b['phone'] ?? ''}',
-                    style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.ink2,
-                        fontWeight: FontWeight.w600)),
-              ]),
-              const SizedBox(height: 4),
-              Row(children: [
-                const Icon(Icons.calendar_today_rounded,
-                    size: 13, color: AppColors.muted),
-                const SizedBox(width: 6),
-                Text(
-                    '${b['date'] ?? ''} - ${b['time'] ?? ''} - Rs.${b['price'] ?? 0}',
-                    style: const TextStyle(
-                        fontSize: 12, color: AppColors.muted)),
-              ]),
-              if (!compact) ...[
-                const SizedBox(height: 4),
-                Row(children: [
-                  const Icon(Icons.location_on_rounded,
-                      size: 13, color: AppColors.muted),
-                  const SizedBox(width: 6),
-                  Expanded(
-                      child: Text(b['address'] ?? '',
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.muted))),
-                ]),
-              ],
-              if (['accepted', 'active', 'otp_sent', 'payment_pending']
-                  .contains(status)) ...[
-                const SizedBox(height: 10),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => ActiveBookingScreen(
-                                bookingKey: b['id'] ?? '',
-                                booking: b,
-                                providerId: _pid))),
-                    style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.teal,
-                        minimumSize:
-                            const Size(double.infinity, 40),
-                        shape: RoundedRectangleBorder(
-                            borderRadius:
-                                BorderRadius.circular(10))),
-                    child: const Text('View and Manage',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13)),
-                  ),
-                ),
-              ],
-            ])),
-      ]),
-    );
+  int _topUpTick = 0;
+  void _goTopUp() {
+    setState(() => _topUpTick++);
+    _selectTab(1);
   }
 
-  // ── PROFILE ───────────────────────────────────────────────────
-  Widget _buildProfile() {
-    final photo = _providerData?['photo'] as String?;
-    final name = _providerData?['name'] ?? 'Provider';
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      body: CustomScrollView(slivers: [
-        SliverAppBar(
-          expandedHeight: 200,
-          pinned: true,
-          backgroundColor: AppColors.teal,
-          automaticallyImplyLeading: false,
-          actions: [
-            IconButton(
-                icon: const Icon(Icons.logout, color: Colors.white),
-                onPressed: _logout)
-          ],
-          flexibleSpace: FlexibleSpaceBar(
-            background: Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                    colors: [Color(0xFF0A2E36), AppColors.teal],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight)),
-              child: SafeArea(
-                child: Column(
-                    mainAxisAlignment:
-                        MainAxisAlignment.center,
-                    children: [
-                  CircleAvatar(
-                    radius: 44,
-                    backgroundColor: AppColors.brand,
-                    backgroundImage:
-                        (photo?.isNotEmpty == true)
-                            ? NetworkImage(photo!)
-                            : null,
-                    child:
-                        (photo == null || photo.isEmpty)
-                            ? Text(name[0].toUpperCase(),
-                                style: const TextStyle(
-                                    fontSize: 32,
-                                    color: Colors.white,
-                                    fontWeight:
-                                        FontWeight.w800))
-                            : null,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(name,
-                      style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white)),
-                  Text(_providerData?['email'] ?? '',
-                      style: const TextStyle(
-                          fontSize: 12, color: Colors.white70)),
-                ]),
-              ),
-            ),
-          ),
-        ),
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(children: [
-              // Status + Edit
-              Row(
-                  mainAxisAlignment:
-                      MainAxisAlignment.center,
-                  children: [
-                Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 5),
-                    decoration: BoxDecoration(
-                        color: (_providerData?['status'] ==
-                                'approved')
-                            ? AppColors.greenSoft
-                            : AppColors.yellow.withOpacity(0.1),
-                        borderRadius:
-                            BorderRadius.circular(20),
-                        border: Border.all(
-                            color: (_providerData?['status'] ==
-                                    'approved')
-                                ? AppColors.green
-                                : AppColors.yellow)),
-                    child: Text(
-                        (_providerData?['status'] ==
-                                'approved')
-                            ? 'Approved Provider'
-                            : 'Pending Approval',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color:
-                                (_providerData?['status'] ==
-                                        'approved')
-                                    ? AppColors.green
-                                    : AppColors.yellow))),
-                const SizedBox(width: 10),
-                OutlinedButton.icon(
-                    onPressed: () async {
-                      final result = await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => ProfileEditScreen(
-                                  providerId: _pid,
-                                  providerData:
-                                      _providerData)));
-                      if (result == true) _loadProfile();
+  // ── UI ─────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final body = _loading && _profile == null
+        ? const Center(child: CircularProgressIndicator())
+        : IndexedStack(index: _tab, children: [
+            _jobsTab(),
+            _visited.contains(1)
+                ? EarningsScreen(
+                    providerId: _pid,
+                    embedded: true,
+                    refreshTick: _earningsTick,
+                    topUpTick: _topUpTick,
+                    profile: _profile,
+                    demo: widget.debugEarnings)
+                : const SizedBox.shrink(),
+            _visited.contains(2)
+                ? ServicesScreen(
+                    providerId: _pid,
+                    embedded: true,
+                    refreshTick: _servicesTick,
+                    demo: widget.debugServices)
+                : const SizedBox.shrink(),
+            _visited.contains(3)
+                ? ProfileTab(
+                    providerId: _pid,
+                    profile: _profile ?? const {},
+                    demo: _demo,
+                    onChanged: (p) {
+                      setState(() => _profile = p);
+                      if (!_demo) _loadProfile();
                     },
-                    icon: const Icon(Icons.edit_rounded,
-                        size: 14, color: AppColors.teal),
-                    label: const Text('Edit',
-                        style: TextStyle(
-                            color: AppColors.teal,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700)),
-                    style: OutlinedButton.styleFrom(
-                        side: const BorderSide(
-                            color: AppColors.teal),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        shape: RoundedRectangleBorder(
-                            borderRadius:
-                                BorderRadius.circular(20)))),
-              ]),
+                    onOpenReviews: _openReviews,
+                    onLogout: _logout,
+                  )
+                : const SizedBox.shrink(),
+          ]);
 
-              const SizedBox(height: 16),
+    return PopScope(
+      canPop: _tab == 0 && _incoming == null,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        if (_incoming != null) {
+          _closeIncoming(dismiss: true);
+        } else if (_tab != 0) {
+          _selectTab(0);
+        }
+      },
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: AppTheme.overlay,
+        child: Stack(children: [
+          Scaffold(
+            body: body,
+            bottomNavigationBar: NavigationBar(
+              selectedIndex: _tab,
+              onDestinationSelected: _selectTab,
+              destinations: [
+                NavigationDestination(
+                  icon: Badge(
+                    isLabelVisible: _active != null || (_available && _openJobs.isNotEmpty),
+                    smallSize: 8,
+                    backgroundColor: AppColors.brand,
+                    child: const Icon(Icons.work_outline_rounded),
+                  ),
+                  selectedIcon: const Icon(Icons.work_rounded),
+                  label: 'Jobs',
+                ),
+                const NavigationDestination(
+                  icon: Icon(Icons.account_balance_wallet_outlined),
+                  selectedIcon: Icon(Icons.account_balance_wallet_rounded),
+                  label: 'Earnings',
+                ),
+                const NavigationDestination(
+                  icon: Icon(Icons.home_repair_service_outlined),
+                  selectedIcon: Icon(Icons.home_repair_service_rounded),
+                  label: 'Services',
+                ),
+                const NavigationDestination(
+                  icon: Icon(Icons.person_outline_rounded),
+                  selectedIcon: Icon(Icons.person_rounded),
+                  label: 'Profile',
+                ),
+              ],
+            ),
+          ),
+          if (_incoming != null) _incomingOverlay(),
+        ]),
+      ),
+    );
+  }
 
-              // Stats
-              Row(children: [
-                _statTile(
-                    'Jobs Done',
-                    '${_providerData?['totalBookings'] ?? 0}',
-                    Icons.work_rounded,
-                    AppColors.teal),
-                const SizedBox(width: 10),
-                _statTile(
-                    'Rating',
-                    '${_providerData?['rating'] ?? '5.0'}',
-                    Icons.star_rounded,
-                    AppColors.yellow),
-                const SizedBox(width: 10),
-                _statTile(
-                    'Earned',
-                    'Rs.${_providerData?['totalEarned'] ?? 0}',
-                    Icons.currency_rupee_rounded,
-                    AppColors.green),
-              ]),
+  Widget _incomingOverlay() {
+    final job = _incoming!;
+    final busy = _acceptingIds.contains(str(job['id']));
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black.withOpacity(0.55),
+        child: Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.92),
+              child: NewJobCard(
+                job: job,
+                secondsLeft: _countdown,
+                totalSeconds: _alertSeconds,
+                savedPrice: _incomingSaved,
+                priceController: _priceCtrl,
+                busy: busy,
+                onAccept: _acceptIncoming,
+                onSkip: () => _closeIncoming(dismiss: true),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
-              const SizedBox(height: 16),
+  // ── JOBS TAB ───────────────────────────────────────────────
+  Widget _jobsTab() {
+    final t = Theme.of(context).textTheme;
+    final name = str(_profile?['name'], 'Provider');
+    final photo = photoUrl(_profile?['photo']);
+    final city = str(_profile?['city']);
+    final due = toInt(_balance?['commission_due']);
+    final rating = toDouble(_profile?['rating']);
 
-              // Info cards
-              _infoCard(Icons.phone_rounded, 'Phone',
-                  _providerData?['phone'] ?? 'Not set'),
-              const SizedBox(height: 10),
-              _infoCard(Icons.location_city_rounded, 'City',
-                  _providerData?['city'] ?? 'Not set'),
-              const SizedBox(height: 10),
-              _infoCard(Icons.work_history_rounded, 'Experience',
-                  _providerData?['experience'] ?? 'Not set'),
-              const SizedBox(height: 10),
-              _infoCard(Icons.badge_rounded, 'Provider ID', _pid),
-
-              const SizedBox(height: 16),
-
-              // Menu items
-              _menuTile(
-                  'Earnings and Withdrawals',
-                  Icons.account_balance_wallet_rounded,
-                  AppColors.green,
-                  () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) =>
-                              EarningsScreen(providerId: _pid)))),
-              const SizedBox(height: 10),
-              _menuTile(
-                  'My Ratings and Reviews',
-                  Icons.star_rounded,
-                  AppColors.yellow,
-                  () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) =>
-                              RatingsScreen(providerId: _pid)))),
-              const SizedBox(height: 10),
-              _menuTile('My Services', Icons.build_rounded,
-                  AppColors.teal, () async {
-                final result = await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) =>
-                            ServicesScreen(providerId: _pid)));
-                if (result == true) _loadProfile();
-              }),
-              const SizedBox(height: 10),
-              _menuTile(
-                  'Help and Support',
-                  Icons.headset_mic_rounded,
-                  AppColors.muted,
-                  () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) =>
-                              const SupportScreen()))),
-
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _logout,
-                  icon: const Icon(Icons.logout,
-                      color: AppColors.red, size: 18),
-                  label: const Text('Sign Out',
-                      style: TextStyle(
-                          color: AppColors.red,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 15)),
-                  style: OutlinedButton.styleFrom(
-                      minimumSize:
-                          const Size(double.infinity, 50),
-                      side:
-                          const BorderSide(color: AppColors.red),
-                      shape: RoundedRectangleBorder(
-                          borderRadius:
-                              BorderRadius.circular(14))),
+    return Scaffold(
+      appBar: AppBar(
+        titleSpacing: 16,
+        title: Row(children: [
+          Avatar(name: name, photo: photo, radius: 20, bg: Colors.white24, fg: Colors.white),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: t.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+              Text([_pid, if (city.isNotEmpty) city].join(' · '),
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: t.bodySmall?.copyWith(color: Colors.white70)),
+            ]),
+          ),
+        ]),
+        actions: [
+          IconButton(
+            tooltip: 'WhatsApp support',
+            icon: const Icon(Icons.support_agent_rounded),
+            onPressed: () => openSupport(context, providerId: _pid, extra: 'Provider ID $_pid.'),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await _refreshAll();
+          await _fetchOpenJobs();
+        },
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          children: [
+            _availabilityCard(),
+            if (!_approved) ...[
+              const SizedBox(height: 12),
+              Notice('Your account is ${str(_profile?['status'], 'pending')}. You can go online once approved.',
+                  tone: Tone.warning),
+            ],
+            if (due > 0) ...[
+              const SizedBox(height: 12),
+              Notice('Commission due on cash jobs: ₹$due. If dues grow too large you cannot accept new jobs.',
+                  tone: Tone.error,
+                  icon: Icons.warning_amber_rounded,
+                  action: Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _goTopUp,
+                      icon: const Icon(Icons.add_card_rounded, size: 18),
+                      label: const Text('Add money to wallet'),
+                    ),
+                  )),
+            ],
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(child: StatTile(
+                  value: '${toInt(_profile?['total_bookings'])}',
+                  label: 'Jobs done', icon: Icons.task_alt_rounded)),
+              const SizedBox(width: 10),
+              Expanded(child: StatTile(
+                  value: money(_profile?['total_earned']),
+                  label: 'Earned', icon: Icons.currency_rupee_rounded, color: AppColors.green)),
+              const SizedBox(width: 10),
+              Expanded(child: StatTile(
+                  value: rating > 0 ? rating.toStringAsFixed(1) : '—',
+                  label: 'Rating', icon: Icons.star_rounded, color: const Color(0xFFF5A623),
+                  onTap: _openReviews)),
+            ]),
+            const SectionTitle('Active job'),
+            if (_active != null)
+              ActiveJobCard(
+                booking: _active!,
+                quoteDeadline: _quoteDeadline,
+                onOpen: () => _openBooking(str(_active!['id']), initial: _active),
+                onAddMoney: _goTopUp,
+              )
+            else
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
+                  child: Row(children: [
+                    const IconTile(Icons.work_history_outlined, color: AppColors.muted),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Text('No active job — stay online for alerts',
+                          style: t.bodyMedium?.copyWith(color: AppColors.muted)),
+                    ),
+                  ]),
                 ),
               ),
-              const SizedBox(height: 32),
+            if (_active == null && _approved) ..._openJobsSection(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _openJobsSection() {
+    if (!_available) return const [];
+    return [
+      SectionTitle('New jobs near you (${_openJobs.length})'),
+      if (_openError.isNotEmpty) Notice(_openError, tone: Tone.error, margin: const EdgeInsets.only(bottom: 10)),
+      if (_openJobs.isEmpty)
+        const Card(
+          child: EmptyState(
+            icon: Icons.notifications_active_outlined,
+            title: 'Waiting for new jobs',
+            subtitle: 'Keep the app open — you will hear an alert as soon as a customer near you books.',
+          ),
+        )
+      else
+        ..._openJobs.map(_openJobTile),
+    ];
+  }
+
+  Widget _openJobTile(Map<String, dynamic> j) {
+    final t = Theme.of(context).textTheme;
+    final place = jobPlace(j);
+    final slot = slotWhen(j['slot_date'], j['slot_time']);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => _showIncoming(j, alert: false),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+            child: Row(children: [
+              Container(
+                width: 44, height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: AppColors.tealSoft, borderRadius: BorderRadius.circular(12)),
+                child: Text(jobIcon(j), style: const TextStyle(fontSize: 22)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(str(j['svc_name'], 'Service'), style: t.titleSmall),
+                  if (slot.isNotEmpty)
+                    Text(slot, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.bodySmall),
+                  if (place.isNotEmpty)
+                    Text(place, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.bodySmall),
+                ]),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonal(
+                onPressed: () => _showIncoming(j, alert: false),
+                style: FilledButton.styleFrom(minimumSize: const Size(72, 40), padding: const EdgeInsets.symmetric(horizontal: 14)),
+                child: const Text('Quote'),
+              ),
             ]),
           ),
         ),
-      ]),
+      ),
     );
   }
 
-  Widget _infoCard(IconData icon, String label, String value) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.04),
-                blurRadius: 6)
-          ]),
-      child: Row(children: [
-        Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-                color: AppColors.tealSoft,
-                borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, color: AppColors.teal, size: 18)),
-        const SizedBox(width: 12),
-        Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-          Text(label,
-              style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.muted,
-                  fontWeight: FontWeight.w600)),
-          Text(value,
-              style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.ink)),
-        ]),
-      ]),
-    );
-  }
-
-  Widget _menuTile(
-      String label, IconData icon, Color color, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [
-              BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 8)
-            ]),
-        child: Row(children: [
-          Container(
-              width: 40,
-              height: 40,
+  Widget _availabilityCard() {
+    final on = _available;
+    final t = Theme.of(context).textTheme;
+    return Card(
+      color: on ? AppColors.greenSoft : Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: on ? AppColors.green.withOpacity(0.45) : AppColors.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _approved && !_toggling ? () => _toggleAvailability(!on) : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+          child: Row(children: [
+            Container(
+              width: 48, height: 48,
               decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10)),
-              child: Icon(icon, color: color, size: 20)),
-          const SizedBox(width: 14),
-          Expanded(
-              child: Text(label,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.ink,
-                      fontSize: 14))),
-          const Icon(Icons.chevron_right, color: AppColors.muted),
-        ]),
-      ),
-    );
-  }
-
-  Color _statusColor(String s) {
-    switch (s) {
-      case 'accepted':
-        return AppColors.teal;
-      case 'active':
-        return AppColors.brand;
-      case 'completed':
-        return AppColors.green;
-      case 'cancelled':
-        return AppColors.red;
-      default:
-        return AppColors.muted;
-    }
-  }
-
-  String _statusLabel(String s) {
-    switch (s) {
-      case 'accepted': return 'Accepted';
-      case 'active': return 'In Progress';
-      case 'otp_sent': return 'OTP Sent';
-      case 'payment_pending': return '⏳ Awaiting Payment';
-      case 'completed': return 'Completed';
-      case 'cancelled': return 'Cancelled';
-      default: return s;
-    }
-  }
-
-
-  // ── Send push notification via Hostinger API ────────────────
-  Future<void> _sendPushNotification({
-    required String fcmToken,
-    required String event,
-    required Map<String, String> data,
-  }) async {
-    if (fcmToken.isEmpty) return;
-    try {
-      await http.post(
-        Uri.parse('https://notifybooking-mlchyp6tra-as.a.run.app'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'event': event,
-          'fcmToken': fcmToken,
-          'data': data,
-        }),
-      );
-    } catch (_) {}
-  }
-
-  String _mapToJson(Map<String, String> map) {
-    final entries = map.entries.map((e) => '"${e.key}":"${e.value}"').join(',');
-    return '{$entries}';
-  }
-
-
-  void _secretTap() {
-    final now = DateTime.now();
-    if (_lastTestTap != null && now.difference(_lastTestTap!).inSeconds > 2) {
-      _testTapCount = 0;
-    }
-    _lastTestTap = now;
-    _testTapCount++;
-    if (_testTapCount >= 5) {
-      _testTapCount = 0;
-      Navigator.push(context, MaterialPageRoute(
-        builder: (_) => TestConsoleScreen(providerId: _pid)));
-    }
-  }
-  // ── INCOMING ALERT ────────────────────────────────────────────
-  Widget _buildIncomingAlert() {
-    final bk = _incomingBooking!;
-    return Container(
-      color: Colors.black.withOpacity(0.75),
-      child: Center(
-        child: AnimatedBuilder(
-          animation: _pulseCtrl,
-          builder: (context, child) {
-            return Transform.scale(
-              scale: _pulseAnim.value,
-              child: child,
-            );
-          },
-          child: Container(
-            margin: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withOpacity(0.4),
-                    blurRadius: 40)
-              ],
+                color: on ? AppColors.green : const Color(0xFFE3EAEC),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.power_settings_new_rounded,
+                  color: on ? Colors.white : AppColors.muted, size: 26),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Header
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Color(0xFF0A2E36), AppColors.teal],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.vertical(
-                        top: Radius.circular(24)),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(
-                            Icons.notifications_active_rounded,
-                            color: Colors.white,
-                            size: 24),
-                      ),
-                      const SizedBox(width: 12),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.start,
-                          children: [
-                            Text('New Booking Alert!',
-                                style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white)),
-                            Text(
-                                'Accept quickly before it expires',
-                                style: TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.white70)),
-                          ],
-                        ),
-                      ),
-                      Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: _countdownSeconds <= 10
-                              ? Colors.red.withOpacity(0.8)
-                              : AppColors.brand,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                              color: Colors.white, width: 2),
-                        ),
-                        child: Center(
-                          child: Text(
-                            '$_countdownSeconds',
-                            style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                                color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                // Body
-                Flexible(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: AppColors.bg,
-                            borderRadius:
-                                BorderRadius.circular(12),
-                          ),
-                          child: Column(
-                            children: [
-                              _alertRow2(
-                                  Icons
-                                      .home_repair_service_rounded,
-                                  'Service',
-                                  bk['service'] ?? '',
-                                  AppColors.teal),
-                              const Divider(
-                                  height: 16,
-                                  color: AppColors.line),
-                              _alertRow2(
-                                  Icons.currency_rupee_rounded,
-                                  'Price',
-                                  'Rs.${bk['price'] ?? bk['priceVal'] ?? 0}',
-                                  AppColors.green),
-                              const Divider(
-                                  height: 16,
-                                  color: AppColors.line),
-                              _alertRow2(
-                                  Icons.calendar_today_rounded,
-                                  'Date',
-                                  '${bk['date'] ?? ''} at ${bk['time'] ?? ''}',
-                                  AppColors.brand),
-                              const Divider(
-                                  height: 16,
-                                  color: AppColors.line),
-                              _alertRow2(
-                                  Icons.location_on_rounded,
-                                  'Address',
-                                  bk['address'] ?? '',
-                                  AppColors.red),
-                              const Divider(
-                                  height: 16,
-                                  color: AppColors.line),
-                              _alertRow2(
-                                  Icons.person_rounded,
-                                  'Customer',
-                                  '${bk['customer'] ?? ''} - ${bk['phone'] ?? ''}',
-                                  AppColors.muted),
-                            ],
-                          ),
-                        ),
-                        if ((bk['summary'] as List?)
-                                ?.isNotEmpty ==
-                            true) ...[
-                          const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children:
-                                (bk['summary'] as List).map((s) {
-                              final parts =
-                                  s.toString().split(' > ');
-                              return Container(
-                                padding:
-                                    const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 5),
-                                decoration: BoxDecoration(
-                                  color: AppColors.tealSoft,
-                                  borderRadius:
-                                      BorderRadius.circular(20),
-                                  border: Border.all(
-                                      color: AppColors.teal
-                                          .withOpacity(0.3)),
-                                ),
-                                child: Text(
-                                  parts.length > 1
-                                      ? parts
-                                          .sublist(1)
-                                          .join(' > ')
-                                      : s.toString(),
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppColors.teal),
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ],
-                        const SizedBox(height: 16),
-                        // THREE BUTTONS
-                        Row(
-                          children: [
-                            // Decline
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: _declineBooking,
-                                style: OutlinedButton.styleFrom(
-                                  minimumSize: const Size(
-                                      double.infinity, 48),
-                                  side: const BorderSide(
-                                      color: AppColors.red),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius:
-                                          BorderRadius.circular(
-                                              12)),
-                                ),
-                                child: const Column(
-                                  mainAxisSize:
-                                      MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.close,
-                                        color: AppColors.red,
-                                        size: 18),
-                                    Text('Decline',
-                                        style: TextStyle(
-                                            color: AppColors.red,
-                                            fontWeight:
-                                                FontWeight.w700,
-                                            fontSize: 12)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            // Standby
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: _standbyBooking,
-                                style: OutlinedButton.styleFrom(
-                                  minimumSize: const Size(
-                                      double.infinity, 48),
-                                  side: const BorderSide(
-                                      color: AppColors.yellow),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius:
-                                          BorderRadius.circular(
-                                              12)),
-                                ),
-                                child: const Column(
-                                  mainAxisSize:
-                                      MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.pause_circle_rounded,
-                                        color: AppColors.yellow,
-                                        size: 18),
-                                    Text('Standby',
-                                        style: TextStyle(
-                                            color:
-                                                AppColors.yellow,
-                                            fontWeight:
-                                                FontWeight.w700,
-                                            fontSize: 12)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            // Accept
-                            Expanded(
-                              child: ElevatedButton(
-                                onPressed: _acceptBooking,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppColors.green,
-                                  minimumSize: const Size(
-                                      double.infinity, 48),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius:
-                                          BorderRadius.circular(
-                                              12)),
-                                ),
-                                child: const Column(
-                                  mainAxisSize:
-                                      MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.check_rounded,
-                                        color: Colors.white,
-                                        size: 18),
-                                    Text('Accept',
-                                        style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight:
-                                                FontWeight.w800,
-                                            fontSize: 12)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(on ? 'You are Online ✓' : 'You are Offline',
+                    style: t.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700, color: on ? const Color(0xFF0F6D33) : AppColors.ink)),
+                const SizedBox(height: 2),
+                Text(on ? 'Receiving job alerts near you' : 'Go online to receive jobs',
+                    style: t.bodyMedium?.copyWith(color: AppColors.muted)),
+              ]),
             ),
-          ),
+            _toggling
+                ? const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
+                  )
+                : Switch(
+                    value: on,
+                    onChanged: _approved ? _toggleAvailability : null,
+                  ),
+          ]),
         ),
       ),
-    );
-  }
-
-  Widget _alertRow2(
-      IconData icon, String label, String value, Color color) {
-    return Row(
-      children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(icon, color: color, size: 16),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label,
-                  style: const TextStyle(
-                      fontSize: 10,
-                      color: AppColors.muted,
-                      fontWeight: FontWeight.w600)),
-              Text(value,
-                  style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.ink)),
-            ],
-          ),
-        ),
-      ],
     );
   }
 }
