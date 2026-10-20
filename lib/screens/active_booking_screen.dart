@@ -472,6 +472,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
 
       case 'confirmed':
         return _section([
+          _cashRuleNotice(),
           _customerBlock(),
           const SizedBox(height: 16),
           const Text('Enter START OTP from customer',
@@ -496,6 +497,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
                 style: const TextStyle(fontSize: 13, color: AppColors.ink2)),
           ],
           const SizedBox(height: 12),
+          _cashRuleNotice(),
           _customerBlock(compact: true),
           const SizedBox(height: 16),
           if (!requested)
@@ -531,6 +533,24 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     }
   }
 
+  // Told before the work starts: cash is only possible when the wallet can
+  // cover the platform fee (it is deducted from the wallet on cash jobs).
+  Widget _cashRuleNotice() {
+    final fee = toInt(_bk['platform_fee']);
+    if (toInt(_bk['cash_allowed'], 1) == 1 || fee <= 0) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        _banner('💳 Online payment only for this job — your wallet balance is less than '
+            'the platform fee ₹$fee. Tell the customer to pay online in the app '
+            '(do not collect cash), or add at least ₹$fee to your wallet to accept cash.',
+            AppColors.red),
+        _outlined('Add money to wallet', Icons.account_balance_wallet_rounded,
+            AppColors.teal, _addMoney),
+      ]),
+    );
+  }
+
   Widget _paymentPendingBody() {
     final amt = toInt(_bk['amount']);
     return _section([
@@ -549,7 +569,7 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
         _waiting('Or wait — if the customer pays online in the app, this screen updates automatically.'),
       ] else ...[
         _banner('💳 Online payment only — your wallet balance is less than the platform fee '
-            '₹${toInt(_bk['commission_amt'])} for this job, so cash can\'t be accepted. '
+            '₹${toInt(_bk['commission_amt']) > 0 ? toInt(_bk['commission_amt']) : toInt(_bk['platform_fee'])} for this job, so cash can\'t be accepted. '
             'Ask the customer to pay online in their app, or add money to your wallet.',
             AppColors.red),
         _primary('Add money to wallet', Icons.account_balance_wallet_rounded,
