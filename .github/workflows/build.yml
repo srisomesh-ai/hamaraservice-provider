@@ -87,3 +87,39 @@ jobs:
       - name: Remove signing material
         if: always()
         run: rm -f android/app/upload-keystore.jks android/key.properties
+
+  # Launches the release APK on an emulator and prints the crash log, so a
+  # startup crash shows up in the run logs.
+  smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hamaraservice-provider-apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Write launch script
+        run: |
+          cat > launch.sh << 'LAUNCHEOF'
+          set -x
+          adb install -r app-release.apk
+          adb logcat -c
+          adb shell monkey -p com.hamaraservice.provider -c android.intent.category.LAUNCHER 1
+          sleep 30
+          adb shell pidof com.hamaraservice.provider && echo "APP_ALIVE" || echo "APP_DEAD"
+          adb shell dumpsys activity activities | grep -i "mResumedActivity\|topResumedActivity" || true
+          echo "===== CRASH LOG ====="
+          adb logcat -d -b crash || true
+          echo "===== APP LOG ====="
+          adb logcat -d | grep -iE "AndroidRuntime|FATAL|flutter|hamaraservice|DEBUG   :|libc    :|Firebase" | tail -300 || true
+          LAUNCHEOF
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash launch.sh
