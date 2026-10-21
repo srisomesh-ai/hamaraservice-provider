@@ -7,6 +7,7 @@ import 'package:geocoding/geocoding.dart';
 import '../utils/theme.dart';
 import '../services/hs_catalog.dart';
 import '../utils/support_contact.dart';
+import 'email_otp_screen.dart';
 import 'login_screen.dart';
 import 'map_picker_screen.dart';
 import 'pending_approval_screen.dart';
@@ -267,7 +268,50 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
   }
 
+  // otp_token from EmailOtpScreen — reused while valid, so a retry after an
+  // error doesn't need a new code.
+  String _otpToken = '';
+  String _otpEmail = '';
+  DateTime _otpUntil = DateTime(2000);
+
+  /// Verifies the e-mail with a 6-digit code (otp.php). Returns the
+  /// otp_token, or null (error shown / user went back to change the email).
+  Future<String?> _verifyEmail(String email) async {
+    if (_otpToken.isNotEmpty && _otpEmail == email && DateTime.now().isBefore(_otpUntil)) {
+      return _otpToken;
+    }
+    int wait;
+    try {
+      wait = await ProviderApiService.sendEmailOtp(email);
+    } on ApiException catch (e) {
+      if (mounted) setState(() { _submitting = false; _error = e.message; });
+      return null;
+    }
+    if (!mounted) return null;
+    setState(() => _submitting = false);
+    final token = await Navigator.push<String>(context,
+        MaterialPageRoute(builder: (_) => EmailOtpScreen(email: email, resendAfter: wait)));
+    if (!mounted) return null;
+    if (token == null || token.isEmpty) {
+      // "Change email" → back to step 1 with everything still filled in
+      if (_currentStep != 0) {
+        setState(() { _currentStep = 0; _error = 'Update your email, then continue'; });
+        _pageCtrl.jumpToPage(0);
+      }
+      return null;
+    }
+    _otpToken = token;
+    _otpEmail = email;
+    _otpUntil = DateTime.now().add(const Duration(minutes: 28));
+    return token;
+  }
+
   Future<void> _submitRegistration() async {
+    setState(() { _submitting = true; _error = ''; });
+
+    final email = _emailCtrl.text.trim().toLowerCase();
+    final otpToken = await _verifyEmail(email);
+    if (otpToken == null || !mounted) return;
     setState(() { _submitting = true; _error = ''; });
 
     final services = _selectedServices.map((svcId) {
@@ -303,9 +347,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (_pinned) 'base_lng': _lng,
       'areas':      _areas,
       'services':   services,
+      'otp_token':  otpToken,
     });
     if (!mounted) return;
     if (!res.ok) {
+      if (res.error.contains('verif')) _otpToken = ''; // expired → verify again
       setState(() { _submitting = false; _error = res.error; });
       return;
     }

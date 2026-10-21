@@ -215,6 +215,32 @@ class ProviderApiService {
   static Future<ApiResult> register(Map<String, dynamic> data) =>
       post('providers.php', data, params: {'action': 'register'});
 
+  // ── EMAIL VERIFICATION CODE (otp.php) ────────────────────
+
+  /// E-mails a 6-digit code (otp.php?action=send). Returns the seconds until
+  /// a new code may be requested. Throws [ApiException] with the server
+  /// message (already registered, wait N seconds, could not send …).
+  static Future<int> sendEmailOtp(String email,
+      {String purpose = 'provider_register'}) async {
+    final res = await post('otp.php', {'email': email, 'purpose': purpose},
+        params: {'action': 'send'});
+    if (!res.ok) throw ApiException(res.error, res.status);
+    final wait = res.map?['resend_in'];
+    return wait is int ? wait : int.tryParse('$wait') ?? 60;
+  }
+
+  /// Checks the code (otp.php?action=verify) → otp_token (valid 30 min),
+  /// sent as `otp_token` with [register].
+  static Future<String> verifyEmailOtp(String email, String code,
+      {String purpose = 'provider_register'}) async {
+    final res = await post('otp.php', {'email': email, 'purpose': purpose, 'code': code},
+        params: {'action': 'verify'});
+    if (!res.ok) throw ApiException(res.error, res.status);
+    final token = '${res.map?['otp_token'] ?? ''}';
+    if (token.isEmpty) throw ApiException('Verification failed. Please try again.');
+    return token;
+  }
+
   /// Logout: go offline (best effort), drop the JWT and cached data.
   static Future<void> logout() async {
     try {
