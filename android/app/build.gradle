@@ -39,7 +39,7 @@ android {
     defaultConfig {
         applicationId "com.hamaraservice.provider"
         minSdkVersion 24
-        targetSdkVersion 34
+        targetSdkVersion 36
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
