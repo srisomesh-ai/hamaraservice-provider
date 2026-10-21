@@ -12,8 +12,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hamaraservice_provider/screens/active_booking_screen.dart';
 import 'package:hamaraservice_provider/screens/dashboard_screen.dart';
 import 'package:hamaraservice_provider/screens/earnings_screen.dart';
+import 'package:hamaraservice_provider/screens/email_otp_screen.dart';
 import 'package:hamaraservice_provider/screens/login_screen.dart';
 import 'package:hamaraservice_provider/screens/services_screen.dart';
+import 'package:hamaraservice_provider/services/provider_api_service.dart';
 import 'package:hamaraservice_provider/utils/theme.dart';
 
 const _emojiFont = '/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf';
@@ -285,4 +287,59 @@ void main() {
         'active_job_payment_pending');
   }, skip: skip);
   testWidgets('login', (t) => _shot(t, const LoginScreen(), 'login'), skip: skip);
+
+  // ── Registration: email verification code ──
+  EmailOtpScreen otp({Future<String> Function(String)? verify, Future<int> Function()? resend}) =>
+      EmailOtpScreen(
+        email: 'ravi.plumber@example.com',
+        verify: verify ?? (c) async => 'tok-$c',
+        resend: resend ?? () async => 60,
+      );
+
+  testWidgets('register — email otp', (t) async {
+    await _shot(t, otp(), 'register_email_otp', before: () async {
+      await t.enterText(find.byKey(const ValueKey('otp-field')), '482');
+    });
+    expect(find.text('Verify & Submit Application'), findsOneWidget);
+    expect(find.textContaining('Resend in'), findsOneWidget);
+  }, skip: skip);
+
+  testWidgets('register — email otp wrong code', (t) async {
+    await _shot(
+        t,
+        otp(verify: (c) async => throw ApiException('Incorrect code. 4 attempts left.', 400)),
+        'register_email_otp_error', before: () async {
+      await t.enterText(find.byKey(const ValueKey('otp-field')), '123456'); // auto-submits
+    });
+    expect(find.text('Incorrect code. 4 attempts left.'), findsOneWidget);
+  }, skip: skip);
+
+  testWidgets('email otp: countdown, resend, verify pops token', (t) async {
+    String? popped;
+    var sends = 0;
+    await t.pumpWidget(MaterialApp(
+      theme: _theme,
+      home: Builder(
+        builder: (ctx) => Scaffold(
+          body: TextButton(
+            onPressed: () async {
+              popped = await Navigator.push<String>(ctx,
+                  MaterialPageRoute(builder: (_) => otp(resend: () async { sends++; return 60; })));
+            },
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    ));
+    await t.tap(find.text('open'));
+    await t.pumpAndSettle();
+    expect(find.text('Resend in 1:00'), findsOneWidget);
+    await t.pump(const Duration(seconds: 61));
+    await t.tap(find.text('Resend code'));
+    await t.pump();
+    expect(sends, 1);
+    await t.enterText(find.byKey(const ValueKey('otp-field')), '654321');
+    await t.pumpAndSettle();
+    expect(popped, 'tok-654321');
+  });
 }
