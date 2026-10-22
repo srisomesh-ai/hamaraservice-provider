@@ -393,6 +393,14 @@ class ProviderApiService {
       _bk('release', {'booking_id': bookingId});
 
   /// START OTP (shown by the customer at the door).
+  /// "Start trip" — the customer is told the provider is on the way.
+  static Future<ApiResult> startTrip(String bookingId) =>
+      _bk('start_trip', {'booking_id': bookingId});
+
+  /// "I've arrived" — the server sends the start OTP to the customer.
+  static Future<ApiResult> requestStartOtp(String bookingId) =>
+      _bk('request_start_otp', {'booking_id': bookingId});
+
   static Future<ApiResult> verifyStartOtp(String bookingId, String otp) =>
       _bk('verify_otp', {'booking_id': bookingId, 'otp': otp});
 
