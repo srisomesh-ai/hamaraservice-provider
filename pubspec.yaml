@@ -19,7 +19,7 @@ dependencies:
   shared_preferences: ^2.2.3
   url_launcher: ^6.3.1
   http: ^1.2.0
-  vibration: ^1.8.4
+  vibration: ^3.1.3
   image_picker: ^1.1.2
   flutter_map: ^6.1.0             # OSM map picker (service location & range)
   latlong2: ^0.9.0

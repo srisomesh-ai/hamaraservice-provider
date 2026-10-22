@@ -21,7 +21,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.0'
+          flutter-version: '3.35.7'
           channel: stable
 
       - name: Create google-services.json
@@ -69,6 +69,23 @@ jobs:
 
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons --build-number=${{ github.run_number }}
+
+      # Google Play: apps must support 16 KB memory pages — every native
+      # library 16 KB-aligned in the ELF file and in the APK.
+      - name: Check 16 KB page size support
+        run: |
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -c -P 16 4 "$APK" && echo "zipalign: 16 KB OK" || { echo "::error::APK is not 16 KB zip-aligned"; exit 1; }
+          rm -rf /tmp/so && mkdir -p /tmp/so && unzip -q -o "$APK" 'lib/*' -d /tmp/so
+          bad=0
+          for f in $(find /tmp/so -name '*.so'); do
+            for a in $(readelf -lW "$f" | awk '$1=="LOAD"{print $NF}'); do
+              if [ $((a)) -lt 16384 ]; then echo "::error::$f LOAD segment aligned to $a"; bad=1; fi
+            done
+            echo "$f OK"
+          done
+          exit $bad
 
       - name: Build App Bundle
         run: flutter build appbundle --release --no-tree-shake-icons --build-number=${{ github.run_number }}

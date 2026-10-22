@@ -149,7 +149,7 @@ class AppTheme {
             fontWeight: s.contains(MaterialState.selected) ? FontWeight.w700 : FontWeight.w500,
             color: s.contains(MaterialState.selected) ? AppColors.teal2 : AppColors.muted)),
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: Colors.white,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
@@ -250,7 +250,7 @@ class AppTheme {
         contentTextStyle: TextStyle(fontFamily: fontFamily, fontFamilyFallback: fontFamilyFallback, color: Colors.white, fontSize: 14),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
-      dialogTheme: DialogTheme(
+      dialogTheme: DialogThemeData(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),

@@ -24,7 +24,7 @@ class Haptics {
   /// One light tick.
   static Future<void> tap() async {
     try {
-      _hasVibrator ??= await Vibration.hasVibrator() ?? false;
+      _hasVibrator ??= await Vibration.hasVibrator();
       if (_hasVibrator == true) {
         await Vibration.vibrate(duration: 18, amplitude: 90);
         return;
