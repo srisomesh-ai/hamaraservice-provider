@@ -166,7 +166,8 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
   /// values do not rebuild anything.
   String _keyOf(Map<String, dynamic> b) => [
         b['id'], b['status'], b['payment_status'], b['payment_method'],
-        b['completion_otp_requested'], b['quoted_price'], b['counter_price'],
+        b['completion_otp_requested'], b['start_otp_requested'],
+        b['travel_started_at'], b['arrived_at'], b['quoted_price'], b['counter_price'],
         b['final_price'], b['confirmed_price'], b['amount'], b['started_at'],
         b['completed_at'], b['rating'], b['review'], b['review_requested'],
         b['cash_allowed'], b['commission_amt'], b['provider_earns'],
@@ -307,6 +308,20 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     if (v == null) return;
     await _run(() => ProviderApiService.sendFinalOffer(_id, v),
         success: 'Final offer sent');
+  }
+
+  /// Step 1 after confirmation: tell the customer we're coming, open Maps.
+  Future<void> _startTrip() async {
+    final res = await _run(() => ProviderApiService.startTrip(_id),
+        success: '🛵 Trip started — customer notified');
+    if (res != null && res.ok) await _navigate();
+  }
+
+  /// Step 2: at the customer's door — the customer gets the start OTP.
+  Future<void> _requestStartOtp() async {
+    final again = toInt(_bk['start_otp_requested']) == 1;
+    await _run(() => ProviderApiService.requestStartOtp(_id),
+        success: again ? 'OTP sent to the customer again' : '🔑 Customer received the Start OTP — ask them for it');
   }
 
   Future<void> _verifyStartOtp() async {
@@ -528,8 +543,6 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
     final dist = toDoubleOrNull(_bk['distance_km']);
     final notes = str(_bk['notes']);
     final slot = slotWhen(_bk['slot_date'], _bk['slot_time']);
-    // Website navBtn(): only once the job is confirmed (heading to the customer).
-    final showNav = _status == 'confirmed';
     return Card(
       clipBehavior: Clip.antiAlias,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -556,10 +569,6 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
             if (summary.isNotEmpty) ...[
               const SizedBox(height: 8),
               SummaryChips(summary),
-            ],
-            if (showNav) ...[
-              const SizedBox(height: 14),
-              BigButton('Navigate to Customer', icon: Icons.navigation_rounded, onPressed: _navigate),
             ],
           ]),
         ),
@@ -623,15 +632,52 @@ class _ActiveBookingScreenState extends State<ActiveBookingScreen>
         ]);
 
       case 'confirmed':
+        final travelling = str(_bk['travel_started_at']).isNotEmpty;
+        final otpSent = toInt(_bk['start_otp_requested']) == 1;
+        if (!travelling && !otpSent) {
+          // Step 1 — start the trip
+          return _section([
+            _cashRuleNotice(),
+            const Notice('Customer confirmed the job. Tap Start trip when you leave — '
+                'the customer will be told you are on the way.',
+                tone: Tone.success),
+            const SizedBox(height: 18),
+            BigButton('Start trip & navigate',
+                icon: Icons.navigation_rounded, color: AppColors.green, busy: _busy, onPressed: _startTrip),
+            const SizedBox(height: 10),
+            BigButton('Already at the location', outlined: true, icon: Icons.where_to_vote_rounded,
+                onPressed: _busy ? null : _requestStartOtp),
+            _giveUp(),
+          ]);
+        }
+        if (!otpSent) {
+          // Step 2 — on the way; at the door ask for the start OTP
+          return _section([
+            _cashRuleNotice(),
+            Notice('🛵 On the way${istTime(_bk['travel_started_at']).isNotEmpty ? ' since ${istTime(_bk['travel_started_at'])}' : ''}. '
+                'When you reach the customer, tap “I\'ve arrived” — they will get the Start OTP.',
+                tone: Tone.info),
+            const SizedBox(height: 18),
+            BigButton('I\'ve arrived — send Start OTP',
+                icon: Icons.where_to_vote_rounded, color: AppColors.green, busy: _busy, onPressed: _requestStartOtp),
+            const SizedBox(height: 10),
+            BigButton('Open navigation', icon: Icons.navigation_rounded, outlined: true,
+                onPressed: _busy ? null : _navigate),
+            _giveUp(),
+          ]);
+        }
+        // Step 3 — enter the OTP the customer received
         return _section([
           _cashRuleNotice(),
-          const Notice('Customer confirmed. Go to the customer and ask them for the Start OTP shown in their app.',
+          const Notice('The customer has received the Start OTP. Ask them for it and enter it here.',
               tone: Tone.success),
           const SizedBox(height: 18),
           _label('Start OTP (from customer)'),
           OtpInput(controller: _startOtpCtrl, errorText: _otpError, enabled: !_busy),
           const SizedBox(height: 18),
           BigButton('Verify & Start Job', icon: Icons.key_rounded, busy: _busy, onPressed: _verifyStartOtp),
+          const SizedBox(height: 10),
+          BigButton('Resend OTP to customer', outlined: true, onPressed: _busy ? null : _requestStartOtp),
           _giveUp(),
         ]);
 

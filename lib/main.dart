@@ -8,9 +8,11 @@ import 'services/provider_api_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/splash_screen.dart';
 import 'utils/theme.dart';
+import 'utils/haptics.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  Haptics.install();
   _installErrorScreen();
 
   // Android reads its Firebase config from android/app/google-services.json

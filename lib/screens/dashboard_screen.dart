@@ -252,7 +252,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (_lastStatus != null && st != _lastStatus) {
       if (st == 'confirmed') {
         final p = toInt(b['confirmed_price']) > 0 ? toInt(b['confirmed_price']) : toInt(b['quoted_price']);
-        showSnack(context, '✅ Customer Confirmed! ₹$p — head to the location', tone: Tone.success);
+        showSnack(context, '✅ Customer Confirmed! ₹$p — open the job and tap Start trip', tone: Tone.success);
       } else if (st == 'searching' && _lastStatus == 'price_quoted') {
         showSnack(context, '❌ Customer Declined — they chose to search another provider', tone: Tone.error);
       } else if (st == 'cancelled') {

@@ -68,10 +68,20 @@ class ActiveJobCard extends StatelessWidget {
         tone = Tone.warning;
         break;
       case 'confirmed':
-        msg = 'Customer confirmed. Go to the customer and ask them for the Start OTP shown in their app.';
+        if (toInt(b['start_otp_requested']) == 1) {
+          msg = 'The customer has the Start OTP. Ask them for it and enter it.';
+          action = 'Enter Start OTP';
+          actionIcon = Icons.pin_outlined;
+        } else if (str(b['travel_started_at']).isNotEmpty) {
+          msg = 'On the way. Tap “I\'ve arrived” when you reach the customer.';
+          action = 'I\'ve arrived';
+          actionIcon = Icons.where_to_vote_rounded;
+        } else {
+          msg = 'Customer confirmed. Start the trip when you leave.';
+          action = 'Start trip';
+          actionIcon = Icons.navigation_rounded;
+        }
         tone = Tone.success;
-        action = 'Enter Start OTP';
-        actionIcon = Icons.pin_outlined;
         break;
       case 'active':
         msg = toInt(b['completion_otp_requested']) == 1

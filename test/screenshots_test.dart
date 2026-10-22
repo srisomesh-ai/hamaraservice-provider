@@ -242,12 +242,29 @@ void main() {
   testWidgets('profile tab', (t) => _shot(t, _shell(tab: 3), 'profile'),
       skip: skip);
 
+  testWidgets('active job — start trip', (t) async {
+    await _shot(
+        t,
+        ActiveBookingScreen(
+            bookingId: 'HS-BK-20931', initial: _booking('confirmed'), demo: true),
+        'active_job_start_trip');
+  }, skip: skip);
+  testWidgets('active job — on the way', (t) async {
+    await _shot(
+        t,
+        ActiveBookingScreen(
+            bookingId: 'HS-BK-20931',
+            initial: {..._booking('confirmed'), 'travel_started_at': '2026-10-22 10:05:00'},
+            demo: true),
+        'active_job_on_the_way');
+  }, skip: skip);
   testWidgets('active job — start OTP', (t) async {
     await _shot(
         t,
         ActiveBookingScreen(
             bookingId: 'HS-BK-20931',
-            initial: _booking('confirmed'),
+            initial: {..._booking('confirmed'), 'travel_started_at': '2026-10-22 10:05:00',
+                'arrived_at': '2026-10-22 10:21:00', 'start_otp_requested': 1},
             demo: true),
         'active_job_confirmed', before: () async {
       await t.enterText(find.byType(TextField).first, '48');
