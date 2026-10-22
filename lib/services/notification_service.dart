@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
@@ -46,6 +47,65 @@ const AndroidNotificationDetails _wakeDetails = AndroidNotificationDetails(
   autoCancel: true,
 );
 
+// Urgent job alerts (new job, customer's counter offer, job confirmed):
+// full-screen like an incoming call, ringing + vibrating until opened
+// (Android FLAG_INSISTENT), for up to 45 s.
+const String kAlertChannelId = 'hamaraservice_job_alert';
+const String kAlertChannelName = 'Job alerts (ringing)';
+final AndroidNotificationChannel _alertChannel = AndroidNotificationChannel(
+  kAlertChannelId,
+  kAlertChannelName,
+  description: 'Rings until you open new job requests',
+  importance: Importance.max,
+  playSound: true,
+  enableVibration: true,
+  vibrationPattern: Int64List.fromList([0, 900, 500, 900, 500, 900]),
+  audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
+);
+const int _flagInsistent = 4; // android.app.Notification.FLAG_INSISTENT
+
+Future<void> _createChannels(FlutterLocalNotificationsPlugin plugin) async {
+  await plugin
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(_alertChannel);
+}
+
+/// Replaces the system notification of an urgent event with a full-screen,
+/// keeps-ringing alert.
+Future<void> _showJobAlert(FlutterLocalNotificationsPlugin plugin, RemoteMessage m) async {
+  final d = m.data;
+  final sysTag = '${d['sys_tag'] ?? ''}';
+  if (sysTag.isNotEmpty) {
+    try { await plugin.cancel(0, tag: sysTag); } catch (_) {}
+  }
+  final bookingId = '${d['bookingId'] ?? ''}';
+  await plugin.show(
+    'alert-$bookingId'.hashCode & 0x7fffffff,
+    '${d['title'] ?? 'New job request'}',
+    '${d['body'] ?? 'Open the app to respond'}',
+    NotificationDetails(
+      android: AndroidNotificationDetails(
+        kAlertChannelId,
+        kAlertChannelName,
+        channelDescription: 'Rings until you open new job requests',
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
+        vibrationPattern: Int64List.fromList([0, 900, 500, 900, 500, 900]),
+        audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
+        visibility: NotificationVisibility.public,
+        fullScreenIntent: true,
+        category: AndroidNotificationCategory.call,
+        additionalFlags: Int32List.fromList([_flagInsistent]),
+        timeoutAfter: 45000,
+        autoCancel: true,
+      ),
+    ),
+    payload: jsonEncode(d),
+  );
+}
+
 int _notificationId(RemoteMessage m) {
   final key = m.messageId ??
       '${m.data['event']}-${m.data['bookingId']}-${m.sentTime?.millisecondsSinceEpoch}';
@@ -78,6 +138,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await plugin.initialize(const InitializationSettings(
     android: AndroidInitializationSettings('@mipmap/ic_launcher'),
   ));
+  if (message.data['alert'] == '1') {
+    await _createChannels(plugin);
+    await _showJobAlert(plugin, message);
+    return;
+  }
   await _showLocal(plugin, message);
 }
 
@@ -97,6 +162,7 @@ class NotificationService {
       ),
       onDidReceiveNotificationResponse: (resp) => _handlePayload(resp.payload),
     );
+    await _createChannels(_plugin);
 
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
@@ -109,6 +175,9 @@ class NotificationService {
 
     // Foreground: FCM shows nothing for data messages → show it ourselves.
     FirebaseMessaging.onMessage.listen((m) {
+      // The ringing copy of an alert is only for when the app is not open —
+      // in the app the dashboard shows the job itself.
+      if (m.notification == null && m.data['alert'] == '1') return;
       final id = m.messageId ?? '';
       if (id.isNotEmpty && !_shownIds.add(id)) return;
       _showLocal(_plugin, m);
@@ -179,7 +248,13 @@ class NotificationService {
   }
 
   /// Called by the dashboard when it becomes ready.
+  /// Stops ringing alerts once the provider is in the app.
+  static Future<void> clearAlerts() async {
+    try { await _plugin.cancelAll(); } catch (_) {}
+  }
+
   static void consumePending() {
+    clearAlerts();
     final p = _pending;
     _pending = null;
     if (p != null) _route(p);

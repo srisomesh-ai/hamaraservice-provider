@@ -169,6 +169,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (fg == _foreground) return;
     _foreground = fg;
     if (fg) {
+      NotificationService.clearAlerts();
       _refreshAll();
       _startActivePolling();
       _startProfilePolling();
