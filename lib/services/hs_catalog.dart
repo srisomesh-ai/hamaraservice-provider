@@ -441,6 +441,33 @@ class HSCatalog {
       ]),
     ]),
 
+    // ── SVC035 Anchor / Emcee ─────────────────────────────────────
+    HSService(id:'SVC035', name:'Anchor / Emcee', icon:'🎙️', cat:'Events & Media', basePrice:0, groups:[
+      HSGroup(key:'event', title:'Event Type', style:'bhk', items:[
+        HSOption(key:'wedding',   ico:'💍', name:'Wedding / Sangeet',    price:0),
+        HSOption(key:'birthday',  ico:'🎂', name:'Birthday Party',       price:0),
+        HSOption(key:'opening',   ico:'🏬', name:'Shop / Store Opening', price:0),
+        HSOption(key:'college',   ico:'🎓', name:'College Fest',         price:0),
+        HSOption(key:'corporate', ico:'🏢', name:'Corporate Event',      price:0),
+        HSOption(key:'other',     ico:'🎉', name:'Other Event',          price:0),
+      ]),
+      HSGroup(key:'duration', title:'Duration', style:'task', items:[
+        HSOption(key:'h4',      ico:'🕓', name:'Up to 4 hours (instead of 2)', price:0),
+        HSOption(key:'fullday', ico:'☀️', name:'Full day',                     price:0),
+      ]),
+    ]),
+
+    // ── SVC036 Influencer Promotion ───────────────────────────────
+    HSService(id:'SVC036', name:'Influencer Promotion', icon:'📱', cat:'Events & Media', basePrice:0, groups:[
+      HSGroup(key:'content', title:'What to post', style:'task', items:[
+        HSOption(key:'reel',    ico:'🎬', name:'Instagram Reel',              price:0),
+        HSOption(key:'story',   ico:'📸', name:'Instagram Stories (set of 3)', price:0),
+        HSOption(key:'ytshort', ico:'▶️', name:'YouTube Short',               price:0),
+        HSOption(key:'fbpost',  ico:'👍', name:'Facebook post',               price:0),
+        HSOption(key:'ytvideo', ico:'🎥', name:'YouTube video',               price:0),
+      ]),
+    ]),
+
     // ── SVC032 Gardener ────────────────────────────────────────────
     HSService(id:'SVC032', name:'Gardener', icon:'🌱', cat:'Outdoor', basePrice:0, groups:[
       HSGroup(key:'visit', title:'Visit / Call-out Price', style:'bhk', items:[

@@ -18,6 +18,9 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   final _phoneCtrl = TextEditingController();
   final _bioCtrl   = TextEditingController();
   final _cityCtrl  = TextEditingController();
+  final _instaCtrl = TextEditingController();
+  final _ytCtrl    = TextEditingController();
+  final _followersCtrl = TextEditingController();
   bool _saving = false;
   String? _photoUrl;
   File? _selectedImage;
@@ -29,6 +32,9 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     _phoneCtrl.text = str(widget.providerData?['phone']);
     _bioCtrl.text   = str(widget.providerData?['bio']);
     _cityCtrl.text  = str(widget.providerData?['city']);
+    _instaCtrl.text = str(widget.providerData?['instagram_url']);
+    _ytCtrl.text    = str(widget.providerData?['youtube_url']);
+    _followersCtrl.text = str(widget.providerData?['followers']);
     final p = photoUrl(widget.providerData?['photo']);
     _photoUrl       = p.isEmpty ? null : p;
   }
@@ -37,6 +43,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   void dispose() {
     _nameCtrl.dispose(); _phoneCtrl.dispose();
     _bioCtrl.dispose(); _cityCtrl.dispose();
+    _instaCtrl.dispose(); _ytCtrl.dispose(); _followersCtrl.dispose();
     super.dispose();
   }
 
@@ -79,6 +86,9 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
       'phone': phone10,
       'bio':   _bioCtrl.text.trim(),
       'city':  _cityCtrl.text.trim(),
+      'instagram_url': _instaCtrl.text.trim(),
+      'youtube_url':   _ytCtrl.text.trim(),
+      'followers':     _followersCtrl.text.trim(),
     });
     if (!mounted) return;
     setState(() => _saving = false);
@@ -152,6 +162,22 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
               ),
             ),
           ]),
+          const SizedBox(height: 20),
+
+          // Anchors / influencers: shown to customers with the quote.
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text('Anchors / influencers: customers see these with your quote (optional)',
+              style: TextStyle(fontSize: 12, color: AppColors.muted)),
+          ),
+          const SizedBox(height: 10),
+          _field('Instagram page', _instaCtrl, Icons.camera_alt_outlined,
+              keyboard: TextInputType.url, hint: '@yourpage or instagram.com/yourpage'),
+          const SizedBox(height: 14),
+          _field('YouTube channel', _ytCtrl, Icons.play_circle_outline_rounded,
+              keyboard: TextInputType.url, hint: '@yourchannel or youtube.com/@yourchannel'),
+          const SizedBox(height: 14),
+          _field('Followers', _followersCtrl, Icons.groups_outlined, hint: 'e.g. 25K', maxLength: 20),
           const SizedBox(height: 24),
 
           SizedBox(
@@ -175,7 +201,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   }
 
   Widget _field(String label, TextEditingController ctrl, IconData icon,
-      {TextInputType keyboard = TextInputType.text}) {
+      {TextInputType keyboard = TextInputType.text, String? hint, int? maxLength}) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label.toUpperCase(),
         style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.muted, letterSpacing: 0.5)),
@@ -183,7 +209,11 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
       TextField(
         controller: ctrl,
         keyboardType: keyboard,
+        maxLength: maxLength,
+        autocorrect: keyboard != TextInputType.url,
         decoration: InputDecoration(
+          hintText: hint,
+          counterText: '',
           prefixIcon: Icon(icon, color: AppColors.muted, size: 18),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         ),
