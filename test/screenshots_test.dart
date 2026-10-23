@@ -14,6 +14,7 @@ import 'package:hamaraservice_provider/screens/dashboard_screen.dart';
 import 'package:hamaraservice_provider/screens/earnings_screen.dart';
 import 'package:hamaraservice_provider/screens/email_otp_screen.dart';
 import 'package:hamaraservice_provider/screens/login_screen.dart';
+import 'package:hamaraservice_provider/screens/profile_edit_screen.dart';
 import 'package:hamaraservice_provider/screens/services_screen.dart';
 import 'package:hamaraservice_provider/services/provider_api_service.dart';
 import 'package:hamaraservice_provider/utils/theme.dart';
@@ -241,6 +242,23 @@ void main() {
       skip: skip);
   testWidgets('profile tab', (t) => _shot(t, _shell(tab: 3), 'profile'),
       skip: skip);
+
+  testWidgets('edit profile — social links', (t) async {
+    await _shot(
+        t,
+        const ProfileEditScreen(providerId: 'HS-PRO-RAVI6780', providerData: {
+          'name': 'Ravi Kumar',
+          'phone': '9123456780',
+          'city': 'Hyderabad',
+          'bio': 'Wedding and corporate event anchor, 6 years.',
+          'instagram_url': 'https://instagram.com/ravi.anchor',
+          'youtube_url': 'https://youtube.com/@RaviAnchor',
+          'followers': '25K',
+        }),
+        'profile_edit_social');
+    expect(find.text('https://instagram.com/ravi.anchor'), findsOneWidget);
+    expect(find.text('25K'), findsOneWidget);
+  }, skip: skip);
 
   testWidgets('active job — start trip', (t) async {
     await _shot(
